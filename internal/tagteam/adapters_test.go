@@ -2,6 +2,9 @@ package tagteam
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,6 +269,167 @@ func TestAgyParseResultExtractsFencedReviewJSON(t *testing.T) {
 	}
 	if result.Review == nil || result.Review.Verdict != "pass" {
 		t.Fatalf("review = %#v", result.Review)
+	}
+}
+
+func TestRegistryIncludesOpenAICompatibleAliases(t *testing.T) {
+	registry := Registry(DefaultConfig(), RunOptions{})
+	if _, ok := registry["openai-compatible"]; !ok {
+		t.Fatal("expected openai-compatible adapter")
+	}
+	if _, ok := registry["oai"]; !ok {
+		t.Fatal("expected oai alias")
+	}
+	if registry["openai-compatible"].ID() != "openai-compatible" {
+		t.Fatalf("adapter ID = %q", registry["openai-compatible"].ID())
+	}
+	if registry["oai"].ID() != "openai-compatible" {
+		t.Fatalf("alias adapter ID = %q", registry["oai"].ID())
+	}
+}
+
+func TestOpenAICompatibleDetect(t *testing.T) {
+	missingBase := &OpenAICompatibleAdapter{APIKeyEnv: "FEATHERLESS_API_KEY"}
+	info, err := missingBase.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if info.Found || info.Runnable {
+		t.Fatalf("missing base_url should not be runnable: %#v", info)
+	}
+
+	missingKey := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "FEATHERLESS_API_KEY"}
+	info, err = missingKey.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if !info.Found || info.Runnable || info.Auth != "missing" {
+		t.Fatalf("missing API key env should be found but not runnable: %#v", info)
+	}
+
+	t.Setenv("FEATHERLESS_API_KEY", "test-key")
+	runnable := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "FEATHERLESS_API_KEY"}
+	info, err = runnable.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if !info.Found || !info.Runnable || info.Auth != "ok" {
+		t.Fatalf("configured adapter should be runnable: %#v", info)
+	}
+}
+
+func TestOpenAICompatibleRunDirectBuildsChatCompletionsRequest(t *testing.T) {
+	t.Setenv("FEATHERLESS_API_KEY", "secret-token")
+	reviewJSON := `{"verdict":"pass","summary":"looks good","findings":[],"test_suggestions":[]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Test"); got != "yes" {
+			t.Fatalf("X-Test = %q", got)
+		}
+		var body struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			Temperature float64 `json:"temperature"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.Model != "override-model" {
+			t.Fatalf("model = %q", body.Model)
+		}
+		if body.Temperature != 0 {
+			t.Fatalf("temperature = %v", body.Temperature)
+		}
+		if len(body.Messages) != 2 {
+			t.Fatalf("messages = %#v", body.Messages)
+		}
+		if body.Messages[0].Role != "system" || body.Messages[0].Content != "system prompt" {
+			t.Fatalf("system message = %#v", body.Messages[0])
+		}
+		if body.Messages[1].Role != "user" || body.Messages[1].Content != "review prompt" {
+			t.Fatalf("user message = %#v", body.Messages[1])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": reviewJSON}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	adapter := &OpenAICompatibleAdapter{
+		BaseURL:      server.URL,
+		APIKeyEnv:    "FEATHERLESS_API_KEY",
+		DefaultModel: "default-model",
+		ExtraHeaders: map[string]string{"X-Test": "yes"},
+	}
+	result, err := adapter.RunDirect(RoleAdversary, Request{
+		Context:      context.Background(),
+		Prompt:       "review prompt",
+		SystemPrompt: "system prompt",
+		Model:        "override-model",
+	})
+	if err != nil {
+		t.Fatalf("RunDirect() error = %v", err)
+	}
+	if result.Review == nil || result.Review.Verdict != "pass" {
+		t.Fatalf("review = %#v", result.Review)
+	}
+	if len(result.Command) == 0 || result.Command[0] != "POST" {
+		t.Fatalf("command = %#v", result.Command)
+	}
+}
+
+func TestOpenAICompatibleParseResultAcceptsMessageContent(t *testing.T) {
+	adapter := &OpenAICompatibleAdapter{}
+	raw := []byte(`{"choices":[{"message":{"content":"{\"verdict\":\"pass\",\"summary\":\"ok\",\"findings\":[],\"test_suggestions\":[]}"}}]}`)
+	result, err := adapter.ParseResult(RoleAdversary, raw)
+	if err != nil {
+		t.Fatalf("ParseResult() error = %v", err)
+	}
+	if result.Review == nil || result.Review.Summary != "ok" {
+		t.Fatalf("review = %#v", result.Review)
+	}
+}
+
+func TestOpenAICompatibleParseResultAcceptsFencedJSON(t *testing.T) {
+	adapter := &OpenAICompatibleAdapter{}
+	raw := []byte("{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"verdict\\\":\\\"pass\\\",\\\"summary\\\":\\\"ok\\\",\\\"findings\\\":[],\\\"test_suggestions\\\":[]}\\n```\"}}]}")
+	result, err := adapter.ParseResult(RoleAdversary, raw)
+	if err != nil {
+		t.Fatalf("ParseResult() error = %v", err)
+	}
+	if result.Review == nil || result.Review.Verdict != "pass" {
+		t.Fatalf("review = %#v", result.Review)
+	}
+}
+
+func TestOpenAICompatibleCoderRoleUnsupported(t *testing.T) {
+	adapter := &OpenAICompatibleAdapter{}
+	_, err := adapter.BuildCmd(RoleCoder, Request{})
+	if err == nil {
+		t.Fatal("expected coder role error")
+	}
+	if !strings.Contains(err.Error(), "review-only") {
+		t.Fatalf("error = %v", err)
+	}
+	_, err = adapter.RunDirect(RoleCoder, Request{})
+	if err == nil {
+		t.Fatal("expected direct coder role error")
+	}
+	if !strings.Contains(err.Error(), "use it as -ma, not -mc") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

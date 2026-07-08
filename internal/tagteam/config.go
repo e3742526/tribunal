@@ -67,6 +67,10 @@ func DefaultConfig() Config {
 				DefaultModel: "",
 				ExtraArgs:    []string{},
 			},
+			OpenAICompatible: OpenAICompatibleConfig{
+				ExtraHeaders: map[string]string{},
+				ExtraArgs:    []string{},
+			},
 		},
 	}
 }
@@ -238,6 +242,21 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.Adapters.Gosling.ExtraArgs) > 0 {
 		dst.Adapters.Gosling.ExtraArgs = append([]string{}, src.Adapters.Gosling.ExtraArgs...)
 	}
+	if src.Adapters.OpenAICompatible.BaseURL != "" {
+		dst.Adapters.OpenAICompatible.BaseURL = src.Adapters.OpenAICompatible.BaseURL
+	}
+	if src.Adapters.OpenAICompatible.APIKeyEnv != "" {
+		dst.Adapters.OpenAICompatible.APIKeyEnv = src.Adapters.OpenAICompatible.APIKeyEnv
+	}
+	if src.Adapters.OpenAICompatible.DefaultModel != "" {
+		dst.Adapters.OpenAICompatible.DefaultModel = src.Adapters.OpenAICompatible.DefaultModel
+	}
+	if len(src.Adapters.OpenAICompatible.ExtraHeaders) > 0 {
+		dst.Adapters.OpenAICompatible.ExtraHeaders = cloneStringMap(src.Adapters.OpenAICompatible.ExtraHeaders)
+	}
+	if len(src.Adapters.OpenAICompatible.ExtraArgs) > 0 {
+		dst.Adapters.OpenAICompatible.ExtraArgs = append([]string{}, src.Adapters.OpenAICompatible.ExtraArgs...)
+	}
 }
 
 func hasTagteamEnv() bool {
@@ -257,6 +276,11 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_CLAUDE_ARGS",
 		"TAGTEAM_AGY_ARGS",
 		"TAGTEAM_GOSLING_ARGS",
+		"TAGTEAM_OPENAI_COMPATIBLE_BASE_URL",
+		"TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV",
+		"TAGTEAM_OPENAI_COMPATIBLE_MODEL",
+		"TAGTEAM_OPENAI_COMPATIBLE_HEADERS",
+		"TAGTEAM_OPENAI_COMPATIBLE_ARGS",
 	} {
 		if _, ok := os.LookupEnv(key); ok {
 			return true
@@ -328,6 +352,23 @@ func mergeEnvConfig(cfg *Config) {
 	if value := os.Getenv("TAGTEAM_GOSLING_ARGS"); value != "" {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.Gosling.ExtraArgs = parsed
+		}
+	}
+	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL"); value != "" {
+		cfg.Adapters.OpenAICompatible.BaseURL = value
+	}
+	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV"); value != "" {
+		cfg.Adapters.OpenAICompatible.APIKeyEnv = value
+	}
+	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_MODEL"); value != "" {
+		cfg.Adapters.OpenAICompatible.DefaultModel = value
+	}
+	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_HEADERS"); value != "" {
+		cfg.Adapters.OpenAICompatible.ExtraHeaders = parseHeaderPairs(value)
+	}
+	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_ARGS"); value != "" {
+		if parsed, err := shlex.Split(value); err == nil {
+			cfg.Adapters.OpenAICompatible.ExtraArgs = parsed
 		}
 	}
 }
@@ -607,6 +648,10 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if err != nil {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse --gosling-args: %w", err)}
 	}
+	openAICompatibleArgs, err := mergePassthrough(cfg.Adapters.OpenAICompatible.ExtraArgs, flags.OpenAICompatibleArgsRaw)
+	if err != nil {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse --openai-compatible-args: %w", err)}
+	}
 
 	workdir := flags.Workdir
 	if workdir == "" {
@@ -655,8 +700,33 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		ClaudeArgs:                claudeArgs,
 		AgyArgs:                   agyArgs,
 		GoslingArgs:               goslingArgs,
+		OpenAICompatibleArgs:      openAICompatibleArgs,
 		ConfigSources:             sources,
 	}, nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func parseHeaderPairs(raw string) map[string]string {
+	headers := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		headers[key] = strings.TrimSpace(value)
+	}
+	return headers
 }
 
 func mergePassthrough(base []string, raw string) ([]string, error) {

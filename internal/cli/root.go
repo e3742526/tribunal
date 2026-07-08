@@ -80,6 +80,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVar(&flags.ClaudeArgsRaw, "claude-args", "", "Raw args appended to claude invocations")
 	flagSet.StringVar(&flags.AgyArgsRaw, "agy-args", "", "Raw args appended to agy invocations")
 	flagSet.StringVar(&flags.GoslingArgsRaw, "gosling-args", "", "Raw args appended to gosling invocations")
+	flagSet.StringVar(&flags.OpenAICompatibleArgsRaw, "openai-compatible-args", "", "Reserved passthrough args for openai-compatible invocations")
 }
 
 func runDefault(cmd *cobra.Command, flags *flagState, prompt string) error {
@@ -197,7 +198,7 @@ func newDoctorCommand(shared *flagState) *cobra.Command {
 			}
 			app := tagteam.NewApp(cfg)
 			status, err := app.Doctor(context.Background(), opts)
-			for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling"} {
+			for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling", "openai-compatible"} {
 				item := status[key]
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\tfound=%t\tversion=%s\tauth=%s\thint=%s\n", key, item.Found, item.Version, item.Auth, item.Hint)
 			}

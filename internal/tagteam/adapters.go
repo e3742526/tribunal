@@ -1,14 +1,25 @@
 package tagteam
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 )
 
 func Registry(cfg Config, opts RunOptions) map[string]Adapter {
+	openAICompatible := &OpenAICompatibleAdapter{
+		BaseURL:      cfg.Adapters.OpenAICompatible.BaseURL,
+		APIKeyEnv:    cfg.Adapters.OpenAICompatible.APIKeyEnv,
+		DefaultModel: cfg.Adapters.OpenAICompatible.DefaultModel,
+		ExtraHeaders: cfg.Adapters.OpenAICompatible.ExtraHeaders,
+		ExtraArgs:    opts.OpenAICompatibleArgs,
+	}
 	return map[string]Adapter{
 		"codex": &CodexAdapter{
 			IDValue:      "codex",
@@ -35,6 +46,8 @@ func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 			DefaultModel: cfg.Adapters.Gosling.DefaultModel,
 			ExtraArgs:    opts.GoslingArgs,
 		},
+		"openai-compatible": openAICompatible,
+		"oai":               openAICompatible,
 	}
 }
 
@@ -344,6 +357,187 @@ func parseScout(raw []byte) (*Scout, error) {
 		scout.DoNotBlock = true
 	}
 	return &scout, nil
+}
+
+type OpenAICompatibleAdapter struct {
+	BaseURL      string
+	APIKeyEnv    string
+	DefaultModel string
+	ExtraHeaders map[string]string
+	ExtraArgs    []string
+	HTTPClient   *http.Client
+}
+
+func (a *OpenAICompatibleAdapter) ID() string {
+	return "openai-compatible"
+}
+
+func (a *OpenAICompatibleAdapter) Capabilities() CapabilitySet {
+	return CapabilitySet{}
+}
+
+func (a *OpenAICompatibleAdapter) Detect(ctx context.Context) (VersionInfo, error) {
+	_ = ctx
+	hint := "set adapters.openai_compatible.base_url"
+	if a.APIKeyEnv != "" {
+		hint += " and " + a.APIKeyEnv
+	}
+	if strings.TrimSpace(a.BaseURL) == "" {
+		return VersionInfo{Found: false, Auth: "unknown", Hint: hint, Runnable: false}, nil
+	}
+	if a.APIKeyEnv != "" {
+		if strings.TrimSpace(os.Getenv(a.APIKeyEnv)) == "" {
+			return VersionInfo{Found: true, Version: "configured", Auth: "missing", Hint: hint, Runnable: false}, nil
+		}
+	}
+	return VersionInfo{Found: true, Version: "configured", Auth: "ok", Hint: hint, Runnable: true}, nil
+}
+
+func (a *OpenAICompatibleAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
+	if role != RoleAdversary {
+		return nil, unsupportedOpenAICompatibleRoleError()
+	}
+	return &CommandSpec{
+		Argv:   []string{"openai-compatible", "POST", strings.TrimRight(a.BaseURL, "/") + "/chat/completions"},
+		Dir:    req.Workdir,
+		Output: req.OutputPath,
+	}, nil
+}
+
+func (a *OpenAICompatibleAdapter) RunDirect(role Role, req Request) (Result, error) {
+	if role != RoleAdversary {
+		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: unsupportedOpenAICompatibleRoleError()}
+	}
+	model := req.Model
+	if model == "" {
+		model = a.DefaultModel
+	}
+	if strings.TrimSpace(model) == "" {
+		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("openai-compatible model is required")}
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(a.BaseURL), "/")
+	if baseURL == "" {
+		return Result{}, &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("openai-compatible not runnable; try set adapters.openai_compatible.base_url")}
+	}
+
+	messages := make([]map[string]string, 0, 2)
+	if strings.TrimSpace(req.SystemPrompt) != "" {
+		messages = append(messages, map[string]string{"role": "system", "content": req.SystemPrompt})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": req.Prompt})
+	payload := map[string]any{
+		"model":       model,
+		"messages":    messages,
+		"temperature": 0,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Result{}, err
+	}
+
+	runCtx := req.Context
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	cancel := func() {}
+	if req.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, req.Timeout)
+	}
+	defer cancel()
+
+	url := baseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(runCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if a.APIKeyEnv != "" {
+		apiKey := strings.TrimSpace(os.Getenv(a.APIKeyEnv))
+		if apiKey == "" {
+			return Result{}, &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("openai-compatible not runnable; try set %s", a.APIKeyEnv)}
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	for key, value := range a.ExtraHeaders {
+		if strings.TrimSpace(key) != "" {
+			httpReq.Header.Set(key, value)
+		}
+	}
+
+	client := a.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("openai-compatible request failed: %w", err)}
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Result{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("openai-compatible request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))}
+	}
+	result, err := a.ParseResult(role, raw)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Command = []string{"POST", url}
+	return result, nil
+}
+
+type openAICompatibleResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Text string `json:"text"`
+	} `json:"choices"`
+}
+
+func (a *OpenAICompatibleAdapter) ParseResult(role Role, raw []byte) (Result, error) {
+	if role != RoleAdversary {
+		return Result{}, &OutputContractError{Err: unsupportedOpenAICompatibleRoleError()}
+	}
+	var envelope openAICompatibleResponse
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return Result{}, fmt.Errorf("decode openai-compatible response: %w", err)
+	}
+	if len(envelope.Choices) == 0 {
+		return Result{}, &OutputContractError{Err: fmt.Errorf("openai-compatible response has no choices")}
+	}
+	content := envelope.Choices[0].Message.Content
+	if content == "" {
+		content = envelope.Choices[0].Text
+	}
+	if strings.TrimSpace(content) == "" {
+		return Result{}, &OutputContractError{Err: fmt.Errorf("openai-compatible response choice has no content")}
+	}
+	var review Review
+	reviewRaw := []byte(content)
+	if err := json.Unmarshal(reviewRaw, &review); err != nil {
+		extracted, extractErr := extractJSONObject(reviewRaw)
+		if extractErr != nil {
+			return Result{}, &OutputContractError{Err: fmt.Errorf("decode openai-compatible review JSON: %w", err)}
+		}
+		if err := json.Unmarshal(extracted, &review); err != nil {
+			return Result{}, &OutputContractError{Err: fmt.Errorf("decode openai-compatible review JSON: %w", err)}
+		}
+	}
+	if err := review.Validate(); err != nil {
+		return Result{}, &OutputContractError{Err: err}
+	}
+	return Result{
+		Raw:    raw,
+		Text:   review.Summary,
+		Review: &review,
+	}, nil
+}
+
+func unsupportedOpenAICompatibleRoleError() error {
+	return fmt.Errorf("openai-compatible adapter is review-only in this version; use it as -ma, not -mc")
 }
 
 var (

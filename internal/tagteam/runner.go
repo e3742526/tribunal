@@ -337,6 +337,9 @@ func validateRunRoles(opts RunOptions) error {
 	if err := validateRoleTarget(RoleCoder, opts.Coder); err != nil {
 		return err
 	}
+	if opts.Mode != ModeAdversarial && (opts.Adversary.Adapter == "openai-compatible" || opts.Adversary.Adapter == "oai") {
+		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("openai-compatible adapter is review-only in this version; use it with --mode adversarial or tagteam review")}
+	}
 	if err := validateRoleTarget(RoleAdversary, opts.Adversary); err != nil {
 		return err
 	}
@@ -357,6 +360,9 @@ func validateReviewRoles(opts RunOptions) error {
 }
 
 func validateRoleTarget(role Role, target RoleTarget) error {
+	if role != RoleAdversary && (target.Adapter == "openai-compatible" || target.Adapter == "oai") {
+		return &ExitError{Code: ExitInvalidArguments, Err: unsupportedOpenAICompatibleRoleError()}
+	}
 	if role == RoleAdversary && target.Adapter == "gosling" {
 		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("gosling is not supported as an adversary adapter")}
 	}
@@ -369,13 +375,14 @@ func validateRoleTarget(role Role, target RoleTarget) error {
 func (a *App) Doctor(ctx context.Context, opts RunOptions) (map[string]VersionInfo, error) {
 	registry := Registry(a.Config, opts)
 	status := map[string]VersionInfo{}
-	for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling"} {
+	for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling", "openai-compatible"} {
 		info, err := registry[key].Detect(ctx)
 		if err != nil {
 			return nil, err
 		}
 		status[key] = info
 	}
+	status["oai"] = status["openai-compatible"]
 	if err := validateRunRoles(opts); err != nil {
 		return status, err
 	}
@@ -879,6 +886,39 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 }
 
 func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Request, dryRun bool) (Result, error) {
+	if direct, ok := adapter.(DirectAdapter); ok {
+		spec, err := adapter.BuildCmd(role, req)
+		if err != nil {
+			return Result{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+		}
+		if dryRun {
+			payload, _ := json.MarshalIndent(spec, "", "  ")
+			result := Result{Text: string(payload), Command: spec.Argv}
+			if role == RoleAdversary {
+				result.Review = &Review{
+					Verdict:         "pass",
+					Summary:         "dry-run",
+					Findings:        []Finding{},
+					TestSuggestions: []string{},
+				}
+			}
+			return result, nil
+		}
+		result, err := direct.RunDirect(role, req)
+		if err != nil {
+			return Result{}, err
+		}
+		if req.OutputPath != "" && !fileExists(req.OutputPath) {
+			raw := result.Raw
+			if len(raw) == 0 {
+				raw = []byte(result.Text)
+			}
+			if writeErr := os.WriteFile(req.OutputPath, raw, 0o644); writeErr != nil {
+				return Result{}, writeErr
+			}
+		}
+		return result, nil
+	}
 	spec, err := adapter.BuildCmd(role, req)
 	if err != nil {
 		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: err}

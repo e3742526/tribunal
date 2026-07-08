@@ -63,6 +63,7 @@ Supported adapters in this repo today:
 - `claude`
 - `agy`
 - `gosling` (coder-only)
+- `openai-compatible` / `oai` (review-only first cut)
 
 Authentication is owned by the vendor CLIs. `tagteam` does not proxy API keys.
 
@@ -170,6 +171,40 @@ tagteam --worker agy --supervisor claude:sonnet "clean up the CLI help"
 ```
 
 The built-in `agy` default model is `gemini-3.5-flash`; override it with `agy:<model>`.
+
+### OpenAI-compatible reviewers
+
+`openai-compatible` adds a small HTTP adapter for OpenAI-compatible `/chat/completions` APIs such as Featherless.ai, OpenRouter, and local gateways. This first cut is review-only: use it as the adversary/reviewer, not as the coder/worker.
+
+Featherless.ai:
+
+```toml
+[adapters.openai_compatible]
+base_url = "https://api.featherless.ai/v1"
+api_key_env = "FEATHERLESS_API_KEY"
+default_model = "gpt-oss-120b"
+```
+
+```bash
+FEATHERLESS_API_KEY=... tagteam \
+  --mode adversarial \
+  -mc claude:sonnet \
+  -ma openai-compatible:gpt-oss-120b \
+  --show-review \
+  "make a tiny README wording cleanup"
+```
+
+OpenRouter:
+
+```toml
+[adapters.openai_compatible]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+default_model = "openai/gpt-oss-120b"
+extra_headers = { "HTTP-Referer" = "https://github.com/your/repo", "X-Title" = "tagteam" }
+```
+
+Equivalent environment overrides are available for `base_url`, `api_key_env`, model, and simple comma-separated headers via `TAGTEAM_OPENAI_COMPATIBLE_BASE_URL`, `TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV`, `TAGTEAM_OPENAI_COMPATIBLE_MODEL`, and `TAGTEAM_OPENAI_COMPATIBLE_HEADERS`.
 
 Review the current diff only:
 

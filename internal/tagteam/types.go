@@ -145,6 +145,10 @@ type Adapter interface {
 	ParseResult(role Role, raw []byte) (Result, error)
 }
 
+type DirectAdapter interface {
+	RunDirect(role Role, req Request) (Result, error)
+}
+
 type CommandSpec struct {
 	Argv   []string `json:"argv"`
 	Dir    string   `json:"dir"`
@@ -299,11 +303,12 @@ type ProfileConfig struct {
 }
 
 type AdapterConfigSet struct {
-	Codex    CodexConfig   `toml:"codex"`
-	Claude   ClaudeConfig  `toml:"claude"`
-	CodexOSS CodexConfig   `toml:"codex-oss"`
-	Agy      AgyConfig     `toml:"agy"`
-	Gosling  GoslingConfig `toml:"gosling"`
+	Codex            CodexConfig            `toml:"codex"`
+	Claude           ClaudeConfig           `toml:"claude"`
+	CodexOSS         CodexConfig            `toml:"codex-oss"`
+	Agy              AgyConfig              `toml:"agy"`
+	Gosling          GoslingConfig          `toml:"gosling"`
+	OpenAICompatible OpenAICompatibleConfig `toml:"openai_compatible"`
 }
 
 type CodexConfig struct {
@@ -328,37 +333,46 @@ type GoslingConfig struct {
 	ExtraArgs    []string `toml:"extra_args"`
 }
 
+type OpenAICompatibleConfig struct {
+	BaseURL      string            `toml:"base_url"`
+	APIKeyEnv    string            `toml:"api_key_env"`
+	DefaultModel string            `toml:"default_model"`
+	ExtraHeaders map[string]string `toml:"extra_headers"`
+	ExtraArgs    []string          `toml:"extra_args"`
+}
+
 type FlagInputs struct {
-	Mode              string
-	Relay             bool
-	Coder             string
-	CoderRole         string
-	Adversary         string
-	Worker            string
-	Scout             string
-	ScoutMode         string
-	PostScoutMode     string
-	Supervisor        string
-	Reviewer          string
-	SupervisorCanEdit bool
-	Profile           string
-	Workdir           string
-	Rounds            int
-	Test              string
-	NoTest            bool
-	JSON              bool
-	DryRun            bool
-	ShowReview        bool
-	FailOnReview      bool
-	AllowDirty        bool
-	Autostash         bool
-	Timeout           time.Duration
-	Quiet             bool
-	Verbose           bool
-	CodexArgsRaw      string
-	ClaudeArgsRaw     string
-	AgyArgsRaw        string
-	GoslingArgsRaw    string
+	Mode                    string
+	Relay                   bool
+	Coder                   string
+	CoderRole               string
+	Adversary               string
+	Worker                  string
+	Scout                   string
+	ScoutMode               string
+	PostScoutMode           string
+	Supervisor              string
+	Reviewer                string
+	SupervisorCanEdit       bool
+	Profile                 string
+	Workdir                 string
+	Rounds                  int
+	Test                    string
+	NoTest                  bool
+	JSON                    bool
+	DryRun                  bool
+	ShowReview              bool
+	FailOnReview            bool
+	AllowDirty              bool
+	Autostash               bool
+	Timeout                 time.Duration
+	Quiet                   bool
+	Verbose                 bool
+	CodexArgsRaw            string
+	ClaudeArgsRaw           string
+	AgyArgsRaw              string
+	GoslingArgsRaw          string
+	OpenAICompatibleArgsRaw string
 }
 
 type RunOptions struct {
@@ -406,6 +420,7 @@ type RunOptions struct {
 	ClaudeArgs                []string
 	AgyArgs                   []string
 	GoslingArgs               []string
+	OpenAICompatibleArgs      []string
 	ConfigSources             []string
 	Baseline                  string
 	SkipDirtyCheck            bool

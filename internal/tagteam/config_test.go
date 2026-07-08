@@ -738,3 +738,93 @@ func TestResolveOptions_GoslingPassthrough(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfig_OpenAICompatibleConfig(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := []byte(`
+[adapters.openai_compatible]
+base_url = "https://api.featherless.ai/v1"
+api_key_env = "FEATHERLESS_API_KEY"
+default_model = "gpt-oss-120b"
+extra_headers = { "X-Test" = "yes" }
+extra_args = ["--future"]
+`)
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam.toml"), repoConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	got := cfg.Adapters.OpenAICompatible
+	if got.BaseURL != "https://api.featherless.ai/v1" {
+		t.Fatalf("base_url = %q", got.BaseURL)
+	}
+	if got.APIKeyEnv != "FEATHERLESS_API_KEY" {
+		t.Fatalf("api_key_env = %q", got.APIKeyEnv)
+	}
+	if got.DefaultModel != "gpt-oss-120b" {
+		t.Fatalf("default_model = %q", got.DefaultModel)
+	}
+	if got.ExtraHeaders["X-Test"] != "yes" {
+		t.Fatalf("extra_headers = %#v", got.ExtraHeaders)
+	}
+	if len(got.ExtraArgs) != 1 || got.ExtraArgs[0] != "--future" {
+		t.Fatalf("extra_args = %#v", got.ExtraArgs)
+	}
+}
+
+func TestMergeEnvConfig_OpenAICompatibleOverrides(t *testing.T) {
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL", "https://openrouter.ai/api/v1")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV", "OPENROUTER_API_KEY")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_MODEL", "openai/gpt-oss-120b")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_HEADERS", "HTTP-Referer=https://github.com/example/repo, X-Title=tagteam")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_ARGS", "--future value")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg)
+
+	got := cfg.Adapters.OpenAICompatible
+	if got.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("base_url = %q", got.BaseURL)
+	}
+	if got.APIKeyEnv != "OPENROUTER_API_KEY" {
+		t.Fatalf("api_key_env = %q", got.APIKeyEnv)
+	}
+	if got.DefaultModel != "openai/gpt-oss-120b" {
+		t.Fatalf("default_model = %q", got.DefaultModel)
+	}
+	if got.ExtraHeaders["HTTP-Referer"] != "https://github.com/example/repo" || got.ExtraHeaders["X-Title"] != "tagteam" {
+		t.Fatalf("headers = %#v", got.ExtraHeaders)
+	}
+	if len(got.ExtraArgs) != 2 || got.ExtraArgs[0] != "--future" || got.ExtraArgs[1] != "value" {
+		t.Fatalf("extra_args = %#v", got.ExtraArgs)
+	}
+}
+
+func TestResolveOptions_OpenAICompatiblePassthrough(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Adapters.OpenAICompatible.ExtraArgs = []string{"--base"}
+	opts, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{
+		OpenAICompatibleArgsRaw: "--flag value",
+		Timeout:                 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	want := []string{"--base", "--flag", "value"}
+	if len(opts.OpenAICompatibleArgs) != len(want) {
+		t.Fatalf("openai-compatible args length = %d, want %d: %#v", len(opts.OpenAICompatibleArgs), len(want), opts.OpenAICompatibleArgs)
+	}
+	for i := range want {
+		if opts.OpenAICompatibleArgs[i] != want[i] {
+			t.Fatalf("openai-compatible args[%d] = %q, want %q", i, opts.OpenAICompatibleArgs[i], want[i])
+		}
+	}
+}
