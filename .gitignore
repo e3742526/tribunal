@@ -6,6 +6,10 @@ dist/
 coverage.out
 .dory/
 
+# Local repo config; contains environment-specific endpoints/keys and is not
+# shipped as a public default.
+.tagteam.toml
+
 # Design spec for a separate, unimplemented tool ("tribunal"); not part of the
 # tagteam CLI and not published with it.
 tribunal-spec.md

@@ -1,5 +1,8 @@
 # tagteam
 
+[![CI](https://github.com/cephalopod-ai/tagteam/actions/workflows/ci.yml/badge.svg)](https://github.com/cephalopod-ai/tagteam/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 `tagteam` is a standalone Go CLI that runs one or more headless coding agents as one command.
 
 By default it runs in **supervisor mode**:
@@ -105,7 +108,7 @@ Each vendor CLI adapter (`codex`, `claude`, `agy`, `gosling`, etc.) must already
 
 This note applies to the vendor CLI adapters; the separate `openai-compatible` adapter uses its documented `api_key_env` setting.
 
-`tagteam` also reads a repo-local `.env` file from the selected workdir as a scoped overlay. It does not mutate the global process environment; exported shell variables still take precedence, and `.env` values are passed only to tagteam's config resolver and invoked adapters/tests. A starter template is included as [`.env_template`](/Users/eric/Documents/team-cli/.env_template:1).
+`tagteam` also reads a repo-local `.env` file from the selected workdir as a scoped overlay. It does not mutate the global process environment; exported shell variables still take precedence, and `.env` values are passed only to tagteam's config resolver and invoked adapters/tests. A starter template is included as [`.env_template`](.env_template).
 
 ## Compatibility Issues And Known Rough Edges
 
