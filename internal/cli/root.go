@@ -22,8 +22,41 @@ type flagState struct {
 func NewRootCommand() *cobra.Command {
 	flags := &flagState{}
 	root := &cobra.Command{
-		Use:           "tagteam [flags] <prompt>",
-		Short:         "Run supervisor/worker, relay, or coder/adversary agent loops over a repository",
+		Use:   "tagteam [flags] <prompt>",
+		Short: "Run supervisor/worker, relay, or coder/adversary agent loops over a repository",
+		Long: `tagteam runs a repository-local loop of explicit coding roles. Instead of hiding the edit/review cycle inside a vendor UI, the CLI keeps the supervisor, worker, coder, adversary, and scout roles visible, saves the artifacts for each run, and makes the handoff between brief, implementation, and review inspectable from the terminal.
+
+Modes
+
+  supervisor (default)
+    The supervisor writes the brief and reviews the diff. The worker implements the brief.
+  relay
+    --relay / --mode relay adds a scout recon pass before implementation, then runs coder implementation and supervisor review/arbitration.
+  solo
+    --solo / --mode solo runs one implementation agent with no reviewer, supervisor, adversary, or scout. The run reports review=none.
+  adversarial
+    --mode adversarial keeps the original coder/adversary loop for backward compatibility.
+
+Role flags by mode
+
+  -mc / --mc
+    Implementation slot. Worker in supervisor and solo modes; coder in relay and adversarial modes.
+  -ma / --ma
+    Review slot. Supervisor in supervisor and relay modes; adversary in adversarial mode.
+  --worker
+    Preferred implementation-slot name for supervisor, relay, and solo modes; alias for --mc.
+  --supervisor
+    Preferred review-slot name for supervisor and relay modes; alias for --ma.
+  --reviewer
+    Adversarial-mode review-slot name; alias for --ma.
+  --scout
+    Relay-mode scout slot only. Prefer a large-context scout; 256k+ is recommended, ideally at least as large as the coder/supervisor context.
+`,
+		Example: `tagteam "add OAuth login"
+tagteam --worker codex:gpt-5-codex --supervisor claude:opus "refactor billing flow"
+tagteam --solo codex:gpt-5.5 "rename UserSvc to UserService"
+tagteam --relay --no-scout-retrieval --scout agy:gemini-3.5-flash-low --worker codex:gpt-5.4-mini --supervisor claude:sonnet "add OAuth login"
+tagteam --mode adversarial -mc codex:gpt-5-codex -ma claude:opus "refactor billing flow"`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -51,19 +84,19 @@ func NewRootCommand() *cobra.Command {
 
 func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet := cmd.PersistentFlags()
-	flagSet.StringVar(&flags.Mode, "mode", "", "Orchestration mode: supervisor (default), solo, adversarial, or relay")
-	flagSet.StringVar(&flags.Solo, "solo", "", "Run one implementation adapter[:model] with no reviewer")
-	flagSet.BoolVar(&flags.Relay, "relay", false, "Convenience alias for --mode relay")
-	flagSet.StringVar(&flags.Coder, "mc", "", "Editor adapter[:model] (coder in adversarial mode, worker in supervisor mode)")
+	flagSet.StringVar(&flags.Mode, "mode", "", "Select orchestration mode: supervisor, relay, solo, or adversarial")
+	flagSet.StringVar(&flags.Solo, "solo", "", "Shortcut for solo mode (one editor, no reviewer)")
+	flagSet.BoolVar(&flags.Relay, "relay", false, "Shortcut for relay mode (scout, coder, supervisor)")
+	flagSet.StringVar(&flags.Coder, "mc", "", "Legacy implementation slot: worker in supervisor/solo, coder in relay/adversarial")
 	flagSet.StringVar(&flags.CoderRole, "coder", "", "Coder adapter[:model] (adversarial or relay mode)")
-	flagSet.StringVar(&flags.Adversary, "ma", "", "Reviewer adapter[:model] (adversary in adversarial mode, supervisor in supervisor mode)")
-	flagSet.StringVar(&flags.Worker, "worker", "", "Worker/coder adapter[:model] (supervisor or relay mode; alias for --mc)")
-	flagSet.StringVar(&flags.Scout, "scout", "", "Scout adapter[:model] (relay mode only)")
+	flagSet.StringVar(&flags.Adversary, "ma", "", "Legacy review slot: supervisor in supervisor/relay, adversary in adversarial")
+	flagSet.StringVar(&flags.Worker, "worker", "", "Preferred implementation slot in supervisor/relay/solo; alias for --mc")
+	flagSet.StringVar(&flags.Scout, "scout", "", "Relay-mode scout adapter[:model] for pre-scout recon")
 	flagSet.StringVar(&flags.ScoutMode, "scout-mode", "", "Pre-scout task mode: recon, lint, polish, tests, or risk")
 	flagSet.StringVar(&flags.PostScoutMode, "post-scout-mode", "", "Post-scout task mode: recon, lint, polish, tests, or risk")
-	flagSet.BoolVar(&flags.NoScoutRetrieval, "no-scout-retrieval", false, "Disable bounded local retrieval for relay pre-scout recon")
-	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Supervisor adapter[:model] (supervisor or relay mode; alias for --ma)")
-	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Reviewer adapter[:model] (adversarial mode only; alias for --ma)")
+	flagSet.BoolVar(&flags.NoScoutRetrieval, "no-scout-retrieval", false, "Disable relay pre-scout recon retrieval (local rg-only, host-only, advisory)")
+	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Preferred review slot in supervisor/relay; alias for --ma")
+	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Adversarial-mode review slot; alias for --ma")
 	flagSet.BoolVar(&flags.SupervisorCanEdit, "supervisor-can-edit", false, "Allow the supervisor to edit files while writing its brief (default: read-only)")
 	flagSet.BoolVar(&flags.Slice, "slice", false, "Ask the supervisor to split supervisor-mode work into small packages before implementation")
 	flagSet.BoolVar(&flags.NoSlice, "no-slice", false, "Disable supervisor-mode work-package slicing")

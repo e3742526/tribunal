@@ -172,6 +172,16 @@ Relay mode runs a cost-aware three-agent pipeline: read-only scout reconnaissanc
 tagteam --relay "add OAuth login"
 ```
 
+Relay mode is a full-run workflow. It does not currently have a review-only
+variant: `tagteam review` remains adversary-only and does not run scout or
+supervisor relay steps.
+
+For relay mode, the scout should have a strong context window. A practical
+recommendation is `256k` or more, and ideally at least as much context as the
+relay coder and supervisor. Small-context scouts tend to lose most of the
+benefit of relay reconnaissance once repo instructions, retrieval evidence, and
+task context are included.
+
 Relay pre-scout `recon` uses bounded local retrieval by default before the
 scout model runs. Retrieval is host-owned, local-only, advisory, and does not
 use embeddings, network search, persistent indexes, daemons, or background
@@ -291,35 +301,6 @@ default_model = "openai/gpt-oss-120b"
 extra_headers = { "HTTP-Referer" = "https://github.com/your/repo", "X-Title" = "tagteam" }
 ```
 
-Purdue RCAC:
-
-```toml
-[adapters.openai_compatible]
-base_url = "https://genai.rcac.purdue.edu/api/v1"
-api_key_env = "PURDUE_API_KEY"
-```
-
-```bash
-cp .env_template .env
-```
-
-Then set:
-
-```bash
-PURDUE_API_KEY=your-key-here
-```
-
-If you do not set `default_model` in config, pass the provider's model name explicitly:
-
-```bash
-tagteam \
-  --mode adversarial \
-  -mc claude:sonnet \
-  -ma openai-compatible:<provider-model> \
-  --show-review \
-  "review this diff"
-```
-
 Equivalent environment overrides are available for `base_url`, `api_key_env`, model, and simple comma-separated headers via `TAGTEAM_OPENAI_COMPATIBLE_BASE_URL`, `TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV`, `TAGTEAM_OPENAI_COMPATIBLE_MODEL`, and `TAGTEAM_OPENAI_COMPATIBLE_HEADERS`.
 
 Review the current diff only:
@@ -361,6 +342,7 @@ Relevant `defaults` keys:
 - `scout` / `coder` / `supervisor` — `adapter[:model]` targets used in relay mode
 - `scout_mode` / `post_scout_mode` — relay scout task modes: `recon`, `lint`, `polish`, `tests`, or `risk`
 - `scout_retrieval` — enable bounded local retrieval for relay pre-scout `recon` (default `true`; disable with `--no-scout-retrieval` or `TAGTEAM_SCOUT_RETRIEVAL=false`)
+  Relay scouts work best with `256k+` context and ideally at least as much context as the relay coder/supervisor.
 - `supervisor_slicing` — split supervisor-mode work into bounded packages before implementation
 - `max_packages` — maximum package count for supervisor slicing
 - `package` — selected package ID to execute from the work plan
