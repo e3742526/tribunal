@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/google/shlex"
@@ -17,6 +18,7 @@ func DefaultConfig() Config {
 	supervisorSlicing := true
 	autoNextPackage := false
 	respectRepoInstructions := true
+	decisionMemory := false
 	return Config{
 		Defaults: DefaultsConfig{
 			Mode:                    "supervisor",
@@ -31,6 +33,10 @@ func DefaultConfig() Config {
 			MaxPackages:             5,
 			AutoNextPackage:         &autoNextPackage,
 			RespectRepoInstructions: &respectRepoInstructions,
+			DecisionMemory:          &decisionMemory,
+			MaxFindings:             50,
+			MaxOutputBytes:          2 * 1024 * 1024,
+			MaxWallTime:             "0s",
 			Rounds:                  2,
 			GitSafety:               "clean",
 		},
@@ -87,12 +93,12 @@ func LoadConfig(workdir string) (Config, []string, error) {
 	cfg := DefaultConfig()
 	sources := []string{"built-in defaults"}
 
-	loadedDotEnv, err := loadDotEnv(workdir)
+	dotEnv, loadedDotEnv, err := loadDotEnv(workdir)
 	if err != nil {
 		return Config{}, nil, err
 	}
 	if loadedDotEnv {
-		sources = append(sources, filepath.Join(workdir, ".env"))
+		cfg.EnvOverlay = dotEnv
 	}
 
 	userPath, err := userConfigPath()
@@ -114,61 +120,132 @@ func LoadConfig(workdir string) (Config, []string, error) {
 		sources = append(sources, repoPath)
 	}
 
-	mergeEnvConfig(&cfg)
-	if hasTagteamEnv() {
+	mergeEnvConfig(&cfg, cfg.EnvOverlay)
+	if loadedDotEnv {
+		sources = append(sources, filepath.Join(workdir, ".env"))
+	}
+	if hasTagteamEnv(nil) {
 		sources = append(sources, "TAGTEAM_* env")
 	}
 
 	return cfg, sources, nil
 }
 
-func loadDotEnv(workdir string) (bool, error) {
+func loadDotEnv(workdir string) (map[string]string, bool, error) {
 	path := filepath.Join(workdir, ".env")
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return nil, false, nil
 		}
-		return false, fmt.Errorf("open %s: %w", path, err)
+		return nil, false, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer file.Close()
 
+	values := map[string]string{}
 	scanner := bufio.NewScanner(file)
 	lineNo := 0
-	loaded := false
 	for scanner.Scan() {
 		lineNo++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		key, value, ok, err := parseDotEnvLine(path, lineNo, scanner.Text())
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
 			continue
 		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return false, fmt.Errorf("parse %s:%d: expected KEY=VALUE", path, lineNo)
-		}
-		key = strings.TrimSpace(key)
-		if key == "" {
-			return false, fmt.Errorf("parse %s:%d: empty environment variable name", path, lineNo)
-		}
+		// Shell exports are explicit user state and always win over the
+		// repo-local convenience overlay.
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		if unquoted, err := strconv.Unquote(value); err == nil {
-			value = unquoted
-		}
-		if err := os.Setenv(key, value); err != nil {
-			return false, fmt.Errorf("set %s from %s:%d: %w", key, path, lineNo, err)
-		}
-		loaded = true
+		values[key] = value
 	}
 	if err := scanner.Err(); err != nil {
-		return false, fmt.Errorf("read %s: %w", path, err)
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
 	}
-	return loaded, nil
+	return values, len(values) > 0, nil
+}
+
+func parseDotEnvLine(path string, lineNo int, raw string) (string, string, bool, error) {
+	line := strings.TrimSpace(raw)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", false, nil
+	}
+	if strings.HasPrefix(line, "export ") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+	}
+	key, value, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", "", false, fmt.Errorf("parse %s:%d: expected KEY=VALUE", path, lineNo)
+	}
+	key = strings.TrimSpace(key)
+	if !validEnvName(key) {
+		return "", "", false, fmt.Errorf("parse %s:%d: invalid environment variable name %q", path, lineNo, key)
+	}
+	value = strings.TrimSpace(stripDotEnvInlineComment(value))
+	if value == "" {
+		return key, "", true, nil
+	}
+	switch {
+	case strings.HasPrefix(value, "'"):
+		if !strings.HasSuffix(value, "'") || len(value) == 1 {
+			return "", "", false, fmt.Errorf("parse %s:%d: unterminated single-quoted value", path, lineNo)
+		}
+		return key, value[1 : len(value)-1], true, nil
+	case strings.HasPrefix(value, `"`):
+		unquoted, err := strconv.Unquote(value)
+		if err != nil {
+			return "", "", false, fmt.Errorf("parse %s:%d: invalid double-quoted value: %w", path, lineNo, err)
+		}
+		return key, unquoted, true, nil
+	default:
+		return key, strings.TrimSpace(value), true, nil
+	}
+}
+
+func validEnvName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func stripDotEnvInlineComment(value string) string {
+	inSingle := false
+	inDouble := false
+	escaped := false
+	for i, r := range value {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inDouble && r == '\\' {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '#':
+			if !inSingle && !inDouble && (i == 0 || value[i-1] == ' ' || value[i-1] == '\t') {
+				return value[:i]
+			}
+		}
+	}
+	return value
 }
 
 func userConfigPath() (string, error) {
@@ -238,6 +315,18 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.RespectRepoInstructions != nil {
 		dst.Defaults.RespectRepoInstructions = src.Defaults.RespectRepoInstructions
 	}
+	if src.Defaults.DecisionMemory != nil {
+		dst.Defaults.DecisionMemory = src.Defaults.DecisionMemory
+	}
+	if src.Defaults.MaxFindings != 0 {
+		dst.Defaults.MaxFindings = src.Defaults.MaxFindings
+	}
+	if src.Defaults.MaxOutputBytes != 0 {
+		dst.Defaults.MaxOutputBytes = src.Defaults.MaxOutputBytes
+	}
+	if src.Defaults.MaxWallTime != "" {
+		dst.Defaults.MaxWallTime = src.Defaults.MaxWallTime
+	}
 	if src.Defaults.Rounds != 0 {
 		dst.Defaults.Rounds = src.Defaults.Rounds
 	}
@@ -291,6 +380,18 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.RespectRepoInstructions != nil {
 				current.RespectRepoInstructions = profile.RespectRepoInstructions
+			}
+			if profile.DecisionMemory != nil {
+				current.DecisionMemory = profile.DecisionMemory
+			}
+			if profile.MaxFindings != 0 {
+				current.MaxFindings = profile.MaxFindings
+			}
+			if profile.MaxOutputBytes != 0 {
+				current.MaxOutputBytes = profile.MaxOutputBytes
+			}
+			if profile.MaxWallTime != "" {
+				current.MaxWallTime = profile.MaxWallTime
 			}
 			if profile.Rounds != 0 {
 				current.Rounds = profile.Rounds
@@ -354,7 +455,7 @@ func mergeConfig(dst *Config, src Config) {
 	}
 }
 
-func hasTagteamEnv() bool {
+func hasTagteamEnv(overlay map[string]string) bool {
 	for _, key := range []string{
 		"TAGTEAM_MODE",
 		"TAGTEAM_CODER",
@@ -369,6 +470,10 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_PACKAGE",
 		"TAGTEAM_AUTO_NEXT_PACKAGE",
 		"TAGTEAM_RESPECT_REPO_INSTRUCTIONS",
+		"TAGTEAM_DECISION_MEMORY",
+		"TAGTEAM_MAX_FINDINGS",
+		"TAGTEAM_MAX_OUTPUT_BYTES",
+		"TAGTEAM_MAX_WALL_TIME",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
 		"TAGTEAM_GIT_SAFETY",
@@ -382,62 +487,86 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_OPENAI_COMPATIBLE_HEADERS",
 		"TAGTEAM_OPENAI_COMPATIBLE_ARGS",
 	} {
-		if _, ok := os.LookupEnv(key); ok {
-			return true
+		if overlay != nil {
+			if _, ok := overlay[key]; ok {
+				return true
+			}
+		} else {
+			if _, ok := os.LookupEnv(key); ok {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func mergeEnvConfig(cfg *Config) {
+func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	legacyRoleEnvSet := false
-	if value := os.Getenv("TAGTEAM_CODER"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODER"); ok {
 		cfg.Defaults.Coder = value
 		legacyRoleEnvSet = true
 	}
-	if value := os.Getenv("TAGTEAM_ADVERSARY"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_ADVERSARY"); ok {
 		cfg.Defaults.Adversary = value
 		legacyRoleEnvSet = true
 	}
-	if value := os.Getenv("TAGTEAM_WORKER"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_WORKER"); ok {
 		cfg.Defaults.Worker = value
 	}
-	if value := os.Getenv("TAGTEAM_SCOUT"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT"); ok {
 		cfg.Defaults.Scout = value
 	}
-	if value := os.Getenv("TAGTEAM_SCOUT_MODE"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_MODE"); ok {
 		cfg.Defaults.ScoutMode = value
 	}
-	if value := os.Getenv("TAGTEAM_POST_SCOUT_MODE"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_POST_SCOUT_MODE"); ok {
 		cfg.Defaults.PostScoutMode = value
 	}
-	if value := os.Getenv("TAGTEAM_SUPERVISOR"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SUPERVISOR"); ok {
 		cfg.Defaults.Supervisor = value
 	}
-	if value := os.Getenv("TAGTEAM_SUPERVISOR_SLICING"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SUPERVISOR_SLICING"); ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Defaults.SupervisorSlicing = &parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_MAX_PACKAGES"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_PACKAGES"); ok {
 		if maxPackages, err := strconv.Atoi(value); err == nil && maxPackages > 0 {
 			cfg.Defaults.MaxPackages = maxPackages
 		}
 	}
-	if value := os.Getenv("TAGTEAM_PACKAGE"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_PACKAGE"); ok {
 		cfg.Defaults.Package = value
 	}
-	if value := os.Getenv("TAGTEAM_AUTO_NEXT_PACKAGE"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_AUTO_NEXT_PACKAGE"); ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Defaults.AutoNextPackage = &parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_RESPECT_REPO_INSTRUCTIONS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_RESPECT_REPO_INSTRUCTIONS"); ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Defaults.RespectRepoInstructions = &parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_MODE"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_DECISION_MEMORY"); ok {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.Defaults.DecisionMemory = &parsed
+		}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_FINDINGS"); ok {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			cfg.Defaults.MaxFindings = parsed
+		}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_OUTPUT_BYTES"); ok {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil && parsed > 0 {
+			cfg.Defaults.MaxOutputBytes = parsed
+		}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_WALL_TIME"); ok {
+		cfg.Defaults.MaxWallTime = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MODE"); ok {
 		cfg.Defaults.Mode = value
 	} else if legacyRoleEnvSet {
 		// TAGTEAM_CODER/TAGTEAM_ADVERSARY predate TAGTEAM_MODE and the
@@ -446,54 +575,73 @@ func mergeEnvConfig(cfg *Config) {
 		// Defaults.Worker/Defaults.Supervisor.
 		cfg.Defaults.Mode = string(ModeAdversarial)
 	}
-	if value := os.Getenv("TAGTEAM_ROUNDS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_ROUNDS"); ok {
 		if rounds, err := strconv.Atoi(value); err == nil && rounds > 0 {
 			cfg.Defaults.Rounds = rounds
 		}
 	}
-	if value := os.Getenv("TAGTEAM_TEST"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_TEST"); ok {
 		cfg.Defaults.Test = value
 	}
-	if value := os.Getenv("TAGTEAM_GIT_SAFETY"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_GIT_SAFETY"); ok {
 		cfg.Defaults.GitSafety = value
 	}
-	if value := os.Getenv("TAGTEAM_CODEX_ARGS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODEX_ARGS"); ok {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.Codex.ExtraArgs = parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_CLAUDE_ARGS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CLAUDE_ARGS"); ok {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.Claude.ExtraArgs = parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_AGY_ARGS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_AGY_ARGS"); ok {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.Agy.ExtraArgs = parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_GOSLING_ARGS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_GOSLING_ARGS"); ok {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.Gosling.ExtraArgs = parsed
 		}
 	}
-	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_OPENAI_COMPATIBLE_BASE_URL"); ok {
 		cfg.Adapters.OpenAICompatible.BaseURL = value
 	}
-	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV"); ok {
 		cfg.Adapters.OpenAICompatible.APIKeyEnv = value
 	}
-	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_MODEL"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_OPENAI_COMPATIBLE_MODEL"); ok {
 		cfg.Adapters.OpenAICompatible.DefaultModel = value
 	}
-	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_HEADERS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_OPENAI_COMPATIBLE_HEADERS"); ok {
 		cfg.Adapters.OpenAICompatible.ExtraHeaders = parseHeaderPairs(value)
 	}
-	if value := os.Getenv("TAGTEAM_OPENAI_COMPATIBLE_ARGS"); value != "" {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_OPENAI_COMPATIBLE_ARGS"); ok {
 		if parsed, err := shlex.Split(value); err == nil {
 			cfg.Adapters.OpenAICompatible.ExtraArgs = parsed
 		}
 	}
+}
+
+func envLookup(overlay map[string]string, key string) (string, bool) {
+	if value, ok := os.LookupEnv(key); ok {
+		return value, true
+	}
+	if overlay != nil {
+		value, ok := overlay[key]
+		return value, ok
+	}
+	return "", false
+}
+
+func envLookupNonEmpty(overlay map[string]string, key string) (string, bool) {
+	value, ok := envLookup(overlay, key)
+	if !ok || value == "" {
+		return "", false
+	}
+	return value, true
 }
 
 func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[string]bool, prompt string) (RunOptions, error) {
@@ -516,6 +664,20 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	respectRepoInstructions := true
 	if cfg.Defaults.RespectRepoInstructions != nil {
 		respectRepoInstructions = *cfg.Defaults.RespectRepoInstructions
+	}
+	decisionMemory := false
+	if cfg.Defaults.DecisionMemory != nil {
+		decisionMemory = *cfg.Defaults.DecisionMemory
+	}
+	maxFindings := cfg.Defaults.MaxFindings
+	maxOutputBytes := cfg.Defaults.MaxOutputBytes
+	var maxWallTime time.Duration
+	if strings.TrimSpace(cfg.Defaults.MaxWallTime) != "" {
+		parsed, err := time.ParseDuration(cfg.Defaults.MaxWallTime)
+		if err != nil {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse max_wall_time: %w", err)}
+		}
+		maxWallTime = parsed
 	}
 
 	var profile ProfileConfig
@@ -571,6 +733,22 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.RespectRepoInstructions != nil {
 			respectRepoInstructions = *profile.RespectRepoInstructions
+		}
+		if profile.DecisionMemory != nil {
+			decisionMemory = *profile.DecisionMemory
+		}
+		if profile.MaxFindings != 0 {
+			maxFindings = profile.MaxFindings
+		}
+		if profile.MaxOutputBytes != 0 {
+			maxOutputBytes = profile.MaxOutputBytes
+		}
+		if strings.TrimSpace(profile.MaxWallTime) != "" {
+			parsed, err := time.ParseDuration(profile.MaxWallTime)
+			if err != nil {
+				return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse profile max_wall_time: %w", err)}
+			}
+			maxWallTime = parsed
 		}
 	}
 	if changed["mode"] {
@@ -788,6 +966,18 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["no-repo-instructions"] {
 		respectRepoInstructions = false
 	}
+	if changed["decision-memory"] {
+		decisionMemory = flags.DecisionMemory
+	}
+	if changed["max-findings"] {
+		maxFindings = flags.MaxFindings
+	}
+	if changed["max-output-bytes"] {
+		maxOutputBytes = flags.MaxOutputBytes
+	}
+	if changed["max-wall-time"] {
+		maxWallTime = flags.MaxWallTime
+	}
 
 	if changed["rounds"] {
 		rounds = flags.Rounds
@@ -823,6 +1013,12 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if maxPackages > 20 {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-packages must be <= 20")}
+	}
+	if maxFindings <= 0 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-findings must be > 0")}
+	}
+	if maxOutputBytes <= 0 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-output-bytes must be > 0")}
 	}
 
 	editorLabel, reviewerLabel := roleLabels(mode)
@@ -902,6 +1098,10 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		Package:                   strings.TrimSpace(packageID),
 		AutoNextPackage:           autoNextPackage,
 		RespectRepoInstructions:   respectRepoInstructions,
+		DecisionMemory:            decisionMemory,
+		MaxFindings:               maxFindings,
+		MaxOutputBytes:            maxOutputBytes,
+		MaxWallTime:               maxWallTime,
 		Rounds:                    rounds,
 		TestCmd:                   testCmd,
 		NoTest:                    flags.NoTest,
@@ -920,6 +1120,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		AgyArgs:                   agyArgs,
 		GoslingArgs:               goslingArgs,
 		OpenAICompatibleArgs:      openAICompatibleArgs,
+		EnvOverlay:                cloneStringMap(cfg.EnvOverlay),
 		ConfigSources:             sources,
 	}, nil
 }

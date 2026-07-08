@@ -80,7 +80,7 @@ Each vendor CLI adapter (`codex`, `claude`, `agy`, `gosling`, etc.) must already
 
 This note applies to the vendor CLI adapters; the separate `openai-compatible` adapter uses its documented `api_key_env` setting.
 
-`tagteam` also reads a repo-local `.env` file from the selected workdir at startup. It only fills variables that are not already set in your shell, so exported environment variables still take precedence. A starter template is included as [`.env_template`](/Users/eric/Documents/team-cli/.env_template:1).
+`tagteam` also reads a repo-local `.env` file from the selected workdir as a scoped overlay. It does not mutate the global process environment; exported shell variables still take precedence, and `.env` values are passed only to tagteam's config resolver and invoked adapters/tests. A starter template is included as [`.env_template`](/Users/eric/Documents/team-cli/.env_template:1).
 
 ## Compatibility Risks
 
@@ -272,6 +272,35 @@ default_model = "openai/gpt-oss-120b"
 extra_headers = { "HTTP-Referer" = "https://github.com/your/repo", "X-Title" = "tagteam" }
 ```
 
+Purdue RCAC:
+
+```toml
+[adapters.openai_compatible]
+base_url = "https://genai.rcac.purdue.edu/api/v1"
+api_key_env = "PURDUE_API_KEY"
+```
+
+```bash
+cp .env_template .env
+```
+
+Then set:
+
+```bash
+PURDUE_API_KEY=your-key-here
+```
+
+If you do not set `default_model` in config, pass the provider's model name explicitly:
+
+```bash
+tagteam \
+  --mode adversarial \
+  -mc claude:sonnet \
+  -ma openai-compatible:<provider-model> \
+  --show-review \
+  "review this diff"
+```
+
 Equivalent environment overrides are available for `base_url`, `api_key_env`, model, and simple comma-separated headers via `TAGTEAM_OPENAI_COMPATIBLE_BASE_URL`, `TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV`, `TAGTEAM_OPENAI_COMPATIBLE_MODEL`, and `TAGTEAM_OPENAI_COMPATIBLE_HEADERS`.
 
 Review the current diff only:
@@ -290,9 +319,9 @@ tagteam fix
 
 Configuration precedence is:
 
-`flags > TAGTEAM_* env > repo .tagteam.toml > user config > built-in defaults`
+`flags > shell TAGTEAM_* env > workdir .env TAGTEAM_* overlay > repo .tagteam.toml > user config > built-in defaults`
 
-If a `.env` file exists in the selected workdir, `tagteam` loads it before reading `TAGTEAM_*` or adapter-specific environment variables. `.env` is a convenience source for local development; explicit shell exports still win.
+If a `.env` file exists in the selected workdir, `tagteam` parses it as a small, line-oriented dotenv subset: `KEY=VALUE`, optional `export`, inline comments outside quotes, single-quoted raw values, and double-quoted escape sequences such as `\n`. `.env` is a convenience source for local development; it is not a full shell parser, and explicit shell exports still win.
 
 User config path:
 

@@ -46,6 +46,8 @@ func ParseMode(raw string) (Mode, error) {
 }
 
 const (
+	ArtifactSchemaVersion = 1
+
 	ExitSuccess          = 0
 	ExitBlockingFindings = 1
 	ExitTestsFailed      = 2
@@ -123,21 +125,24 @@ type VersionInfo struct {
 }
 
 type Request struct {
-	Context      context.Context
-	Prompt       string
-	SystemPrompt string
-	Model        string
-	Workdir      string
-	RunDir       string
-	OutputPath   string
-	SchemaPath   string
-	Timeout      time.Duration
-	Passthrough  []string
-	ResumeID     string
-	Stdin        []byte
-	Phase        string
-	Quiet        bool
-	Verbose      bool
+	Context        context.Context
+	Prompt         string
+	SystemPrompt   string
+	EnvOverlay     map[string]string
+	Model          string
+	Workdir        string
+	RunDir         string
+	OutputPath     string
+	SchemaPath     string
+	Timeout        time.Duration
+	MaxOutputBytes int64
+	Passthrough    []string
+	ResumeID       string
+	Stdin          []byte
+	InputMode      string
+	Phase          string
+	Quiet          bool
+	Verbose        bool
 }
 
 type Adapter interface {
@@ -155,6 +160,7 @@ type DirectAdapter interface {
 type CommandSpec struct {
 	Argv   []string `json:"argv"`
 	Dir    string   `json:"dir"`
+	Env    []string `json:"env,omitempty"`
 	Stdin  []byte   `json:"-"`
 	Output string   `json:"output"`
 }
@@ -170,6 +176,7 @@ type Result struct {
 }
 
 type WorkPlan struct {
+	SchemaVersion   int           `json:"schema_version,omitempty"`
 	Summary         string        `json:"summary"`
 	Packages        []WorkPackage `json:"packages"`
 	SelectedPackage string        `json:"selected_package"`
@@ -283,6 +290,7 @@ func (p WorkPlan) RemainingPackageTitles() []string {
 }
 
 type Scout struct {
+	SchemaVersion     int         `json:"schema_version,omitempty"`
 	Mode              string      `json:"mode,omitempty"`
 	Summary           string      `json:"summary,omitempty"`
 	RelevantFiles     []string    `json:"relevant_files"`
@@ -303,6 +311,7 @@ type ScoutItem struct {
 }
 
 type Review struct {
+	SchemaVersion   int       `json:"schema_version,omitempty"`
 	Verdict         string    `json:"verdict"`
 	Summary         string    `json:"summary"`
 	Findings        []Finding `json:"findings"`
@@ -339,6 +348,9 @@ func (r Review) OnlyMinorOrNit() bool {
 }
 
 func (r Review) Validate() error {
+	if r.SchemaVersion != 0 && r.SchemaVersion != ArtifactSchemaVersion {
+		return fmt.Errorf("unsupported review schema_version %d", r.SchemaVersion)
+	}
 	if r.Verdict != "pass" && r.Verdict != "needs_changes" {
 		return fmt.Errorf("invalid verdict %q", r.Verdict)
 	}
@@ -386,9 +398,10 @@ func ParseRoleTarget(raw string) (RoleTarget, error) {
 }
 
 type Config struct {
-	Defaults DefaultsConfig           `toml:"defaults"`
-	Profiles map[string]ProfileConfig `toml:"profiles"`
-	Adapters AdapterConfigSet         `toml:"adapters"`
+	Defaults   DefaultsConfig           `toml:"defaults"`
+	Profiles   map[string]ProfileConfig `toml:"profiles"`
+	Adapters   AdapterConfigSet         `toml:"adapters"`
+	EnvOverlay map[string]string        `toml:"-"`
 }
 
 type DefaultsConfig struct {
@@ -405,6 +418,10 @@ type DefaultsConfig struct {
 	Package                 string `toml:"package"`
 	AutoNextPackage         *bool  `toml:"auto_next_package"`
 	RespectRepoInstructions *bool  `toml:"respect_repo_instructions"`
+	DecisionMemory          *bool  `toml:"decision_memory"`
+	MaxFindings             int    `toml:"max_findings"`
+	MaxOutputBytes          int64  `toml:"max_output_bytes"`
+	MaxWallTime             string `toml:"max_wall_time"`
 	Rounds                  int    `toml:"rounds"`
 	Test                    string `toml:"test"`
 	GitSafety               string `toml:"git_safety"`
@@ -424,6 +441,10 @@ type ProfileConfig struct {
 	Package                 string `toml:"package"`
 	AutoNextPackage         *bool  `toml:"auto_next_package"`
 	RespectRepoInstructions *bool  `toml:"respect_repo_instructions"`
+	DecisionMemory          *bool  `toml:"decision_memory"`
+	MaxFindings             int    `toml:"max_findings"`
+	MaxOutputBytes          int64  `toml:"max_output_bytes"`
+	MaxWallTime             string `toml:"max_wall_time"`
 	Rounds                  int    `toml:"rounds"`
 	Test                    string `toml:"test"`
 }
@@ -488,6 +509,10 @@ type FlagInputs struct {
 	AutoNextPackage         bool
 	RespectRepoInstructions bool
 	NoRepoInstructions      bool
+	DecisionMemory          bool
+	MaxFindings             int
+	MaxOutputBytes          int64
+	MaxWallTime             time.Duration
 	Profile                 string
 	Workdir                 string
 	Rounds                  int
@@ -545,6 +570,10 @@ type RunOptions struct {
 	Package                   string
 	AutoNextPackage           bool
 	RespectRepoInstructions   bool
+	DecisionMemory            bool
+	MaxFindings               int
+	MaxOutputBytes            int64
+	MaxWallTime               time.Duration
 	Rounds                    int
 	TestCmd                   string
 	NoTest                    bool
@@ -563,12 +592,14 @@ type RunOptions struct {
 	AgyArgs                   []string
 	GoslingArgs               []string
 	OpenAICompatibleArgs      []string
+	EnvOverlay                map[string]string
 	ConfigSources             []string
 	Baseline                  string
 	SkipDirtyCheck            bool
 }
 
 type Meta struct {
+	SchemaVersion int               `json:"schema_version"`
 	RunID         string            `json:"run_id"`
 	Workdir       string            `json:"workdir"`
 	Baseline      string            `json:"baseline"`
@@ -596,19 +627,21 @@ type DiffFile struct {
 }
 
 type DiffFilesMetadata struct {
-	Baseline    string     `json:"baseline"`
-	Head        string     `json:"head"`
-	GeneratedAt time.Time  `json:"generated_at"`
-	DiffSHA256  string     `json:"diff_sha256"`
-	Files       []DiffFile `json:"files"`
+	SchemaVersion int        `json:"schema_version"`
+	Baseline      string     `json:"baseline"`
+	Head          string     `json:"head"`
+	GeneratedAt   time.Time  `json:"generated_at"`
+	DiffSHA256    string     `json:"diff_sha256"`
+	Files         []DiffFile `json:"files"`
 }
 
 type FinalRun struct {
-	RunID    string `json:"run_id"`
-	RunDir   string `json:"run_dir"`
-	Workdir  string `json:"workdir"`
-	Baseline string `json:"baseline"`
-	Mode     Mode   `json:"mode,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
+	RunID         string `json:"run_id"`
+	RunDir        string `json:"run_dir"`
+	Workdir       string `json:"workdir"`
+	Baseline      string `json:"baseline"`
+	Mode          Mode   `json:"mode,omitempty"`
 	// Coder persists the resolved implementation target used for this run.
 	// Adversary persists the resolved review target for reviewed modes; it is
 	// empty in solo mode. `tagteam fix` uses these saved targets to resume
@@ -624,7 +657,9 @@ type FinalRun struct {
 	RemainingPackages []string           `json:"remaining_packages,omitempty"`
 	Verdict           string             `json:"verdict"`
 	Summary           string             `json:"summary"`
+	DegradedReason    string             `json:"degraded_reason,omitempty"`
 	ExitCode          int                `json:"exit_code"`
+	Caps              RunCaps            `json:"caps,omitempty"`
 	RoundsRequested   int                `json:"rounds_requested"`
 	RoundsCompleted   int                `json:"rounds_completed"`
 	ChangedFiles      []string           `json:"changed_files,omitempty"`
@@ -646,10 +681,11 @@ type FinalRun struct {
 }
 
 type RoundLimitReport struct {
-	Role    string `json:"role"`
-	Adapter string `json:"adapter"`
-	Path    string `json:"path,omitempty"`
-	Text    string `json:"text,omitempty"`
+	SchemaVersion int    `json:"schema_version,omitempty"`
+	Role          string `json:"role"`
+	Adapter       string `json:"adapter"`
+	Path          string `json:"path,omitempty"`
+	Text          string `json:"text,omitempty"`
 }
 
 type LatestRun struct {
@@ -659,6 +695,51 @@ type LatestRun struct {
 	Verdict   string    `json:"verdict"`
 	ExitCode  int       `json:"exit_code"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type RunCaps struct {
+	MaxFindings        int   `json:"max_findings,omitempty"`
+	MaxOutputBytes     int64 `json:"max_output_bytes,omitempty"`
+	TimeoutSeconds     int64 `json:"timeout_seconds,omitempty"`
+	MaxWallTimeSeconds int64 `json:"max_wall_time_seconds,omitempty"`
+}
+
+type DeliveryRecord struct {
+	SchemaVersion       int       `json:"schema_version"`
+	Role                Role      `json:"role"`
+	Adapter             string    `json:"adapter"`
+	Phase               string    `json:"phase,omitempty"`
+	PromptPath          string    `json:"prompt_path,omitempty"`
+	SchemaPath          string    `json:"schema_path,omitempty"`
+	StdinBytes          int       `json:"stdin_bytes,omitempty"`
+	StdinSHA256         string    `json:"stdin_sha256,omitempty"`
+	OutputPath          string    `json:"output_path,omitempty"`
+	RawOutputPath       string    `json:"raw_output_path,omitempty"`
+	ParsedPath          string    `json:"parsed_path,omitempty"`
+	ValidationErrorPath string    `json:"validation_error_path,omitempty"`
+	Argv                []string  `json:"argv,omitempty"`
+	Model               string    `json:"model,omitempty"`
+	Timeout             string    `json:"timeout,omitempty"`
+	InputMode           string    `json:"input_mode,omitempty"`
+	PromptInlined       bool      `json:"prompt_inlined"`
+	DryRun              bool      `json:"dry_run,omitempty"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at"`
+	Status              string    `json:"status"`
+	Error               string    `json:"error,omitempty"`
+}
+
+type RunState struct {
+	SchemaVersion    int       `json:"schema_version"`
+	RunID            string    `json:"run_id"`
+	Mode             Mode      `json:"mode,omitempty"`
+	Status           string    `json:"status"`
+	Phase            string    `json:"phase,omitempty"`
+	CurrentRound     int       `json:"current_round,omitempty"`
+	LatestDiffPath   string    `json:"latest_diff_path,omitempty"`
+	LatestReviewPath string    `json:"latest_review_path,omitempty"`
+	ExitCode         int       `json:"exit_code,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func (f FinalRun) MarshalJSON() ([]byte, error) {

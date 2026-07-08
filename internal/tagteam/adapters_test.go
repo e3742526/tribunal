@@ -289,7 +289,8 @@ func TestRegistryIncludesOpenAICompatibleAliases(t *testing.T) {
 }
 
 func TestOpenAICompatibleDetect(t *testing.T) {
-	missingBase := &OpenAICompatibleAdapter{APIKeyEnv: "FEATHERLESS_API_KEY"}
+	t.Setenv("TAGTEAM_TEST_MISSING_OPENAI_KEY", "")
+	missingBase := &OpenAICompatibleAdapter{APIKeyEnv: "TAGTEAM_TEST_MISSING_OPENAI_KEY"}
 	info, err := missingBase.Detect(context.Background())
 	if err != nil {
 		t.Fatalf("Detect() error = %v", err)
@@ -298,7 +299,7 @@ func TestOpenAICompatibleDetect(t *testing.T) {
 		t.Fatalf("missing base_url should not be runnable: %#v", info)
 	}
 
-	missingKey := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "FEATHERLESS_API_KEY"}
+	missingKey := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "TAGTEAM_TEST_MISSING_OPENAI_KEY"}
 	info, err = missingKey.Detect(context.Background())
 	if err != nil {
 		t.Fatalf("Detect() error = %v", err)
@@ -307,8 +308,8 @@ func TestOpenAICompatibleDetect(t *testing.T) {
 		t.Fatalf("missing API key env should be found but not runnable: %#v", info)
 	}
 
-	t.Setenv("FEATHERLESS_API_KEY", "test-key")
-	runnable := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "FEATHERLESS_API_KEY"}
+	t.Setenv("TAGTEAM_TEST_PRESENT_OPENAI_KEY", "test-key")
+	runnable := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1", APIKeyEnv: "TAGTEAM_TEST_PRESENT_OPENAI_KEY"}
 	info, err = runnable.Detect(context.Background())
 	if err != nil {
 		t.Fatalf("Detect() error = %v", err)
@@ -316,11 +317,23 @@ func TestOpenAICompatibleDetect(t *testing.T) {
 	if !info.Found || !info.Runnable || info.Auth != "ok" {
 		t.Fatalf("configured adapter should be runnable: %#v", info)
 	}
+
+	overlayRunnable := &OpenAICompatibleAdapter{
+		BaseURL:    "https://example.test/v1",
+		APIKeyEnv:  "TAGTEAM_TEST_OPENAI_KEY",
+		EnvOverlay: map[string]string{"TAGTEAM_TEST_OPENAI_KEY": "overlay-key"},
+	}
+	info, err = overlayRunnable.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() overlay error = %v", err)
+	}
+	if !info.Found || !info.Runnable || info.Auth != "ok" {
+		t.Fatalf("overlay-configured adapter should be runnable: %#v", info)
+	}
 }
 
 func TestOpenAICompatibleRunDirectBuildsChatCompletionsRequest(t *testing.T) {
-	t.Setenv("FEATHERLESS_API_KEY", "secret-token")
-	reviewJSON := `{"verdict":"pass","summary":"looks good","findings":[],"test_suggestions":[]}`
+	reviewJSON := `{"schema_version":1,"verdict":"pass","summary":"looks good","findings":[],"test_suggestions":[]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s", r.Method)
@@ -370,7 +383,7 @@ func TestOpenAICompatibleRunDirectBuildsChatCompletionsRequest(t *testing.T) {
 
 	adapter := &OpenAICompatibleAdapter{
 		BaseURL:      server.URL,
-		APIKeyEnv:    "FEATHERLESS_API_KEY",
+		APIKeyEnv:    "TAGTEAM_TEST_OPENAI_DIRECT_KEY",
 		DefaultModel: "default-model",
 		ExtraHeaders: map[string]string{"X-Test": "yes"},
 	}
@@ -378,6 +391,7 @@ func TestOpenAICompatibleRunDirectBuildsChatCompletionsRequest(t *testing.T) {
 		Context:      context.Background(),
 		Prompt:       "review prompt",
 		SystemPrompt: "system prompt",
+		EnvOverlay:   map[string]string{"TAGTEAM_TEST_OPENAI_DIRECT_KEY": "secret-token"},
 		Model:        "override-model",
 	})
 	if err != nil {
@@ -391,9 +405,40 @@ func TestOpenAICompatibleRunDirectBuildsChatCompletionsRequest(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleRunDirectWritesRawOnParseFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": ""}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	outputPath := filepath.Join(t.TempDir(), "scout-round-1.json")
+	adapter := &OpenAICompatibleAdapter{
+		BaseURL:      server.URL,
+		DefaultModel: "openai/gpt-oss-20b",
+	}
+	_, err := adapter.RunDirect(RoleScout, Request{
+		Context:    context.Background(),
+		Prompt:     "scout",
+		OutputPath: outputPath,
+	})
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !fileExists(outputPath + ".raw") {
+		t.Fatal("expected raw quarantine artifact")
+	}
+	if !fileExists(outputPath + ".validation-error.txt") {
+		t.Fatal("expected validation error artifact")
+	}
+}
+
 func TestOpenAICompatibleParseResultAcceptsMessageContent(t *testing.T) {
 	adapter := &OpenAICompatibleAdapter{}
-	raw := []byte(`{"choices":[{"message":{"content":"{\"verdict\":\"pass\",\"summary\":\"ok\",\"findings\":[],\"test_suggestions\":[]}"}}]}`)
+	raw := []byte(`{"choices":[{"message":{"content":"{\"schema_version\":1,\"verdict\":\"pass\",\"summary\":\"ok\",\"findings\":[],\"test_suggestions\":[]}"}}]}`)
 	result, err := adapter.ParseResult(RoleAdversary, raw)
 	if err != nil {
 		t.Fatalf("ParseResult() error = %v", err)
@@ -405,7 +450,7 @@ func TestOpenAICompatibleParseResultAcceptsMessageContent(t *testing.T) {
 
 func TestOpenAICompatibleParseResultAcceptsFencedJSON(t *testing.T) {
 	adapter := &OpenAICompatibleAdapter{}
-	raw := []byte("{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"verdict\\\":\\\"pass\\\",\\\"summary\\\":\\\"ok\\\",\\\"findings\\\":[],\\\"test_suggestions\\\":[]}\\n```\"}}]}")
+	raw := []byte("{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"schema_version\\\":1,\\\"verdict\\\":\\\"pass\\\",\\\"summary\\\":\\\"ok\\\",\\\"findings\\\":[],\\\"test_suggestions\\\":[]}\\n```\"}}]}")
 	result, err := adapter.ParseResult(RoleAdversary, raw)
 	if err != nil {
 		t.Fatalf("ParseResult() error = %v", err)
@@ -421,15 +466,35 @@ func TestOpenAICompatibleCoderRoleUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected coder role error")
 	}
-	if !strings.Contains(err.Error(), "review-only") {
+	if !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("error = %v", err)
 	}
 	_, err = adapter.RunDirect(RoleCoder, Request{})
 	if err == nil {
 		t.Fatal("expected direct coder role error")
 	}
-	if !strings.Contains(err.Error(), "use it as -ma, not -mc") {
+	if !strings.Contains(err.Error(), "not as coder/worker") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOpenAICompatibleScoutRoleSupported(t *testing.T) {
+	adapter := &OpenAICompatibleAdapter{BaseURL: "https://example.test/v1"}
+	spec, err := adapter.BuildCmd(RoleScout, Request{Workdir: "/repo", OutputPath: "/tmp/scout.json"})
+	if err != nil {
+		t.Fatalf("BuildCmd scout error = %v", err)
+	}
+	if spec.Argv[0] != "openai-compatible" || !strings.HasSuffix(spec.Argv[2], "/chat/completions") {
+		t.Fatalf("argv = %#v", spec.Argv)
+	}
+
+	raw := []byte(`{"choices":[{"message":{"content":"{\"schema_version\":1,\"mode\":\"recon\",\"summary\":\"mapped\",\"relevant_files\":[\"runner.go\"],\"likely_entry_points\":[],\"existing_patterns\":[],\"risks\":[],\"suggested_tests\":[],\"do_not_block\":true}"}}]}`)
+	result, err := adapter.ParseResult(RoleScout, raw)
+	if err != nil {
+		t.Fatalf("ParseResult scout error = %v", err)
+	}
+	if result.Scout == nil || result.Scout.Summary != "mapped" || result.Scout.SchemaVersion != 1 {
+		t.Fatalf("scout = %#v", result.Scout)
 	}
 }
 

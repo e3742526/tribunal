@@ -19,6 +19,7 @@ func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 		DefaultModel: cfg.Adapters.OpenAICompatible.DefaultModel,
 		ExtraHeaders: cfg.Adapters.OpenAICompatible.ExtraHeaders,
 		ExtraArgs:    opts.OpenAICompatibleArgs,
+		EnvOverlay:   opts.EnvOverlay,
 	}
 	return map[string]Adapter{
 		"codex": &CodexAdapter{
@@ -365,6 +366,7 @@ type OpenAICompatibleAdapter struct {
 	DefaultModel string
 	ExtraHeaders map[string]string
 	ExtraArgs    []string
+	EnvOverlay   map[string]string
 	HTTPClient   *http.Client
 }
 
@@ -386,7 +388,7 @@ func (a *OpenAICompatibleAdapter) Detect(ctx context.Context) (VersionInfo, erro
 		return VersionInfo{Found: false, Auth: "unknown", Hint: hint, Runnable: false}, nil
 	}
 	if a.APIKeyEnv != "" {
-		if strings.TrimSpace(os.Getenv(a.APIKeyEnv)) == "" {
+		if strings.TrimSpace(envValue(a.EnvOverlay, a.APIKeyEnv)) == "" {
 			return VersionInfo{Found: true, Version: "configured", Auth: "missing", Hint: hint, Runnable: false}, nil
 		}
 	}
@@ -394,7 +396,7 @@ func (a *OpenAICompatibleAdapter) Detect(ctx context.Context) (VersionInfo, erro
 }
 
 func (a *OpenAICompatibleAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
-	if role != RoleAdversary {
+	if role != RoleAdversary && role != RoleScout {
 		return nil, unsupportedOpenAICompatibleRoleError()
 	}
 	return &CommandSpec{
@@ -405,7 +407,7 @@ func (a *OpenAICompatibleAdapter) BuildCmd(role Role, req Request) (*CommandSpec
 }
 
 func (a *OpenAICompatibleAdapter) RunDirect(role Role, req Request) (Result, error) {
-	if role != RoleAdversary {
+	if role != RoleAdversary && role != RoleScout {
 		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: unsupportedOpenAICompatibleRoleError()}
 	}
 	model := req.Model
@@ -452,7 +454,10 @@ func (a *OpenAICompatibleAdapter) RunDirect(role Role, req Request) (Result, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKeyEnv != "" {
-		apiKey := strings.TrimSpace(os.Getenv(a.APIKeyEnv))
+		apiKey := strings.TrimSpace(envValue(req.EnvOverlay, a.APIKeyEnv))
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(envValue(a.EnvOverlay, a.APIKeyEnv))
+		}
 		if apiKey == "" {
 			return Result{}, &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("openai-compatible not runnable; try set %s", a.APIKeyEnv)}
 		}
@@ -480,12 +485,28 @@ func (a *OpenAICompatibleAdapter) RunDirect(role Role, req Request) (Result, err
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("openai-compatible request failed: status %d: %s", resp.StatusCode, redactSecrets(strings.TrimSpace(string(raw))))}
 	}
+	if req.OutputPath != "" {
+		_ = os.WriteFile(req.OutputPath+".raw", raw, 0o644)
+	}
 	result, err := a.ParseResult(role, raw)
 	if err != nil {
+		if req.OutputPath != "" {
+			_ = os.WriteFile(req.OutputPath+".validation-error.txt", []byte(err.Error()+"\n"), 0o644)
+		}
 		return Result{}, err
 	}
 	result.Command = []string{"POST", url}
 	return result, nil
+}
+
+func envValue(overlay map[string]string, key string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	if overlay != nil {
+		return overlay[key]
+	}
+	return ""
 }
 
 type openAICompatibleResponse struct {
@@ -498,7 +519,7 @@ type openAICompatibleResponse struct {
 }
 
 func (a *OpenAICompatibleAdapter) ParseResult(role Role, raw []byte) (Result, error) {
-	if role != RoleAdversary {
+	if role != RoleAdversary && role != RoleScout {
 		return Result{}, &OutputContractError{Err: unsupportedOpenAICompatibleRoleError()}
 	}
 	var envelope openAICompatibleResponse
@@ -514,6 +535,17 @@ func (a *OpenAICompatibleAdapter) ParseResult(role Role, raw []byte) (Result, er
 	}
 	if strings.TrimSpace(content) == "" {
 		return Result{}, &OutputContractError{Err: fmt.Errorf("openai-compatible response choice has no content")}
+	}
+	if role == RoleScout {
+		scout, err := parseScout([]byte(content))
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{
+			Raw:   raw,
+			Text:  scout.Summary,
+			Scout: scout,
+		}, nil
 	}
 	var review Review
 	reviewRaw := []byte(content)
@@ -537,7 +569,7 @@ func (a *OpenAICompatibleAdapter) ParseResult(role Role, raw []byte) (Result, er
 }
 
 func unsupportedOpenAICompatibleRoleError() error {
-	return fmt.Errorf("openai-compatible adapter is review-only in this version; use it as -ma, not -mc")
+	return fmt.Errorf("openai-compatible adapter is read-only in this version; use it as reviewer/adversary or scout, not as coder/worker")
 }
 
 var (

@@ -113,6 +113,15 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestResolveOptions_SoloFlagSelectsSoloWorker(t *testing.T) {
 	cfg := DefaultConfig()
 	opts, err := ResolveOptions(cfg, nil, FlagInputs{
@@ -666,7 +675,7 @@ func TestMergeEnvConfig_ModeWorkerSupervisor(t *testing.T) {
 	t.Setenv("TAGTEAM_SUPERVISOR", "claude:opus")
 
 	cfg := DefaultConfig()
-	mergeEnvConfig(&cfg)
+	mergeEnvConfig(&cfg, nil)
 
 	if cfg.Defaults.Mode != "adversarial" {
 		t.Fatalf("mode = %q", cfg.Defaults.Mode)
@@ -684,7 +693,7 @@ func TestMergeEnvConfig_LegacyCoderAdversaryImpliesAdversarialMode(t *testing.T)
 	t.Setenv("TAGTEAM_ADVERSARY", "claude:haiku")
 
 	cfg := DefaultConfig()
-	mergeEnvConfig(&cfg)
+	mergeEnvConfig(&cfg, nil)
 
 	if cfg.Defaults.Mode != string(ModeAdversarial) {
 		t.Fatalf("mode = %q, want adversarial", cfg.Defaults.Mode)
@@ -699,7 +708,7 @@ func TestMergeEnvConfig_ExplicitModeWinsOverLegacyCoderAdversary(t *testing.T) {
 	t.Setenv("TAGTEAM_CODER", "codex:gpt-5")
 
 	cfg := DefaultConfig()
-	mergeEnvConfig(&cfg)
+	mergeEnvConfig(&cfg, nil)
 
 	if cfg.Defaults.Mode != string(ModeSupervisor) {
 		t.Fatalf("mode = %q, want supervisor", cfg.Defaults.Mode)
@@ -714,7 +723,7 @@ func TestResolveOptions_LegacyEnvRoleSelectionStillWorksUnderSupervisorDefault(t
 	t.Setenv("TAGTEAM_ADVERSARY", "claude:haiku")
 
 	cfg := DefaultConfig()
-	mergeEnvConfig(&cfg)
+	mergeEnvConfig(&cfg, nil)
 
 	opts, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, map[string]bool{}, "ship it")
 	if err != nil {
@@ -732,12 +741,15 @@ func TestResolveOptions_LegacyEnvRoleSelectionStillWorksUnderSupervisorDefault(t
 }
 
 func TestHasTagteamEnv_RecognizesNewModeVars(t *testing.T) {
-	if hasTagteamEnv() {
-		t.Fatal("expected no TAGTEAM_* env vars set")
+	if hasTagteamEnv(map[string]string{}) {
+		t.Fatal("expected empty overlay to have no TAGTEAM_* env vars")
 	}
 	t.Setenv("TAGTEAM_MODE", "adversarial")
-	if !hasTagteamEnv() {
+	if !hasTagteamEnv(nil) {
 		t.Fatal("expected TAGTEAM_MODE to be recognized")
+	}
+	if !hasTagteamEnv(map[string]string{"TAGTEAM_MODE": "relay"}) {
+		t.Fatal("expected overlay TAGTEAM_MODE to be recognized")
 	}
 }
 
@@ -923,7 +935,7 @@ extra_args = ["--future"]
 	}
 }
 
-func TestLoadConfig_LoadsDotEnvIntoProcessAndConfig(t *testing.T) {
+func TestLoadConfig_LoadsDotEnvIntoOverlayAndConfig(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
 	t.Setenv("XDG_CONFIG_HOME", home)
@@ -931,26 +943,24 @@ func TestLoadConfig_LoadsDotEnvIntoProcessAndConfig(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dotEnv := []byte("FEATHERLESS_API_KEY=\"dotenv-key\"\nTAGTEAM_OPENAI_COMPATIBLE_BASE_URL=https://api.featherless.ai/v1\n")
+	dotEnv := []byte("TAGTEAM_TEST_DOTENV_KEY=\"dotenv-key\"\nTAGTEAM_OPENAI_COMPATIBLE_BASE_URL=https://api.featherless.ai/v1\n")
 	if err := os.WriteFile(filepath.Join(repo, ".env"), dotEnv, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = os.Unsetenv("FEATHERLESS_API_KEY")
-		_ = os.Unsetenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL")
-	})
-
 	cfg, sources, err := LoadConfig(repo)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := os.Getenv("FEATHERLESS_API_KEY"); got != "dotenv-key" {
-		t.Fatalf("FEATHERLESS_API_KEY = %q", got)
+	if got := os.Getenv("TAGTEAM_TEST_DOTENV_KEY"); got != "" {
+		t.Fatalf("TAGTEAM_TEST_DOTENV_KEY leaked into process env: %q", got)
+	}
+	if got := cfg.EnvOverlay["TAGTEAM_TEST_DOTENV_KEY"]; got != "dotenv-key" {
+		t.Fatalf("overlay TAGTEAM_TEST_DOTENV_KEY = %q", got)
 	}
 	if got := cfg.Adapters.OpenAICompatible.BaseURL; got != "https://api.featherless.ai/v1" {
 		t.Fatalf("base_url = %q", got)
 	}
-	if len(sources) < 2 || sources[1] != filepath.Join(repo, ".env") {
+	if !containsString(sources, filepath.Join(repo, ".env")) {
 		t.Fatalf("sources = %#v", sources)
 	}
 }
@@ -976,6 +986,43 @@ func TestLoadConfig_DotEnvDoesNotOverrideExistingEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_DotEnvParsesCommonForms(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dotEnv := []byte(strings.Join([]string{
+		"export TAGTEAM_MODE=adversarial # inline comment",
+		"SINGLE_QUOTED='value # not comment'",
+		`DOUBLE_QUOTED="line1\nline2"`,
+		"UNQUOTED=abc#kept",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(filepath.Join(repo, ".env"), dotEnv, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Defaults.Mode != "adversarial" {
+		t.Fatalf("mode = %q", cfg.Defaults.Mode)
+	}
+	if got := cfg.EnvOverlay["SINGLE_QUOTED"]; got != "value # not comment" {
+		t.Fatalf("single quoted = %q", got)
+	}
+	if got := cfg.EnvOverlay["DOUBLE_QUOTED"]; got != "line1\nline2" {
+		t.Fatalf("double quoted = %q", got)
+	}
+	if got := cfg.EnvOverlay["UNQUOTED"]; got != "abc#kept" {
+		t.Fatalf("unquoted = %q", got)
+	}
+}
+
 func TestMergeEnvConfig_OpenAICompatibleOverrides(t *testing.T) {
 	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL", "https://openrouter.ai/api/v1")
 	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV", "OPENROUTER_API_KEY")
@@ -984,7 +1031,7 @@ func TestMergeEnvConfig_OpenAICompatibleOverrides(t *testing.T) {
 	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_ARGS", "--future value")
 
 	cfg := DefaultConfig()
-	mergeEnvConfig(&cfg)
+	mergeEnvConfig(&cfg, nil)
 
 	got := cfg.Adapters.OpenAICompatible
 	if got.BaseURL != "https://openrouter.ai/api/v1" {

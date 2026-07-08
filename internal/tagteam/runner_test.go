@@ -27,6 +27,45 @@ func TestReviewValidation(t *testing.T) {
 	}
 }
 
+func TestApplyReviewCapsKeepsBlockingFindings(t *testing.T) {
+	findings := make([]Finding, 0, 51)
+	for i := 0; i < 50; i++ {
+		findings = append(findings, Finding{
+			Severity: "nit",
+			File:     "main.go",
+			Issue:    "minor issue",
+			Fix:      "adjust wording",
+		})
+	}
+	findings = append(findings, Finding{
+		Severity: "blocker",
+		File:     "main.go",
+		Issue:    "blocking bug",
+		Fix:      "fix the bug",
+	})
+
+	review := &Review{
+		Verdict:  "needs_changes",
+		Summary:  "review",
+		Findings: findings,
+	}
+
+	applyReviewCaps(review, 50)
+
+	if len(review.Findings) != 50 {
+		t.Fatalf("findings len = %d, want 50", len(review.Findings))
+	}
+	if review.Findings[0].Severity != "blocker" {
+		t.Fatalf("first finding severity = %q, want blocker", review.Findings[0].Severity)
+	}
+	if !review.HasBlockingFindings() {
+		t.Fatal("expected blocking findings to survive capping")
+	}
+	if got := (&App{}).computeExitCode(FinalRun{Review: review}); got != ExitBlockingFindings {
+		t.Fatalf("computeExitCode() = %d, want %d", got, ExitBlockingFindings)
+	}
+}
+
 func TestReviewSchemaRequiresAllFindingProperties(t *testing.T) {
 	var schema struct {
 		Properties struct {
@@ -48,6 +87,33 @@ func TestReviewSchemaRequiresAllFindingProperties(t *testing.T) {
 	for key := range schema.Properties.Findings.Items.Properties {
 		if !required[key] {
 			t.Fatalf("finding property %q is not required", key)
+		}
+	}
+}
+
+func TestRolePromptsDoNotLeakConflictingAuthority(t *testing.T) {
+	workerPrompts := []string{
+		BuildWorkerImplementPrompt("/repo", "ship it", "brief"),
+		BuildWorkerFixPrompt(2, "ship it", "diff", Review{Verdict: "needs_changes", Summary: "fix", Findings: []Finding{{Severity: "major", File: "main.go", Issue: "bug", Fix: "fix"}}}),
+	}
+	for _, prompt := range workerPrompts {
+		lower := strings.ToLower(prompt)
+		if strings.Contains(lower, "adversarial reviewer") || strings.Contains(lower, "adversary") {
+			t.Fatalf("supervisor-worker prompt leaked adversarial wording:\n%s", prompt)
+		}
+	}
+
+	scoutPrompt := strings.ToLower(BuildScoutPrompt("/repo", "ship it", "brief", "recon", "pre", "", ""))
+	for _, forbidden := range []string{"use \"pass\"", "needs_changes", "blocking findings", "produce blocking findings"} {
+		if strings.Contains(scoutPrompt, forbidden) {
+			t.Fatalf("scout prompt leaked reviewer authority %q:\n%s", forbidden, scoutPrompt)
+		}
+	}
+
+	coderPrompt := strings.ToLower(BuildCoderPrompt("/repo", "ship it"))
+	for _, forbidden := range []string{"you are read-only", "do not edit files"} {
+		if strings.Contains(coderPrompt, forbidden) {
+			t.Fatalf("coder prompt leaked read-only instruction %q:\n%s", forbidden, coderPrompt)
 		}
 	}
 }
@@ -232,6 +298,25 @@ func TestWithRepoInstructions_AppendsBundle(t *testing.T) {
 	}
 	if got := withRepoInstructions("base prompt", " "); got != "base prompt" {
 		t.Fatalf("empty repo instructions changed prompt: %q", got)
+	}
+}
+
+func TestMergeCommandEnvOverlayDoesNotOverrideShell(t *testing.T) {
+	t.Setenv("TAGTEAM_TEST_ENV", "shell")
+	env := mergeCommandEnv(map[string]string{
+		"TAGTEAM_TEST_ENV": "dotenv",
+		"TAGTEAM_NEW_ENV":  "overlay",
+	}, nil)
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, _ := strings.Cut(item, "=")
+		values[key] = value
+	}
+	if values["TAGTEAM_TEST_ENV"] != "shell" {
+		t.Fatalf("TAGTEAM_TEST_ENV = %q", values["TAGTEAM_TEST_ENV"])
+	}
+	if values["TAGTEAM_NEW_ENV"] != "overlay" {
+		t.Fatalf("TAGTEAM_NEW_ENV = %q", values["TAGTEAM_NEW_ENV"])
 	}
 }
 
@@ -622,14 +707,74 @@ func TestRunAdapter_WritesMissingTranscript(t *testing.T) {
 	}
 	_, err := app.runAdapter(context.Background(), adapter, RoleAdversary, Request{
 		Context:    context.Background(),
+		Prompt:     "review prompt",
+		RunDir:     tmp,
 		OutputPath: outputPath,
 		Timeout:    time.Second,
+		InputMode:  "inline",
 	}, false)
 	if err != nil {
 		t.Fatalf("runAdapter() error = %v", err)
 	}
 	if !fileExists(outputPath) {
 		t.Fatal("expected transcript file to be written")
+	}
+	if !fileExists(outputPath + ".raw") {
+		t.Fatal("expected raw output quarantine artifact")
+	}
+	if !fileExists(outputPath + ".parsed.json") {
+		t.Fatal("expected parsed output artifact")
+	}
+	deliveries, err := filepath.Glob(filepath.Join(tmp, "deliveries", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("delivery records = %v", deliveries)
+	}
+	var delivery DeliveryRecord
+	data, err := os.ReadFile(deliveries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &delivery); err != nil {
+		t.Fatal(err)
+	}
+	if delivery.SchemaVersion != ArtifactSchemaVersion || delivery.PromptPath == "" || delivery.OutputPath != outputPath || delivery.InputMode != "inline" {
+		t.Fatalf("delivery = %#v", delivery)
+	}
+}
+
+func TestRunAdapter_DirectAdapterRejectsOversizeBeforeWritingTranscript(t *testing.T) {
+	app := NewApp(DefaultConfig())
+	tmp := t.TempDir()
+	outputPath := filepath.Join(tmp, "adversary-round-1.json")
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) {
+			return &CommandSpec{
+				Argv: []string{"openai-compatible", "POST", "https://example.test/v1/chat/completions"},
+				Dir:  tmp,
+			}, nil
+		},
+		direct: func(role Role, req Request) (Result, error) {
+			raw := []byte(strings.Repeat("x", 32))
+			return Result{Raw: raw, Text: string(raw)}, nil
+		},
+	}
+	_, err := app.runAdapter(context.Background(), adapter, RoleAdversary, Request{
+		Context:        context.Background(),
+		Prompt:         "review prompt",
+		RunDir:         tmp,
+		OutputPath:     outputPath,
+		Timeout:        time.Second,
+		InputMode:      "inline",
+		MaxOutputBytes: 8,
+	}, false)
+	if err == nil {
+		t.Fatal("expected runAdapter() error")
+	}
+	if fileExists(outputPath) {
+		t.Fatal("expected transcript file to remain unwritten")
 	}
 }
 
@@ -667,6 +812,26 @@ func (f fakeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 }
 func (f fakeAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 	return f.parse(role, raw)
+}
+
+type fakeDirectAdapter struct {
+	build  func(role Role, req Request) (*CommandSpec, error)
+	direct func(role Role, req Request) (Result, error)
+}
+
+func (f fakeDirectAdapter) ID() string { return "fake-direct" }
+func (f fakeDirectAdapter) Detect(ctx context.Context) (VersionInfo, error) {
+	return VersionInfo{Found: true, Runnable: true}, nil
+}
+func (f fakeDirectAdapter) Capabilities() CapabilitySet { return CapabilitySet{} }
+func (f fakeDirectAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
+	return f.build(role, req)
+}
+func (f fakeDirectAdapter) ParseResult(role Role, raw []byte) (Result, error) {
+	return Result{}, nil
+}
+func (f fakeDirectAdapter) RunDirect(role Role, req Request) (Result, error) {
+	return f.direct(role, req)
 }
 
 func runGit(t *testing.T, repo string, args ...string) string {

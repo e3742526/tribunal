@@ -3,8 +3,12 @@ package tagteam
 const ReviewSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["verdict", "summary", "findings", "test_suggestions"],
+  "required": ["schema_version", "verdict", "summary", "findings", "test_suggestions"],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
     "verdict": {
       "type": "string",
       "enum": ["pass", "needs_changes"]
