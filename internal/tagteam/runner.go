@@ -42,6 +42,8 @@ type RelayContext struct {
 	Scout        Scout
 	PostScout    Scout
 	Instructions string
+	WorkPlan     *WorkPlan
+	WorkPackage  *WorkPackage
 }
 
 func NewApp(cfg Config) *App {
@@ -490,27 +492,82 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 
 	var brief string
 	var relay RelayContext
+	var workPlan *WorkPlan
+	var selectedPackage *WorkPackage
 	if opts.Mode == ModeSupervisor && initialReview == nil {
-		logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
-		briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
-		briefResult, err := a.runAdapter(ctx, reviewer, supervisorBriefRole(opts.SupervisorCanEdit), Request{
-			Context:    ctx,
-			Prompt:     BuildSupervisorBriefPrompt(opts.Workdir, opts.Prompt, opts.SupervisorCanEdit),
-			Model:      opts.Adversary.Model,
-			Workdir:    opts.Workdir,
-			RunDir:     runDir,
-			OutputPath: briefOutputPath,
-			Timeout:    opts.Timeout,
-			Phase:      fmt.Sprintf("supervisor brief %s", reviewer.ID()),
-			Quiet:      opts.Quiet,
-			Verbose:    opts.Verbose,
-		}, opts.DryRun)
-		if err != nil {
-			return final, err
+		if opts.SupervisorSlicing {
+			logProgress(opts, "supervisor slicing started adapter=%s max-packages=%d", reviewer.ID(), opts.MaxPackages)
+			planOutputPath := filepath.Join(runDir, "supervisor-work-plan.json")
+			var plan WorkPlan
+			var planCost float64
+			if opts.DryRun {
+				plan = syntheticWorkPlan(opts.Prompt, opts.Package)
+			} else {
+				planResult, err := a.runAdapter(ctx, reviewer, RoleSupervisor, Request{
+					Context:    ctx,
+					Prompt:     BuildSupervisorWorkPlanPrompt(opts.Workdir, opts.Prompt, opts.MaxPackages, opts.Package),
+					Model:      opts.Adversary.Model,
+					Workdir:    opts.Workdir,
+					RunDir:     runDir,
+					OutputPath: planOutputPath,
+					Timeout:    opts.Timeout,
+					Phase:      fmt.Sprintf("supervisor slicing %s", reviewer.ID()),
+					Quiet:      opts.Quiet,
+					Verbose:    opts.Verbose,
+				}, false)
+				if err != nil {
+					return final, err
+				}
+				parsed, err := parseWorkPlan([]byte(planResult.Text), opts.Package, opts.MaxPackages)
+				if err != nil {
+					return final, err
+				}
+				plan = parsed
+				planCost = planResult.CostUSD
+			}
+			pkg, ok := plan.Selected()
+			if !ok {
+				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("supervisor work plan has no selected package")}
+			}
+			if err := writeJSONWithNewline(planOutputPath, plan); err != nil {
+				return final, err
+			}
+			final.Costs[reviewerLabel] += planCost
+			workPlan = &plan
+			selectedPackage = &pkg
+			relay.WorkPlan = workPlan
+			relay.WorkPackage = selectedPackage
+			final.WorkPlan = workPlan
+			final.SelectedPackage = selectedPackage
+			final.RemainingPackages = plan.RemainingPackageTitles()
+			brief = BuildWorkPackageBrief(plan, pkg)
+			briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
+			if err := os.WriteFile(briefOutputPath, []byte(brief), 0o644); err != nil {
+				return final, err
+			}
+			logProgress(opts, "supervisor sliced task into %d packages; executing %s: %s", len(plan.Packages), pkg.ID, pkg.Title)
+		} else {
+			logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
+			briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
+			briefResult, err := a.runAdapter(ctx, reviewer, supervisorBriefRole(opts.SupervisorCanEdit), Request{
+				Context:    ctx,
+				Prompt:     BuildSupervisorBriefPrompt(opts.Workdir, opts.Prompt, opts.SupervisorCanEdit),
+				Model:      opts.Adversary.Model,
+				Workdir:    opts.Workdir,
+				RunDir:     runDir,
+				OutputPath: briefOutputPath,
+				Timeout:    opts.Timeout,
+				Phase:      fmt.Sprintf("supervisor brief %s", reviewer.ID()),
+				Quiet:      opts.Quiet,
+				Verbose:    opts.Verbose,
+			}, opts.DryRun)
+			if err != nil {
+				return final, err
+			}
+			final.Costs[reviewerLabel] += briefResult.CostUSD
+			brief = briefResult.Text
+			logProgress(opts, "supervisor brief completed output=%s", briefOutputPath)
 		}
-		final.Costs[reviewerLabel] += briefResult.CostUSD
-		brief = briefResult.Text
-		logProgress(opts, "supervisor brief completed output=%s", briefOutputPath)
 	}
 	if opts.Mode == ModeRelay && initialReview == nil {
 		scoutOutputPath := filepath.Join(runDir, "scout-round-1.json")
@@ -586,12 +643,15 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	var latestReview Review
 	var latestDiff string
 	var latestDiffArtifact DiffArtifact
+	implementSelectedPackage := initialReview == nil
 	for round := 1; round <= opts.Rounds; round++ {
 		logProgress(opts, "round %d/%d %s started adapter=%s", round, opts.Rounds, editorLabel, editor.ID())
 		var editorPrompt string
 		switch {
 		case round == 1 && initialReview == nil && opts.Mode == ModeRelay:
 			editorPrompt = BuildRelayCoderPrompt(opts.Workdir, opts.Prompt, relay.Brief, relay.Instructions, relay.Scout)
+		case implementSelectedPackage && opts.Mode == ModeSupervisor && selectedPackage != nil && workPlan != nil:
+			editorPrompt = BuildWorkerPackageImplementPrompt(opts.Workdir, opts.Prompt, *workPlan, *selectedPackage)
 		case round == 1 && initialReview == nil && opts.Mode == ModeSupervisor:
 			editorPrompt = BuildWorkerImplementPrompt(opts.Workdir, opts.Prompt, brief)
 		case round == 1 && initialReview == nil:
@@ -611,12 +671,15 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			}
 			if opts.Mode == ModeRelay {
 				editorPrompt = BuildRelayFixPrompt(round, opts.Prompt, diff, relay.Brief, relay.Instructions, relay.Scout, relay.PostScout, review)
+			} else if opts.Mode == ModeSupervisor && selectedPackage != nil {
+				editorPrompt = BuildWorkerPackageFixPrompt(round, opts.Prompt, diff, *selectedPackage, review)
 			} else if opts.Mode == ModeSupervisor {
 				editorPrompt = BuildWorkerFixPrompt(round, opts.Prompt, diff, review)
 			} else {
 				editorPrompt = BuildFixPrompt(round, opts.Prompt, diff, review)
 			}
 		}
+		implementSelectedPackage = false
 		editorOutputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.md", editorLabel, round))
 		editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
 			Context:      ctx,
@@ -710,13 +773,35 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		latestReview = *review
 
 		if review.Verdict == "pass" {
+			if opts.Mode == ModeSupervisor && opts.AutoNextPackage && workPlan != nil && selectedPackage != nil {
+				nextPackage, ok := nextWorkPackage(*workPlan, selectedPackage.ID)
+				if ok && round < opts.Rounds {
+					workPlan.SelectedPackage = nextPackage.ID
+					selectedPackage = &nextPackage
+					relay.WorkPlan = workPlan
+					relay.WorkPackage = selectedPackage
+					final.WorkPlan = workPlan
+					final.SelectedPackage = selectedPackage
+					final.RemainingPackages = workPlan.RemainingPackageTitles()
+					brief = BuildWorkPackageBrief(*workPlan, nextPackage)
+					implementSelectedPackage = true
+					logProgress(opts, "package %s passed; continuing to %s: %s", reviewPackageID(final.SelectedPackage), nextPackage.ID, nextPackage.Title)
+					continue
+				}
+			}
 			final.Verdict = "pass"
 			final.Summary = review.Summary
+			if len(final.RemainingPackages) > 0 {
+				final.Summary = appendRemainingPackagesSummary(final.Summary, final.RemainingPackages)
+			}
 			break
 		}
 		if review.OnlyMinorOrNit() {
 			final.Verdict = review.Verdict
 			final.Summary = review.Summary
+			if len(final.RemainingPackages) > 0 {
+				final.Summary = appendRemainingPackagesSummary(final.Summary, final.RemainingPackages)
+			}
 			break
 		}
 		if round == opts.Rounds {
@@ -824,6 +909,120 @@ func diffWithBaselineHeader(baseline, diff string) string {
 	return fmt.Sprintf("Baseline: %s\n\n%s", baseline, diff)
 }
 
+func parseWorkPlan(raw []byte, requestedPackage string, maxPackages int) (WorkPlan, error) {
+	var plan WorkPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		extracted, extractErr := extractJSONObject(raw)
+		if extractErr != nil {
+			return WorkPlan{}, &OutputContractError{Err: fmt.Errorf("decode work plan JSON: %w", err)}
+		}
+		if err := json.Unmarshal(extracted, &plan); err != nil {
+			return WorkPlan{}, &OutputContractError{Err: fmt.Errorf("decode work plan JSON: %w", err)}
+		}
+	}
+	if err := validateWorkPlan(&plan, requestedPackage, maxPackages); err != nil {
+		return WorkPlan{}, &OutputContractError{Err: err}
+	}
+	return plan, nil
+}
+
+func syntheticWorkPlan(prompt, requestedPackage string) WorkPlan {
+	selected := strings.TrimSpace(requestedPackage)
+	if selected == "" {
+		selected = "P1"
+	}
+	return WorkPlan{
+		Summary: "dry-run work package",
+		Packages: []WorkPackage{
+			{
+				ID:           selected,
+				Title:        "Dry-run package",
+				Goal:         strings.TrimSpace(prompt),
+				AllowedScope: []string{"."},
+				Acceptance:   []string{"dry-run"},
+				Validation:   []string{"dry-run"},
+			},
+		},
+		SelectedPackage: selected,
+		Defer:           []string{},
+	}
+}
+
+func validateWorkPlan(plan *WorkPlan, requestedPackage string, maxPackages int) error {
+	if strings.TrimSpace(plan.Summary) == "" {
+		return fmt.Errorf("work plan missing summary")
+	}
+	if len(plan.Packages) == 0 {
+		return fmt.Errorf("work plan has no packages")
+	}
+	if maxPackages > 0 && len(plan.Packages) > maxPackages {
+		return fmt.Errorf("work plan has %d packages, max is %d", len(plan.Packages), maxPackages)
+	}
+	seen := map[string]bool{}
+	for i := range plan.Packages {
+		pkg := &plan.Packages[i]
+		pkg.ID = strings.TrimSpace(pkg.ID)
+		if pkg.ID == "" {
+			return fmt.Errorf("package %d missing id", i)
+		}
+		if seen[pkg.ID] {
+			return fmt.Errorf("duplicate package id %q", pkg.ID)
+		}
+		seen[pkg.ID] = true
+		if strings.TrimSpace(pkg.Title) == "" {
+			return fmt.Errorf("package %s missing title", pkg.ID)
+		}
+		if strings.TrimSpace(pkg.Goal) == "" {
+			return fmt.Errorf("package %s missing goal", pkg.ID)
+		}
+		if len(pkg.Acceptance) == 0 {
+			return fmt.Errorf("package %s missing acceptance", pkg.ID)
+		}
+		if len(pkg.Validation) == 0 {
+			return fmt.Errorf("package %s missing validation", pkg.ID)
+		}
+	}
+	if strings.TrimSpace(plan.SelectedPackage) == "" {
+		plan.SelectedPackage = plan.Packages[0].ID
+	}
+	if requested := strings.TrimSpace(requestedPackage); requested != "" {
+		if !seen[requested] {
+			return fmt.Errorf("requested package %q not found in work plan", requested)
+		}
+		plan.SelectedPackage = requested
+	}
+	if !seen[plan.SelectedPackage] {
+		return fmt.Errorf("selected package %q not found in work plan", plan.SelectedPackage)
+	}
+	return nil
+}
+
+func nextWorkPackage(plan WorkPlan, currentID string) (WorkPackage, bool) {
+	for i, pkg := range plan.Packages {
+		if strings.TrimSpace(pkg.ID) == strings.TrimSpace(currentID) && i+1 < len(plan.Packages) {
+			return plan.Packages[i+1], true
+		}
+	}
+	return WorkPackage{}, false
+}
+
+func reviewPackageID(pkg *WorkPackage) string {
+	if pkg == nil {
+		return ""
+	}
+	return pkg.ID
+}
+
+func appendRemainingPackagesSummary(summary string, remaining []string) string {
+	if len(remaining) == 0 {
+		return summary
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = "Selected package completed."
+	}
+	return strings.TrimSpace(summary) + "\n\nRemaining packages not run: " + strings.Join(remaining, "; ")
+}
+
 func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runDir, schemaPath, prompt, baseline, diff, diffPath, testOutput string, relay RelayContext) (*Review, float64, string, error) {
 	_, reviewerLabel := roleLabels(opts.Mode)
 	outputLabel := reviewerLabel
@@ -843,6 +1042,8 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 	var reviewPrompt string
 	if opts.Mode == ModeRelay {
 		reviewPrompt = BuildRelaySupervisorReviewPrompt(prompt, baseline, relay.Brief, relay.Scout, relay.PostScout, relay.Instructions, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
+	} else if opts.Mode == ModeSupervisor && relay.WorkPlan != nil && relay.WorkPackage != nil {
+		reviewPrompt = BuildSupervisorPackageReviewPrompt(prompt, *relay.WorkPlan, *relay.WorkPackage, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
 	} else if opts.Mode == ModeSupervisor {
 		reviewPrompt = BuildSupervisorReviewPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
 	} else {

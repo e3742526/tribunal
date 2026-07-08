@@ -166,6 +166,56 @@ type Result struct {
 	Command   []string `json:"command,omitempty"`
 }
 
+type WorkPlan struct {
+	Summary         string        `json:"summary"`
+	Packages        []WorkPackage `json:"packages"`
+	SelectedPackage string        `json:"selected_package"`
+	Defer           []string      `json:"defer,omitempty"`
+}
+
+type WorkPackage struct {
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Goal         string   `json:"goal"`
+	AllowedScope []string `json:"allowed_scope"`
+	Acceptance   []string `json:"acceptance"`
+	Validation   []string `json:"validation"`
+}
+
+func (p WorkPlan) Selected() (WorkPackage, bool) {
+	selected := strings.TrimSpace(p.SelectedPackage)
+	for _, pkg := range p.Packages {
+		if strings.TrimSpace(pkg.ID) == selected {
+			return pkg, true
+		}
+	}
+	if len(p.Packages) > 0 && selected == "" {
+		return p.Packages[0], true
+	}
+	return WorkPackage{}, false
+}
+
+func (p WorkPlan) RemainingPackageTitles() []string {
+	remaining := []string{}
+	selected := strings.TrimSpace(p.SelectedPackage)
+	for _, pkg := range p.Packages {
+		if strings.TrimSpace(pkg.ID) == selected {
+			continue
+		}
+		label := strings.TrimSpace(pkg.ID)
+		if strings.TrimSpace(pkg.Title) != "" {
+			if label != "" {
+				label += ": "
+			}
+			label += strings.TrimSpace(pkg.Title)
+		}
+		if label != "" {
+			remaining = append(remaining, label)
+		}
+	}
+	return remaining
+}
+
 type Scout struct {
 	Mode              string      `json:"mode,omitempty"`
 	Summary           string      `json:"summary,omitempty"`
@@ -276,30 +326,38 @@ type Config struct {
 }
 
 type DefaultsConfig struct {
-	Mode          string `toml:"mode"`
-	Coder         string `toml:"coder"`
-	Adversary     string `toml:"adversary"`
-	Worker        string `toml:"worker"`
-	Scout         string `toml:"scout"`
-	Supervisor    string `toml:"supervisor"`
-	ScoutMode     string `toml:"scout_mode"`
-	PostScoutMode string `toml:"post_scout_mode"`
-	Rounds        int    `toml:"rounds"`
-	Test          string `toml:"test"`
-	GitSafety     string `toml:"git_safety"`
+	Mode              string `toml:"mode"`
+	Coder             string `toml:"coder"`
+	Adversary         string `toml:"adversary"`
+	Worker            string `toml:"worker"`
+	Scout             string `toml:"scout"`
+	Supervisor        string `toml:"supervisor"`
+	ScoutMode         string `toml:"scout_mode"`
+	PostScoutMode     string `toml:"post_scout_mode"`
+	SupervisorSlicing *bool  `toml:"supervisor_slicing"`
+	MaxPackages       int    `toml:"max_packages"`
+	Package           string `toml:"package"`
+	AutoNextPackage   *bool  `toml:"auto_next_package"`
+	Rounds            int    `toml:"rounds"`
+	Test              string `toml:"test"`
+	GitSafety         string `toml:"git_safety"`
 }
 
 type ProfileConfig struct {
-	Mode          string `toml:"mode"`
-	Coder         string `toml:"coder"`
-	Adversary     string `toml:"adversary"`
-	Worker        string `toml:"worker"`
-	Scout         string `toml:"scout"`
-	Supervisor    string `toml:"supervisor"`
-	ScoutMode     string `toml:"scout_mode"`
-	PostScoutMode string `toml:"post_scout_mode"`
-	Rounds        int    `toml:"rounds"`
-	Test          string `toml:"test"`
+	Mode              string `toml:"mode"`
+	Coder             string `toml:"coder"`
+	Adversary         string `toml:"adversary"`
+	Worker            string `toml:"worker"`
+	Scout             string `toml:"scout"`
+	Supervisor        string `toml:"supervisor"`
+	ScoutMode         string `toml:"scout_mode"`
+	PostScoutMode     string `toml:"post_scout_mode"`
+	SupervisorSlicing *bool  `toml:"supervisor_slicing"`
+	MaxPackages       int    `toml:"max_packages"`
+	Package           string `toml:"package"`
+	AutoNextPackage   *bool  `toml:"auto_next_package"`
+	Rounds            int    `toml:"rounds"`
+	Test              string `toml:"test"`
 }
 
 type AdapterConfigSet struct {
@@ -354,6 +412,11 @@ type FlagInputs struct {
 	Supervisor              string
 	Reviewer                string
 	SupervisorCanEdit       bool
+	Slice                   bool
+	NoSlice                 bool
+	MaxPackages             int
+	Package                 string
+	AutoNextPackage         bool
 	Profile                 string
 	Workdir                 string
 	Rounds                  int
@@ -403,6 +466,11 @@ type RunOptions struct {
 	PostScoutMode             string
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool
+	SupervisorSlicing         bool
+	SupervisorSlicingExplicit bool
+	MaxPackages               int
+	Package                   string
+	AutoNextPackage           bool
 	Rounds                    int
 	TestCmd                   string
 	NoTest                    bool
@@ -475,6 +543,9 @@ type FinalRun struct {
 	Adversary         RoleTarget         `json:"adversary,omitempty"`
 	Scout             RoleTarget         `json:"scout,omitempty"`
 	SupervisorCanEdit bool               `json:"supervisor_can_edit,omitempty"`
+	WorkPlan          *WorkPlan          `json:"work_plan,omitempty"`
+	SelectedPackage   *WorkPackage       `json:"selected_package,omitempty"`
+	RemainingPackages []string           `json:"remaining_packages,omitempty"`
 	Verdict           string             `json:"verdict"`
 	Summary           string             `json:"summary"`
 	ExitCode          int                `json:"exit_code"`

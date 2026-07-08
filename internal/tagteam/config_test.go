@@ -43,6 +43,12 @@ func TestDefaultConfig_SupervisorDefaults(t *testing.T) {
 	if cfg.Defaults.Rounds != 2 {
 		t.Fatalf("rounds = %d", cfg.Defaults.Rounds)
 	}
+	if cfg.Defaults.SupervisorSlicing == nil || !*cfg.Defaults.SupervisorSlicing {
+		t.Fatal("expected supervisor slicing to default to true")
+	}
+	if cfg.Defaults.MaxPackages != 5 {
+		t.Fatalf("max packages = %d", cfg.Defaults.MaxPackages)
+	}
 	// Legacy adversarial-mode defaults must still be present.
 	if cfg.Defaults.Coder != "codex" || cfg.Defaults.Adversary != "claude" {
 		t.Fatalf("legacy defaults = coder=%q adversary=%q", cfg.Defaults.Coder, cfg.Defaults.Adversary)
@@ -98,6 +104,12 @@ func TestResolveOptions_DefaultsToSupervisorMode(t *testing.T) {
 	}
 	if opts.SupervisorCanEdit {
 		t.Fatal("expected supervisor-can-edit to default to false")
+	}
+	if !opts.SupervisorSlicing {
+		t.Fatal("expected supervisor slicing to default to true")
+	}
+	if opts.MaxPackages != 5 {
+		t.Fatalf("max packages = %d", opts.MaxPackages)
 	}
 }
 
@@ -494,6 +506,43 @@ func TestResolveOptions_SupervisorCanEdit(t *testing.T) {
 	}
 	if !opts.SupervisorCanEdit {
 		t.Fatal("expected SupervisorCanEdit = true")
+	}
+}
+
+func TestResolveOptions_SupervisorSlicingFlags(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Slice:           true,
+		MaxPackages:     3,
+		Package:         "P2",
+		AutoNextPackage: true,
+		Timeout:         15 * time.Minute,
+	}, map[string]bool{"slice": true, "max-packages": true, "package": true, "auto-next-package": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if !opts.SupervisorSlicing || !opts.SupervisorSlicingExplicit {
+		t.Fatalf("slicing = %t explicit=%t", opts.SupervisorSlicing, opts.SupervisorSlicingExplicit)
+	}
+	if opts.MaxPackages != 3 {
+		t.Fatalf("max packages = %d", opts.MaxPackages)
+	}
+	if opts.Package != "P2" {
+		t.Fatalf("package = %q", opts.Package)
+	}
+	if !opts.AutoNextPackage {
+		t.Fatal("expected auto-next-package")
+	}
+
+	opts, err = ResolveOptions(cfg, nil, FlagInputs{
+		NoSlice: true,
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"no-slice": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.SupervisorSlicing {
+		t.Fatal("expected --no-slice to disable supervisor slicing")
 	}
 }
 

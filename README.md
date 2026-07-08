@@ -95,6 +95,12 @@ Default run (supervisor mode, built-in worker `agy:Gemini 3.5 Flash (High)` and 
 tagteam "add OAuth login"
 ```
 
+Supervisor mode slices work by default before the worker edits. The supervisor writes a bounded work plan, selects one package, and the worker implements only that package. If packages remain, `tagteam` stops after the selected package passes and reports the next packages unless `--auto-next-package` is set.
+
+```bash
+tagteam --slice --max-packages 5 --package P1 "add OAuth login"
+```
+
 Choose explicit worker/supervisor adapters, rounds, and a test command:
 
 ```bash
@@ -241,6 +247,10 @@ Relevant `defaults` keys:
 - `coder` / `adversary` — `adapter[:model]` targets used in adversarial mode
 - `scout` / `coder` / `supervisor` — `adapter[:model]` targets used in relay mode
 - `scout_mode` / `post_scout_mode` — relay scout task modes: `recon`, `lint`, `polish`, `tests`, or `risk`
+- `supervisor_slicing` — split supervisor-mode work into bounded packages before implementation
+- `max_packages` — maximum package count for supervisor slicing
+- `package` — selected package ID to execute from the work plan
+- `auto_next_package` — continue into additional packages while the normal round cap allows it
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
 - `test`, `git_safety`
 
@@ -251,6 +261,8 @@ Profiles may override `mode`, `scout`, `scout_mode`, `post_scout_mode`, `worker`
 mode = "supervisor"
 worker = "agy:Gemini 3.5 Flash (High)"
 supervisor = "claude:opus"
+supervisor_slicing = true
+max_packages = 5
 rounds = 2
 
 [profiles.fast]
@@ -271,6 +283,7 @@ Typical contents include:
 
 - `meta.json`
 - `input.md`
+- `supervisor-work-plan.json` (supervisor mode with slicing)
 - `supervisor-brief.md` (supervisor or relay mode, round 1)
 - `scout-round-1.json` (relay mode)
 - `supervisor-instructions.md` (relay mode)

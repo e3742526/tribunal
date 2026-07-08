@@ -283,6 +283,69 @@ func TestBuildRoundLimitReportPromptStopsWork(t *testing.T) {
 	}
 }
 
+func TestParseWorkPlanSelectsRequestedPackage(t *testing.T) {
+	raw := []byte(`{
+	  "summary": "split work",
+	  "packages": [
+	    {
+	      "id": "P1",
+	      "title": "First",
+	      "goal": "Do first",
+	      "allowed_scope": ["a.go"],
+	      "acceptance": ["first passes"],
+	      "validation": ["go test ./..."]
+	    },
+	    {
+	      "id": "P2",
+	      "title": "Second",
+	      "goal": "Do second",
+	      "allowed_scope": ["b.go"],
+	      "acceptance": ["second passes"],
+	      "validation": ["go test ./..."]
+	    }
+	  ],
+	  "selected_package": "P1",
+	  "defer": ["P2"]
+	}`)
+	plan, err := parseWorkPlan(raw, "P2", 5)
+	if err != nil {
+		t.Fatalf("parseWorkPlan() error = %v", err)
+	}
+	if plan.SelectedPackage != "P2" {
+		t.Fatalf("selected package = %q", plan.SelectedPackage)
+	}
+	pkg, ok := plan.Selected()
+	if !ok || pkg.ID != "P2" {
+		t.Fatalf("selected = %#v ok=%t", pkg, ok)
+	}
+}
+
+func TestParseWorkPlanRejectsTooManyPackages(t *testing.T) {
+	raw := []byte(`{
+	  "summary": "split work",
+	  "packages": [
+	    {"id":"P1","title":"First","goal":"Do first","acceptance":["ok"],"validation":["go test ./..."]},
+	    {"id":"P2","title":"Second","goal":"Do second","acceptance":["ok"],"validation":["go test ./..."]}
+	  ],
+	  "selected_package": "P1"
+	}`)
+	_, err := parseWorkPlan(raw, "", 1)
+	if err == nil {
+		t.Fatal("expected max package error")
+	}
+}
+
+func TestParseWorkPlanExtractsFencedJSON(t *testing.T) {
+	raw := []byte("```json\n{\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\n```")
+	plan, err := parseWorkPlan(raw, "", 5)
+	if err != nil {
+		t.Fatalf("parseWorkPlan() error = %v", err)
+	}
+	if plan.SelectedPackage != "P1" {
+		t.Fatalf("selected package = %q", plan.SelectedPackage)
+	}
+}
+
 func TestBuildRelaySupervisorReviewPromptIncludesPostScout(t *testing.T) {
 	prompt := BuildRelaySupervisorReviewPrompt(
 		"ship it",
@@ -707,6 +770,68 @@ func TestRunLoop_SupervisorCanEditUsesCoderRoleForBrief(t *testing.T) {
 	}
 }
 
+func TestRunLoop_SupervisorSlicingWritesWorkPlanAndScopesWorker(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude-args.log")
+	t.Setenv("CLAUDE_ARGS_LOG", logPath)
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:            "add a feature",
+		Workdir:           repo,
+		Mode:              ModeSupervisor,
+		Coder:             RoleTarget{Adapter: "claude"},
+		Adversary:         RoleTarget{Adapter: "claude"},
+		SupervisorSlicing: true,
+		MaxPackages:       5,
+		Rounds:            1,
+		Timeout:           10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error from fake supervisor review")
+	}
+	if final.WorkPlan == nil {
+		t.Fatal("expected work plan in final run")
+	}
+	if final.SelectedPackage == nil || final.SelectedPackage.ID != "P1" {
+		t.Fatalf("selected package = %#v", final.SelectedPackage)
+	}
+	if len(final.RemainingPackages) != 1 || !strings.Contains(final.RemainingPackages[0], "P2") {
+		t.Fatalf("remaining packages = %#v", final.RemainingPackages)
+	}
+	for _, name := range []string{"supervisor-work-plan.json", "supervisor-brief.md"} {
+		if !fileExists(filepath.Join(final.RunDir, name)) {
+			t.Fatalf("expected artifact %s in %s", name, final.RunDir)
+		}
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read claude args log: %v", err)
+	}
+	sections := strings.Split(string(data), "\n---\n")
+	if len(sections) < 2 {
+		t.Fatalf("expected at least slicing and worker invocations, log:\n%s", string(data))
+	}
+	workerInvocation := sections[1]
+	if !strings.Contains(workerInvocation, "Selected work package") || !strings.Contains(workerInvocation, "P1") {
+		t.Fatalf("worker invocation was not package-scoped:\n%s", workerInvocation)
+	}
+	if strings.Contains(workerInvocation, "Deferred follow-up") {
+		t.Fatalf("worker invocation should not include deferred package details:\n%s", workerInvocation)
+	}
+}
+
 // fakeClaudeScript returns a shell script that emulates the parts of the
 // `claude` CLI tagteam depends on: --version for Detect, and, for -p
 // invocations, a coder-style "ok" result unless the invocation carries the
@@ -720,6 +845,12 @@ fi
 if [ -n "$CLAUDE_ARGS_LOG" ]; then
   printf '%s\n---\n' "$*" >> "$CLAUDE_ARGS_LOG"
 fi
+case "$*" in
+  *selected_package*)
+    printf '%s' '{"result":"{\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
+    exit 0
+    ;;
+esac
 is_review=0
 for arg in "$@"; do
   if [ "$arg" = "dontAsk" ]; then

@@ -62,6 +62,11 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Supervisor adapter[:model] (supervisor or relay mode; alias for --ma)")
 	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Reviewer adapter[:model] (adversarial mode only; alias for --ma)")
 	flagSet.BoolVar(&flags.SupervisorCanEdit, "supervisor-can-edit", false, "Allow the supervisor to edit files while writing its brief (default: read-only)")
+	flagSet.BoolVar(&flags.Slice, "slice", false, "Ask the supervisor to split supervisor-mode work into small packages before implementation")
+	flagSet.BoolVar(&flags.NoSlice, "no-slice", false, "Disable supervisor-mode work-package slicing")
+	flagSet.IntVar(&flags.MaxPackages, "max-packages", 0, "Maximum supervisor work packages when slicing (default 5)")
+	flagSet.StringVar(&flags.Package, "package", "", "Work package ID to execute from the supervisor plan")
+	flagSet.BoolVar(&flags.AutoNextPackage, "auto-next-package", false, "Continue through remaining work packages instead of stopping after the selected package")
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")
 	flagSet.StringVarP(&flags.Workdir, "workdir", "C", ".", "Working directory")
 	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Hard cap on implementation/review rounds before final no-edit reports")
@@ -283,6 +288,12 @@ func renderFinal(cmd *cobra.Command, final tagteam.FinalRun, opts tagteam.RunOpt
 	}
 	if final.RunDir != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), final.RunDir)
+	}
+	if final.SelectedPackage != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "package=%s %s\n", final.SelectedPackage.ID, final.SelectedPackage.Title)
+	}
+	if len(final.RemainingPackages) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "remaining-packages=%s\n", strings.Join(final.RemainingPackages, "; "))
 	}
 	if opts.ShowReview && final.Review != nil {
 		for _, finding := range final.Review.Findings {

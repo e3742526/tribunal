@@ -112,6 +112,64 @@ areas likely involved, edge cases to handle, and how to verify the change.
 Do not write the diff yourself. Keep it short and actionable.`, editNote, workdir, userPrompt)
 }
 
+func BuildSupervisorWorkPlanPrompt(workdir, userPrompt string, maxPackages int, requestedPackage string) string {
+	if maxPackages <= 0 {
+		maxPackages = 5
+	}
+	packageInstruction := "Select package P1 for this run."
+	if strings.TrimSpace(requestedPackage) != "" {
+		packageInstruction = fmt.Sprintf("Select package %q for this run if it exists; otherwise select the first package and explain the mismatch in defer.", requestedPackage)
+	}
+	return fmt.Sprintf(`You are the supervisor in a supervisor-worker coding workflow.
+Before any code is written, triage the user's request into small, ordered
+implementation work packages. You are read-only. Do not edit files.
+
+Repository: %s
+
+Request:
+%s
+
+Classify scope, split the work into 1-%d ordered packages, and choose exactly
+one package for this run. %s
+
+Return JSON only, with this shape:
+{
+  "summary": "One sentence summary of the selected package.",
+  "packages": [
+    {
+      "id": "P1",
+      "title": "Short package title",
+      "goal": "Concrete outcome for this package only.",
+      "allowed_scope": ["path/or/area"],
+      "acceptance": ["specific pass condition"],
+      "validation": ["specific command or check"]
+    }
+  ],
+  "selected_package": "P1",
+  "defer": ["work intentionally left for later packages"]
+}
+
+Rules:
+- Keep packages small enough to review as separate patches.
+- Put the safest or most foundational package first.
+- Do not include hidden chain-of-thought; use concise public rationale only.
+- Do not ask the worker to implement packages other than selected_package.`, workdir, userPrompt, maxPackages, packageInstruction)
+}
+
+func BuildWorkPackageBrief(plan WorkPlan, pkg WorkPackage) string {
+	pkgJSON, _ := json.MarshalIndent(pkg, "", "  ")
+	deferJSON, _ := json.MarshalIndent(plan.Defer, "", "  ")
+	return fmt.Sprintf(`Supervisor work package:
+%s
+
+Deferred work not in scope for this run:
+%s
+
+Implement only the selected package. Treat deferred packages as out of scope
+unless they are strictly necessary for the selected package to compile or pass
+its acceptance criteria.`, string(pkgJSON), string(deferJSON))
+}
+
 func BuildWorkerImplementPrompt(workdir, userPrompt, brief string) string {
 	return fmt.Sprintf(`You are the worker in a supervisor-worker coding workflow. A supervisor
 will review your diff; it does not edit files by default.
@@ -134,6 +192,14 @@ Finish with a concise summary: files changed, behavior changed,
 checks run, known remaining risk.`, workdir, userPrompt, brief)
 }
 
+func BuildWorkerPackageImplementPrompt(workdir, userPrompt string, plan WorkPlan, pkg WorkPackage) string {
+	return BuildWorkerImplementPrompt(workdir, fmt.Sprintf(`Original request:
+%s
+
+Selected work package:
+%s`, userPrompt, BuildWorkPackageBrief(plan, pkg)), "Implement only the selected work package. Do not implement deferred packages.")
+}
+
 func BuildWorkerFixPrompt(round int, userPrompt, diff string, review Review) string {
 	findingsJSON, _ := json.MarshalIndent(review, "", "  ")
 	return fmt.Sprintf(`You are the worker in round %d. The supervisor found issues with your
@@ -151,6 +217,30 @@ Current diff vs baseline:
 Fix the findings, keep the original request satisfied, avoid unrelated
 changes, update tests as needed. Finish with: fixes made, checks run,
 any finding you dispute and why.`, round, userPrompt, string(findingsJSON), diff)
+}
+
+func BuildWorkerPackageFixPrompt(round int, userPrompt, diff string, pkg WorkPackage, review Review) string {
+	findingsJSON, _ := json.MarshalIndent(review, "", "  ")
+	pkgJSON, _ := json.MarshalIndent(pkg, "", "  ")
+	return fmt.Sprintf(`You are the worker in round %d. The supervisor found
+issues with the selected work package.
+
+Original request:
+%s
+
+Selected work package:
+%s
+
+Supervisor findings (fix all blocker and major items for this package):
+%s
+
+Current diff vs baseline:
+%s
+
+Fix the findings, keep the selected package satisfied, avoid unrelated
+changes, and do not implement deferred packages unless strictly necessary
+for this package to compile or pass its acceptance criteria. Update tests as
+needed. Finish with: fixes made, checks run, any finding you dispute and why.`, round, userPrompt, string(pkgJSON), string(findingsJSON), diff)
 }
 
 func BuildSupervisorReviewPrompt(userPrompt, baseline, diffRef, testOutput string, diffViaStdin bool) string {
@@ -178,6 +268,40 @@ security/data-loss/migration risk; consistency with repo patterns.
 Respond with JSON matching the provided schema. Use "pass" only when
 there are no blocker or major findings. Every finding must name a file
 and a concrete fix.`, userPrompt, baseline, diffSection, testOutput)
+}
+
+func BuildSupervisorPackageReviewPrompt(userPrompt string, plan WorkPlan, pkg WorkPackage, baseline, diffRef, testOutput string, diffViaStdin bool) string {
+	diffSection := diffRef
+	if diffViaStdin {
+		diffSection = "(diff provided via stdin)"
+	}
+	planJSON, _ := json.MarshalIndent(plan, "", "  ")
+	pkgJSON, _ := json.MarshalIndent(pkg, "", "  ")
+	return fmt.Sprintf(`You are the supervisor reviewing the worker's diff in a
+supervisor-worker coding workflow. You cannot edit files.
+
+Original request:
+%s
+
+Selected work package under review:
+%s
+
+Full work plan:
+%s
+
+Diff under review (vs baseline %s):
+%s
+
+Test output:
+%s
+
+Evaluate only the selected work package. Do not fail the run for deferred
+packages unless the worker's diff makes them harder, breaks existing behavior,
+or violates the selected package acceptance criteria.
+
+Respond with JSON matching the provided schema. Use "pass" only when
+there are no blocker or major findings for the selected package. Every
+finding must name a file and a concrete fix.`, userPrompt, string(pkgJSON), string(planJSON), baseline, diffSection, testOutput)
 }
 
 func BuildScoutPrompt(workdir, userPrompt, brief, mode, phase, diff, testOutput string) string {

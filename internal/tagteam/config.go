@@ -13,18 +13,23 @@ import (
 )
 
 func DefaultConfig() Config {
+	supervisorSlicing := true
+	autoNextPackage := false
 	return Config{
 		Defaults: DefaultsConfig{
-			Mode:          "supervisor",
-			Coder:         "codex",
-			Adversary:     "claude",
-			Worker:        "agy:Gemini 3.5 Flash (High)",
-			Scout:         "agy:gemini-3.5-flash-low",
-			Supervisor:    "claude:opus",
-			ScoutMode:     "recon",
-			PostScoutMode: "polish",
-			Rounds:        2,
-			GitSafety:     "clean",
+			Mode:              "supervisor",
+			Coder:             "codex",
+			Adversary:         "claude",
+			Worker:            "agy:Gemini 3.5 Flash (High)",
+			Scout:             "agy:gemini-3.5-flash-low",
+			Supervisor:        "claude:opus",
+			ScoutMode:         "recon",
+			PostScoutMode:     "polish",
+			SupervisorSlicing: &supervisorSlicing,
+			MaxPackages:       5,
+			AutoNextPackage:   &autoNextPackage,
+			Rounds:            2,
+			GitSafety:         "clean",
 		},
 		Profiles: map[string]ProfileConfig{
 			"fast": {
@@ -158,6 +163,18 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.PostScoutMode != "" {
 		dst.Defaults.PostScoutMode = src.Defaults.PostScoutMode
 	}
+	if src.Defaults.SupervisorSlicing != nil {
+		dst.Defaults.SupervisorSlicing = src.Defaults.SupervisorSlicing
+	}
+	if src.Defaults.MaxPackages != 0 {
+		dst.Defaults.MaxPackages = src.Defaults.MaxPackages
+	}
+	if src.Defaults.Package != "" {
+		dst.Defaults.Package = src.Defaults.Package
+	}
+	if src.Defaults.AutoNextPackage != nil {
+		dst.Defaults.AutoNextPackage = src.Defaults.AutoNextPackage
+	}
 	if src.Defaults.Rounds != 0 {
 		dst.Defaults.Rounds = src.Defaults.Rounds
 	}
@@ -196,6 +213,18 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.PostScoutMode != "" {
 				current.PostScoutMode = profile.PostScoutMode
+			}
+			if profile.SupervisorSlicing != nil {
+				current.SupervisorSlicing = profile.SupervisorSlicing
+			}
+			if profile.MaxPackages != 0 {
+				current.MaxPackages = profile.MaxPackages
+			}
+			if profile.Package != "" {
+				current.Package = profile.Package
+			}
+			if profile.AutoNextPackage != nil {
+				current.AutoNextPackage = profile.AutoNextPackage
 			}
 			if profile.Rounds != 0 {
 				current.Rounds = profile.Rounds
@@ -269,6 +298,10 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_SCOUT_MODE",
 		"TAGTEAM_POST_SCOUT_MODE",
 		"TAGTEAM_SUPERVISOR",
+		"TAGTEAM_SUPERVISOR_SLICING",
+		"TAGTEAM_MAX_PACKAGES",
+		"TAGTEAM_PACKAGE",
+		"TAGTEAM_AUTO_NEXT_PACKAGE",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
 		"TAGTEAM_GIT_SAFETY",
@@ -313,6 +346,24 @@ func mergeEnvConfig(cfg *Config) {
 	}
 	if value := os.Getenv("TAGTEAM_SUPERVISOR"); value != "" {
 		cfg.Defaults.Supervisor = value
+	}
+	if value := os.Getenv("TAGTEAM_SUPERVISOR_SLICING"); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.Defaults.SupervisorSlicing = &parsed
+		}
+	}
+	if value := os.Getenv("TAGTEAM_MAX_PACKAGES"); value != "" {
+		if maxPackages, err := strconv.Atoi(value); err == nil && maxPackages > 0 {
+			cfg.Defaults.MaxPackages = maxPackages
+		}
+	}
+	if value := os.Getenv("TAGTEAM_PACKAGE"); value != "" {
+		cfg.Defaults.Package = value
+	}
+	if value := os.Getenv("TAGTEAM_AUTO_NEXT_PACKAGE"); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.Defaults.AutoNextPackage = &parsed
+		}
 	}
 	if value := os.Getenv("TAGTEAM_MODE"); value != "" {
 		cfg.Defaults.Mode = value
@@ -380,6 +431,16 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	gitSafety := cfg.Defaults.GitSafety
 	scoutMode := cfg.Defaults.ScoutMode
 	postScoutMode := cfg.Defaults.PostScoutMode
+	supervisorSlicing := true
+	if cfg.Defaults.SupervisorSlicing != nil {
+		supervisorSlicing = *cfg.Defaults.SupervisorSlicing
+	}
+	maxPackages := cfg.Defaults.MaxPackages
+	packageID := cfg.Defaults.Package
+	autoNextPackage := false
+	if cfg.Defaults.AutoNextPackage != nil {
+		autoNextPackage = *cfg.Defaults.AutoNextPackage
+	}
 
 	var profile ProfileConfig
 	hasProfile := false
@@ -419,6 +480,18 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.PostScoutMode != "" {
 			postScoutMode = profile.PostScoutMode
+		}
+		if profile.SupervisorSlicing != nil {
+			supervisorSlicing = *profile.SupervisorSlicing
+		}
+		if profile.MaxPackages != 0 {
+			maxPackages = profile.MaxPackages
+		}
+		if profile.Package != "" {
+			packageID = profile.Package
+		}
+		if profile.AutoNextPackage != nil {
+			autoNextPackage = *profile.AutoNextPackage
 		}
 	}
 	if changed["mode"] {
@@ -584,6 +657,21 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["post-scout-mode"] {
 		postScoutMode = flags.PostScoutMode
 	}
+	if changed["slice"] {
+		supervisorSlicing = flags.Slice
+	}
+	if changed["no-slice"] {
+		supervisorSlicing = false
+	}
+	if changed["max-packages"] {
+		maxPackages = flags.MaxPackages
+	}
+	if changed["package"] {
+		packageID = flags.Package
+	}
+	if changed["auto-next-package"] {
+		autoNextPackage = flags.AutoNextPackage
+	}
 
 	if changed["rounds"] {
 		rounds = flags.Rounds
@@ -613,6 +701,12 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if err := validateScoutMode("post-scout-mode", postScoutMode); err != nil {
 			return RunOptions{}, err
 		}
+	}
+	if maxPackages <= 0 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-packages must be > 0")}
+	}
+	if maxPackages > 20 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-packages must be <= 20")}
 	}
 
 	editorLabel, reviewerLabel := roleLabels(mode)
@@ -683,6 +777,11 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		PostScoutMode:             postScoutMode,
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
+		SupervisorSlicing:         supervisorSlicing,
+		SupervisorSlicingExplicit: changed["slice"] || changed["no-slice"],
+		MaxPackages:               maxPackages,
+		Package:                   strings.TrimSpace(packageID),
+		AutoNextPackage:           autoNextPackage,
 		Rounds:                    rounds,
 		TestCmd:                   testCmd,
 		NoTest:                    flags.NoTest,
