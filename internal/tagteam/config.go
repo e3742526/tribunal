@@ -19,6 +19,7 @@ func DefaultConfig() Config {
 			Coder:      "codex",
 			Adversary:  "claude",
 			Worker:     "agy:Gemini 3.5 Flash (High)",
+			Scout:      "agy:gemini-3.5-flash-low",
 			Supervisor: "claude:opus",
 			Rounds:     2,
 			GitSafety:  "clean",
@@ -35,6 +36,13 @@ func DefaultConfig() Config {
 				Adversary: "claude:opus",
 				Rounds:    4,
 				Test:      "make check",
+			},
+			"relay": {
+				Mode:       "relay",
+				Scout:      "agy:gemini-3.5-flash-low",
+				Coder:      "codex:gpt-5.4-mini",
+				Supervisor: "claude:sonnet",
+				Rounds:     2,
 			},
 		},
 		Adapters: AdapterConfigSet{
@@ -130,6 +138,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.Worker != "" {
 		dst.Defaults.Worker = src.Defaults.Worker
 	}
+	if src.Defaults.Scout != "" {
+		dst.Defaults.Scout = src.Defaults.Scout
+	}
 	if src.Defaults.Supervisor != "" {
 		dst.Defaults.Supervisor = src.Defaults.Supervisor
 	}
@@ -159,6 +170,9 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.Worker != "" {
 				current.Worker = profile.Worker
+			}
+			if profile.Scout != "" {
+				current.Scout = profile.Scout
 			}
 			if profile.Supervisor != "" {
 				current.Supervisor = profile.Supervisor
@@ -216,6 +230,7 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_CODER",
 		"TAGTEAM_ADVERSARY",
 		"TAGTEAM_WORKER",
+		"TAGTEAM_SCOUT",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
@@ -244,6 +259,9 @@ func mergeEnvConfig(cfg *Config) {
 	}
 	if value := os.Getenv("TAGTEAM_WORKER"); value != "" {
 		cfg.Defaults.Worker = value
+	}
+	if value := os.Getenv("TAGTEAM_SCOUT"); value != "" {
+		cfg.Defaults.Scout = value
 	}
 	if value := os.Getenv("TAGTEAM_SUPERVISOR"); value != "" {
 		cfg.Defaults.Supervisor = value
@@ -310,6 +328,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		case profile.Mode != "":
 			modeRaw = profile.Mode
 			profileSetsMode = true
+		case profile.Mode == "" && profile.Scout != "":
+			modeRaw = string(ModeRelay)
+			profileSetsMode = true
 		case profile.Coder != "" || profile.Adversary != "":
 			// Legacy profiles that only set coder/adversary predate the
 			// mode field; keep them resolving as adversarial-mode profiles
@@ -349,11 +370,19 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	// `tagteam fix --profile ...` would have its profile-derived mode and
 	// targets silently overwritten by Fix's saved-run resume logic below
 	// even when the profile left those targets untouched.
-	var editorRaw, reviewerRaw string
+	if changed["relay"] && flags.Relay {
+		modeRaw = string(ModeRelay)
+		modeExplicit = true
+		mode = ModeRelay
+	}
+
+	var editorRaw, reviewerRaw, scoutRaw string
 	editorExplicit := false
 	reviewerExplicit := false
+	scoutExplicit := false
 	editorExplicitMode := Mode("")
 	reviewerExplicitMode := Mode("")
+	scoutExplicitMode := Mode("")
 	if mode == ModeAdversarial {
 		editorRaw = cfg.Defaults.Coder
 		reviewerRaw = cfg.Defaults.Adversary
@@ -369,7 +398,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 				reviewerExplicitMode = ModeAdversarial
 			}
 		}
-	} else {
+	} else if mode == ModeSupervisor {
 		editorRaw = cfg.Defaults.Worker
 		reviewerRaw = cfg.Defaults.Supervisor
 		if hasProfile {
@@ -382,6 +411,41 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 				reviewerRaw = profile.Supervisor
 				reviewerExplicit = true
 				reviewerExplicitMode = ModeSupervisor
+			}
+		}
+	} else {
+		editorRaw = "codex:gpt-5.4-mini"
+		reviewerRaw = "claude:sonnet"
+		scoutRaw = "agy:gemini-3.5-flash-low"
+		if cfg.Defaults.Mode == string(ModeRelay) && cfg.Defaults.Coder != "" {
+			editorRaw = cfg.Defaults.Coder
+		}
+		if cfg.Defaults.Mode == string(ModeRelay) && cfg.Defaults.Supervisor != "" {
+			reviewerRaw = cfg.Defaults.Supervisor
+		}
+		if cfg.Defaults.Mode == string(ModeRelay) && cfg.Defaults.Scout != "" {
+			scoutRaw = cfg.Defaults.Scout
+		}
+		if hasProfile {
+			if profile.Coder != "" {
+				editorRaw = profile.Coder
+				editorExplicit = true
+				editorExplicitMode = ModeRelay
+			}
+			if profile.Worker != "" {
+				editorRaw = profile.Worker
+				editorExplicit = true
+				editorExplicitMode = ModeRelay
+			}
+			if profile.Supervisor != "" {
+				reviewerRaw = profile.Supervisor
+				reviewerExplicit = true
+				reviewerExplicitMode = ModeRelay
+			}
+			if profile.Scout != "" {
+				scoutRaw = profile.Scout
+				scoutExplicit = true
+				scoutExplicitMode = ModeRelay
 			}
 		}
 	}
@@ -397,12 +461,20 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		editorExplicitMode = ""
 	}
 	if changed["worker"] {
-		if mode != ModeSupervisor {
-			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--worker is only valid in supervisor mode (current mode %q); use -mc/--mc in adversarial mode", mode)}
+		if mode != ModeSupervisor && mode != ModeRelay {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--worker is only valid in supervisor or relay mode (current mode %q); use -mc/--mc in adversarial mode", mode)}
 		}
 		editorRaw = flags.Worker
 		editorExplicit = true
-		editorExplicitMode = ModeSupervisor
+		editorExplicitMode = mode
+	}
+	if changed["coder"] {
+		if mode != ModeAdversarial && mode != ModeRelay {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--coder is only valid in adversarial or relay mode (current mode %q); use --worker in supervisor mode", mode)}
+		}
+		editorRaw = flags.CoderRole
+		editorExplicit = true
+		editorExplicitMode = mode
 	}
 	if changed["ma"] {
 		reviewerRaw = flags.Adversary
@@ -418,12 +490,20 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		reviewerExplicitMode = ModeAdversarial
 	}
 	if changed["supervisor"] {
-		if mode != ModeSupervisor {
-			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--supervisor is only valid in supervisor mode (current mode %q); use --reviewer or -ma in adversarial mode", mode)}
+		if mode != ModeSupervisor && mode != ModeRelay {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--supervisor is only valid in supervisor or relay mode (current mode %q); use --reviewer or -ma in adversarial mode", mode)}
 		}
 		reviewerRaw = flags.Supervisor
 		reviewerExplicit = true
-		reviewerExplicitMode = ModeSupervisor
+		reviewerExplicitMode = mode
+	}
+	if changed["scout"] {
+		if mode != ModeRelay {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--scout is only valid in relay mode (current mode %q)", mode)}
+		}
+		scoutRaw = flags.Scout
+		scoutExplicit = true
+		scoutExplicitMode = ModeRelay
 	}
 
 	if changed["rounds"] {
@@ -450,6 +530,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	reviewerTarget, err := ParseRoleTarget(reviewerRaw)
 	if err != nil {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve %s target: %w", reviewerLabel, err)}
+	}
+	var scoutTarget RoleTarget
+	if mode == ModeRelay {
+		scoutTarget, err = ParseRoleTarget(scoutRaw)
+		if err != nil {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve scout target: %w", err)}
+		}
 	}
 
 	codexArgs, err := mergePassthrough(cfg.Adapters.Codex.ExtraArgs, flags.CodexArgsRaw)
@@ -488,10 +575,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		ModeExplicit:              modeExplicit,
 		Coder:                     editorTarget,
 		Adversary:                 reviewerTarget,
+		Scout:                     scoutTarget,
 		CoderExplicit:             editorExplicit,
 		AdversaryExplicit:         reviewerExplicit,
+		ScoutExplicit:             scoutExplicit,
 		CoderExplicitMode:         editorExplicitMode,
 		AdversaryExplicitMode:     reviewerExplicitMode,
+		ScoutExplicitMode:         scoutExplicitMode,
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
 		Rounds:                    rounds,

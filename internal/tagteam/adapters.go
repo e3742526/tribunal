@@ -69,7 +69,7 @@ func (a *CodexAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	switch role {
 	case RoleCoder:
 		argv = append(argv, "-s", "workspace-write")
-	case RoleAdversary, RoleSupervisor, RoleReporter:
+	case RoleAdversary, RoleSupervisor, RoleReporter, RoleScout:
 		argv = append(argv, "-s", "read-only")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
@@ -100,6 +100,13 @@ func (a *CodexAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 		}
 		result.Review = &review
 		result.Text = review.Summary
+	}
+	if role == RoleScout {
+		scout, err := parseScout(raw)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Scout = scout
 	}
 	return result, nil
 }
@@ -160,7 +167,7 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 			}
 			argv = append(argv, "--json-schema", string(schemaBytes))
 		}
-	case RoleSupervisor, RoleReporter:
+	case RoleSupervisor, RoleReporter, RoleScout:
 		argv = append(argv,
 			"--permission-mode", "dontAsk",
 			"--allowedTools", "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status *)",
@@ -217,6 +224,14 @@ func (a *ClaudeAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 		}
 		result.Review = &review
 		result.Text = review.Summary
+	}
+	if role == RoleScout {
+		scoutRaw := []byte(envelope.Result)
+		scout, err := parseScout(scoutRaw)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Scout = scout
 	}
 	return result, nil
 }
@@ -275,7 +290,7 @@ func (a *AgyAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	switch role {
 	case RoleCoder:
 		argv = append(argv, "--dangerously-skip-permissions")
-	case RoleAdversary, RoleSupervisor, RoleReporter:
+	case RoleAdversary, RoleSupervisor, RoleReporter, RoleScout:
 		argv = append(argv, "--sandbox")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
@@ -304,7 +319,28 @@ func (a *AgyAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 		result.Review = &review
 		result.Text = review.Summary
 	}
+	if role == RoleScout {
+		scout, err := parseScout(raw)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Scout = scout
+	}
 	return result, nil
+}
+
+func parseScout(raw []byte) (*Scout, error) {
+	var scout Scout
+	if err := json.Unmarshal(raw, &scout); err != nil {
+		extracted, extractErr := extractJSONObject(raw)
+		if extractErr != nil {
+			return nil, &OutputContractError{Err: fmt.Errorf("decode scout JSON: %w", err)}
+		}
+		if err := json.Unmarshal(extracted, &scout); err != nil {
+			return nil, &OutputContractError{Err: fmt.Errorf("decode scout JSON: %w", err)}
+		}
+	}
+	return &scout, nil
 }
 
 var (
@@ -403,6 +439,8 @@ func (a *GoslingAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) 
 		return nil, fmt.Errorf("gosling is not supported as an adversary adapter")
 	case RoleSupervisor:
 		return nil, fmt.Errorf("gosling is not supported as a supervisor adapter")
+	case RoleScout:
+		return nil, fmt.Errorf("gosling is not supported as a scout adapter")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
 	}

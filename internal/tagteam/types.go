@@ -16,6 +16,7 @@ const (
 	RoleAdversary  Role = "adversary"
 	RoleSupervisor Role = "supervisor"
 	RoleReporter   Role = "reporter"
+	RoleScout      Role = "scout"
 )
 
 type Mode string
@@ -23,6 +24,7 @@ type Mode string
 const (
 	ModeSupervisor  Mode = "supervisor"
 	ModeAdversarial Mode = "adversarial"
+	ModeRelay       Mode = "relay"
 )
 
 // ParseMode validates a raw --mode/config value, defaulting an empty value to
@@ -33,8 +35,10 @@ func ParseMode(raw string) (Mode, error) {
 		return ModeSupervisor, nil
 	case string(ModeAdversarial):
 		return ModeAdversarial, nil
+	case string(ModeRelay):
+		return ModeRelay, nil
 	default:
-		return "", fmt.Errorf("invalid mode %q (want %q or %q)", raw, ModeSupervisor, ModeAdversarial)
+		return "", fmt.Errorf("invalid mode %q (want %q, %q, or %q)", raw, ModeSupervisor, ModeAdversarial, ModeRelay)
 	}
 }
 
@@ -151,10 +155,19 @@ type CommandSpec struct {
 type Result struct {
 	Text      string   `json:"text,omitempty"`
 	Review    *Review  `json:"review,omitempty"`
+	Scout     *Scout   `json:"scout,omitempty"`
 	SessionID string   `json:"session_id,omitempty"`
 	CostUSD   float64  `json:"cost_usd,omitempty"`
 	Raw       []byte   `json:"-"`
 	Command   []string `json:"command,omitempty"`
+}
+
+type Scout struct {
+	RelevantFiles     []string `json:"relevant_files"`
+	LikelyEntryPoints []string `json:"likely_entry_points"`
+	ExistingPatterns  []string `json:"existing_patterns"`
+	Risks             []string `json:"risks"`
+	SuggestedTests    []string `json:"suggested_tests"`
 }
 
 type Review struct {
@@ -251,6 +264,7 @@ type DefaultsConfig struct {
 	Coder      string `toml:"coder"`
 	Adversary  string `toml:"adversary"`
 	Worker     string `toml:"worker"`
+	Scout      string `toml:"scout"`
 	Supervisor string `toml:"supervisor"`
 	Rounds     int    `toml:"rounds"`
 	Test       string `toml:"test"`
@@ -262,6 +276,7 @@ type ProfileConfig struct {
 	Coder      string `toml:"coder"`
 	Adversary  string `toml:"adversary"`
 	Worker     string `toml:"worker"`
+	Scout      string `toml:"scout"`
 	Supervisor string `toml:"supervisor"`
 	Rounds     int    `toml:"rounds"`
 	Test       string `toml:"test"`
@@ -299,9 +314,12 @@ type GoslingConfig struct {
 
 type FlagInputs struct {
 	Mode              string
+	Relay             bool
 	Coder             string
+	CoderRole         string
 	Adversary         string
 	Worker            string
+	Scout             string
 	Supervisor        string
 	Reviewer          string
 	SupervisorCanEdit bool
@@ -336,16 +354,19 @@ type RunOptions struct {
 	ModeExplicit bool
 	// Coder and Adversary hold the resolved editor and reviewer targets for
 	// whichever mode is active (worker/supervisor in ModeSupervisor, coder/
-	// adversary in ModeAdversarial).
+	// adversary in ModeAdversarial, coder/supervisor in ModeRelay).
 	Coder     RoleTarget
 	Adversary RoleTarget
+	Scout     RoleTarget
 	// CoderExplicit and AdversaryExplicit mirror ModeExplicit for the role
 	// targets: true when the caller passed -mc/--worker or
 	// -ma/--supervisor/--reviewer for this invocation.
 	CoderExplicit             bool
 	AdversaryExplicit         bool
+	ScoutExplicit             bool
 	CoderExplicitMode         Mode
 	AdversaryExplicitMode     Mode
+	ScoutExplicitMode         Mode
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool
 	Rounds                    int
@@ -417,6 +438,7 @@ type FinalRun struct {
 	// current defaults/flags.
 	Coder             RoleTarget         `json:"coder,omitempty"`
 	Adversary         RoleTarget         `json:"adversary,omitempty"`
+	Scout             RoleTarget         `json:"scout,omitempty"`
 	SupervisorCanEdit bool               `json:"supervisor_can_edit,omitempty"`
 	Verdict           string             `json:"verdict"`
 	Summary           string             `json:"summary"`

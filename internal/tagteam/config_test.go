@@ -58,6 +58,7 @@ func TestParseMode(t *testing.T) {
 		{"", ModeSupervisor, false},
 		{"supervisor", ModeSupervisor, false},
 		{"adversarial", ModeAdversarial, false},
+		{"relay", ModeRelay, false},
 		{"bogus", "", true},
 	}
 	for _, tc := range cases {
@@ -210,7 +211,7 @@ func TestResolveOptions_WorkerFlagRejectedInAdversarialMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error using --worker in adversarial mode")
 	}
-	if !strings.Contains(err.Error(), "--worker is only valid in supervisor mode") {
+	if !strings.Contains(err.Error(), "--worker is only valid in supervisor or relay mode") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -225,8 +226,96 @@ func TestResolveOptions_SupervisorFlagRejectedInAdversarialMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error using --supervisor in adversarial mode")
 	}
-	if !strings.Contains(err.Error(), "--supervisor is only valid in supervisor mode") {
+	if !strings.Contains(err.Error(), "--supervisor is only valid in supervisor or relay mode") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Relay:   true,
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"relay": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeRelay || !opts.ModeExplicit {
+		t.Fatalf("mode = %q explicit=%t", opts.Mode, opts.ModeExplicit)
+	}
+	if opts.Scout.Adapter != "agy" || opts.Scout.Model != "gemini-3.5-flash-low" {
+		t.Fatalf("scout = %#v", opts.Scout)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5.4-mini" {
+		t.Fatalf("coder = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
+		t.Fatalf("supervisor = %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "relay",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeRelay {
+		t.Fatalf("mode = %q", opts.Mode)
+	}
+	if opts.Scout.Adapter != "agy" || opts.Scout.Model != "gemini-3.5-flash-low" {
+		t.Fatalf("scout = %#v", opts.Scout)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5.4-mini" {
+		t.Fatalf("coder = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
+		t.Fatalf("supervisor = %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_RelayLegacyFlagsOverrideCoderAndSupervisor(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:      "relay",
+		Coder:     "agy:worker-model",
+		Adversary: "claude:opus",
+		Timeout:   15 * time.Minute,
+	}, map[string]bool{"mode": true, "mc": true, "ma": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "worker-model" {
+		t.Fatalf("-mc should override relay coder: %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("-ma should override relay supervisor: %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_RelayRoleFlagsOverrideRoles(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:       "relay",
+		Scout:      "agy:scout-model",
+		CoderRole:  "codex:coder-model",
+		Supervisor: "claude:supervisor-model",
+		Timeout:    15 * time.Minute,
+	}, map[string]bool{"mode": true, "scout": true, "coder": true, "supervisor": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Scout.Adapter != "agy" || opts.Scout.Model != "scout-model" {
+		t.Fatalf("--scout target = %#v", opts.Scout)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "coder-model" {
+		t.Fatalf("--coder target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "supervisor-model" {
+		t.Fatalf("--supervisor target = %#v", opts.Adversary)
 	}
 }
 

@@ -23,7 +23,7 @@ func NewRootCommand() *cobra.Command {
 	flags := &flagState{}
 	root := &cobra.Command{
 		Use:           "tagteam [flags] <prompt>",
-		Short:         "Run a supervisor/worker (default) or coder/adversary agent loop over a repository",
+		Short:         "Run supervisor/worker, relay, or coder/adversary agent loops over a repository",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -50,11 +50,14 @@ func NewRootCommand() *cobra.Command {
 
 func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet := cmd.PersistentFlags()
-	flagSet.StringVar(&flags.Mode, "mode", "", "Orchestration mode: supervisor (default) or adversarial")
+	flagSet.StringVar(&flags.Mode, "mode", "", "Orchestration mode: supervisor (default), adversarial, or relay")
+	flagSet.BoolVar(&flags.Relay, "relay", false, "Convenience alias for --mode relay")
 	flagSet.StringVar(&flags.Coder, "mc", "", "Editor adapter[:model] (coder in adversarial mode, worker in supervisor mode)")
+	flagSet.StringVar(&flags.CoderRole, "coder", "", "Coder adapter[:model] (adversarial or relay mode)")
 	flagSet.StringVar(&flags.Adversary, "ma", "", "Reviewer adapter[:model] (adversary in adversarial mode, supervisor in supervisor mode)")
-	flagSet.StringVar(&flags.Worker, "worker", "", "Worker adapter[:model] (supervisor mode only; alias for --mc)")
-	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Supervisor adapter[:model] (supervisor mode only; alias for --ma)")
+	flagSet.StringVar(&flags.Worker, "worker", "", "Worker/coder adapter[:model] (supervisor or relay mode; alias for --mc)")
+	flagSet.StringVar(&flags.Scout, "scout", "", "Scout adapter[:model] (relay mode only)")
+	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Supervisor adapter[:model] (supervisor or relay mode; alias for --ma)")
 	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Reviewer adapter[:model] (adversarial mode only; alias for --ma)")
 	flagSet.BoolVar(&flags.SupervisorCanEdit, "supervisor-can-edit", false, "Allow the supervisor to edit files while writing its brief (default: read-only)")
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")

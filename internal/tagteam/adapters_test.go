@@ -242,6 +242,21 @@ func TestAgyBuildCmdReporter(t *testing.T) {
 	}
 }
 
+func TestAgyBuildCmdScout(t *testing.T) {
+	adapter := &AgyAdapter{DefaultModel: "gemini-3.5-flash-low"}
+	spec, err := adapter.BuildCmd(RoleScout, Request{
+		Prompt:  "scout the repo",
+		Workdir: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("BuildCmd() error = %v", err)
+	}
+	want := []string{"agy", "--print", "scout the repo", "--model", "gemini-3.5-flash-low", "--sandbox"}
+	if !reflect.DeepEqual(spec.Argv, want) {
+		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+}
+
 func TestAgyParseResultExtractsFencedReviewJSON(t *testing.T) {
 	adapter := &AgyAdapter{}
 	raw := []byte("```json\n{\"verdict\":\"pass\",\"summary\":\"looks good\",\"findings\":[],\"test_suggestions\":[]}\n```")

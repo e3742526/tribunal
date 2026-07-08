@@ -7,12 +7,18 @@ By default it runs in **supervisor mode**:
 - a `supervisor` agent that writes a compact implementation brief, then reviews the resulting diff (it does not edit files by default)
 - a `worker` agent that implements the brief and fixes findings
 
-It can also run the original **adversarial mode** (`--mode adversarial`):
+It can also run **relay mode** (`--relay` / `--mode relay`):
+
+- a cheap read-only `scout` agent performs reconnaissance
+- a write-enabled `coder` implements
+- a stronger read-only `supervisor` reviews and arbitrates
+
+And it can run the original **adversarial mode** (`--mode adversarial`):
 
 - a `coder` agent that edits the repo
 - an `adversary` agent that reviews the resulting diff
 
-In both modes the tool loops findings back into the editor role until the change passes review, tests fail, or the user-defined round limit is reached. When the limit is reached with unresolved blocker/major findings, `tagteam` stops asking for edits and asks both agents for final "what remains incomplete / what do you dispute" reports instead of continuing indefinitely.
+In all modes the tool loops findings back into the editor role until the change passes review, tests fail, or the user-defined round limit is reached. When the limit is reached with unresolved blocker/major findings, `tagteam` stops asking for edits and asks both agents for final "what remains incomplete / what do you dispute" reports instead of continuing indefinitely.
 
 ## Vision
 
@@ -27,6 +33,7 @@ This repository is an early implementation of the v2 design. The core run loop, 
 Recent additions in this repo:
 
 - supervisor/worker mode is now the default flow
+- relay scout/coder/supervisor mode is available with `--relay`
 - adversarial coder/adversary mode remains available for backward compatibility
 - saved run artifacts include briefs, diffs, reviews, tests, and final summaries
 - command surface now includes `review`, `fix`, `status`, `transcript`, `doctor`, and `init`
@@ -100,6 +107,38 @@ tagteam \
 
 The supervisor is read-only by default (it writes the brief and review findings but does not edit files). Allow it to make small exploratory edits with `--supervisor-can-edit`.
 
+### Relay mode
+
+Relay mode runs a cost-aware three-agent pipeline: supervisor brief, read-only scout reconnaissance, supervisor-condensed worker instructions, coder implementation, deterministic diff capture, tests, and strict supervisor review.
+
+```bash
+tagteam --relay "add OAuth login"
+```
+
+The built-in relay profile uses:
+
+```toml
+[profiles.relay]
+mode = "relay"
+scout = "agy:gemini-3.5-flash-low"
+coder = "codex:gpt-5.4-mini"
+supervisor = "claude:sonnet"
+rounds = 2
+```
+
+Override relay roles explicitly:
+
+```bash
+tagteam \
+  --mode relay \
+  --scout agy:gemini-3.5-flash-low \
+  --coder codex:gpt-5.4-mini \
+  --supervisor claude:sonnet \
+  "refactor billing flow"
+```
+
+In relay mode, legacy `-mc` selects the coder and `-ma` selects the supervisor.
+
 ### Adversarial mode (backward compatible)
 
 The original coder/adversary loop is still available via `--mode adversarial`. The legacy `-mc`/`-ma` flags keep working and map onto the active mode's roles: `-mc` selects the worker in supervisor mode and the coder in adversarial mode; `-ma` selects the supervisor in supervisor mode and the adversary in adversarial mode.
@@ -157,13 +196,14 @@ tagteam init
 
 Relevant `defaults` keys:
 
-- `mode` — `supervisor` (default) or `adversarial`
+- `mode` — `supervisor` (default), `adversarial`, or `relay`
 - `worker` / `supervisor` — `adapter[:model]` targets used in supervisor mode
 - `coder` / `adversary` — `adapter[:model]` targets used in adversarial mode
+- `scout` / `coder` / `supervisor` — `adapter[:model]` targets used in relay mode
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
 - `test`, `git_safety`
 
-Profiles may override `mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `scout`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
 
 ```toml
 [defaults]
@@ -190,14 +230,16 @@ Typical contents include:
 
 - `meta.json`
 - `input.md`
-- `supervisor-brief.md` (supervisor mode only, round 1)
-- `worker-round-N.md` (supervisor mode) / `coder-round-N.md` (adversarial mode)
+- `supervisor-brief.md` (supervisor or relay mode, round 1)
+- `scout-round-1.json` (relay mode)
+- `supervisor-instructions.md` (relay mode)
+- `worker-round-N.md` (supervisor mode) / `coder-round-N.md` (adversarial or relay mode)
 - `diff-round-N.patch`
 - `diff-round-N.numstat`
 - `diff-round-N.files.json`
 - `diff-round-N.sha256`
 - `test-round-N.txt`
-- `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode)
+- `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode) / `supervisor-review-round-N.json` (relay mode)
 - `worker-final-report.md` / `coder-final-report.md` and `supervisor-final-report.md` / `adversary-final-report.md` when the round limit is exhausted
 - `final.json`
 

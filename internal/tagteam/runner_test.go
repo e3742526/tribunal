@@ -115,7 +115,7 @@ func TestRunAdversaryDoesNotRetryInvocationFailures(t *testing.T) {
 		Adversary: RoleTarget{Adapter: "missing"},
 		Timeout:   time.Second,
 	}
-	_, _, _, err := app.runAdversary(context.Background(), opts, 1, opts.Workdir, filepath.Join(opts.Workdir, "schema.json"), "prompt", "HEAD", "diff", filepath.Join(opts.Workdir, "diff.patch"), "")
+	_, _, _, err := app.runAdversary(context.Background(), opts, 1, opts.Workdir, filepath.Join(opts.Workdir, "schema.json"), "prompt", "HEAD", "diff", filepath.Join(opts.Workdir, "diff.patch"), "", RelayContext{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -244,6 +244,10 @@ func TestRoleLabels(t *testing.T) {
 	editor, reviewer = roleLabels(ModeAdversarial)
 	if editor != "coder" || reviewer != "adversary" {
 		t.Fatalf("adversarial labels = %q/%q", editor, reviewer)
+	}
+	editor, reviewer = roleLabels(ModeRelay)
+	if editor != "coder" || reviewer != "supervisor" {
+		t.Fatalf("relay labels = %q/%q", editor, reviewer)
 	}
 	editor, reviewer = roleLabels("")
 	if editor != "coder" || reviewer != "adversary" {
@@ -556,6 +560,14 @@ else
 fi
 `
 
+const fakeAgyScript = `#!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "--version" ]; then
+  echo "agy fake"
+  exit 0
+fi
+printf '%s' '{"relevant_files":["README.md"],"likely_entry_points":["README"],"existing_patterns":["plain text"],"risks":["none"],"suggested_tests":["go test ./..."]}'
+`
+
 func installFakeClaudeBinary(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -564,6 +576,69 @@ func installFakeClaudeBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installFakeBinaries(t *testing.T, scripts map[string]string) {
+	t.Helper()
+	binDir := t.TempDir()
+	for name, script := range scripts {
+		scriptPath := filepath.Join(binDir, name)
+		if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyScript,
+		"claude": fakeClaudeScript,
+	})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeRelay,
+		Scout:     RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error from fake supervisor review")
+	}
+	if final.Mode != ModeRelay {
+		t.Fatalf("mode = %q", final.Mode)
+	}
+	for _, name := range []string{
+		"supervisor-brief.md",
+		"scout-round-1.json",
+		"supervisor-instructions.md",
+		"coder-round-1.md",
+		"diff-round-1.patch",
+		"supervisor-review-round-1.json",
+		"final.json",
+	} {
+		if !fileExists(filepath.Join(final.RunDir, name)) {
+			t.Fatalf("expected relay artifact %s in %s", name, final.RunDir)
+		}
+	}
+	if final.Adapters["scout"] != "agy" || final.Adapters["coder"] != "claude" || final.Adapters["supervisor"] != "claude" {
+		t.Fatalf("adapters = %#v", final.Adapters)
+	}
 }
 
 func TestFix_RestoresAdversarialModeAndTargetsOverSupervisorDefault(t *testing.T) {
