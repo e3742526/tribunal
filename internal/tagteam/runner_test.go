@@ -103,7 +103,7 @@ func TestRolePromptsDoNotLeakConflictingAuthority(t *testing.T) {
 		}
 	}
 
-	scoutPrompt := strings.ToLower(BuildScoutPrompt("/repo", "ship it", "brief", "recon", "pre", "", ""))
+	scoutPrompt := strings.ToLower(BuildScoutPrompt("/repo", "ship it", "brief", "recon", "pre", "", "", ""))
 	for _, forbidden := range []string{"use \"pass\"", "needs_changes", "blocking findings", "produce blocking findings"} {
 		if strings.Contains(scoutPrompt, forbidden) {
 			t.Fatalf("scout prompt leaked reviewer authority %q:\n%s", forbidden, scoutPrompt)
@@ -1401,6 +1401,9 @@ if [ "$1" = "--help" ] || [ "$1" = "--version" ]; then
   echo "agy fake"
   exit 0
 fi
+if [ -n "$AGY_ARGS_LOG" ]; then
+  printf '%s\n---\n' "$*" >> "$AGY_ARGS_LOG"
+fi
 printf '%s' '{"relevant_files":["README.md"],"likely_entry_points":["README"],"existing_patterns":["plain text"],"risks":["none"],"suggested_tests":["go test ./..."]}'
 `
 
@@ -1431,6 +1434,8 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 		"agy":    fakeAgyScript,
 		"claude": fakeClaudeScript,
 	})
+	agyLogPath := filepath.Join(t.TempDir(), "agy.log")
+	t.Setenv("AGY_ARGS_LOG", agyLogPath)
 
 	repo := t.TempDir()
 	runGit(t, repo, "init")
@@ -1444,16 +1449,17 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 
 	app := NewApp(DefaultConfig())
 	final, err := app.Run(context.Background(), RunOptions{
-		Prompt:        "add a feature",
-		Workdir:       repo,
-		Mode:          ModeRelay,
-		Scout:         RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
-		Coder:         RoleTarget{Adapter: "claude"},
-		Adversary:     RoleTarget{Adapter: "claude"},
-		ScoutMode:     "recon",
-		PostScoutMode: "polish",
-		Rounds:        1,
-		Timeout:       10 * time.Second,
+		Prompt:         "add a feature",
+		Workdir:        repo,
+		Mode:           ModeRelay,
+		Scout:          RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:          RoleTarget{Adapter: "claude"},
+		Adversary:      RoleTarget{Adapter: "claude"},
+		ScoutMode:      "recon",
+		PostScoutMode:  "polish",
+		ScoutRetrieval: true,
+		Rounds:         1,
+		Timeout:        10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("expected blocking-findings error from fake supervisor review")
@@ -1463,6 +1469,7 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 	}
 	for _, name := range []string{
 		"supervisor-brief.md",
+		"retrieval-round-1.json",
 		"scout-round-1.json",
 		"supervisor-instructions.md",
 		"coder-round-1.md",
@@ -1477,6 +1484,54 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 	}
 	if final.Adapters["scout"] != "agy" || final.Adapters["coder"] != "claude" || final.Adapters["supervisor"] != "claude" {
 		t.Fatalf("adapters = %#v", final.Adapters)
+	}
+	agyLog, err := os.ReadFile(agyLogPath)
+	if err != nil {
+		t.Fatalf("read agy log: %v", err)
+	}
+	if !strings.Contains(string(agyLog), "Host retrieval evidence") {
+		t.Fatalf("scout prompt did not include retrieval context:\n%s", string(agyLog))
+	}
+}
+
+func TestRunLoop_RelayModeDisabledScoutRetrievalSkipsArtifact(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyScript,
+		"claude": fakeClaudeScript,
+	})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:         "add a feature",
+		Workdir:        repo,
+		Mode:           ModeRelay,
+		Scout:          RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:          RoleTarget{Adapter: "claude"},
+		Adversary:      RoleTarget{Adapter: "claude"},
+		ScoutMode:      "recon",
+		PostScoutMode:  "polish",
+		ScoutRetrieval: false,
+		Rounds:         1,
+		Timeout:        10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error from fake supervisor review")
+	}
+	if fileExists(filepath.Join(final.RunDir, "retrieval-round-1.json")) {
+		t.Fatal("did not expect retrieval artifact when retrieval is disabled")
+	}
+	if !fileExists(filepath.Join(final.RunDir, "scout-round-1.json")) {
+		t.Fatal("expected normal scout artifact")
 	}
 }
 

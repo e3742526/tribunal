@@ -2,6 +2,6 @@
 .env
 .tagteam/
 dist/
-tagteam
+/tagteam
 coverage.out
 .dory/

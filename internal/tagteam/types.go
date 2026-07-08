@@ -290,16 +290,27 @@ func (p WorkPlan) RemainingPackageTitles() []string {
 }
 
 type Scout struct {
-	SchemaVersion     int         `json:"schema_version,omitempty"`
-	Mode              string      `json:"mode,omitempty"`
-	Summary           string      `json:"summary,omitempty"`
-	RelevantFiles     []string    `json:"relevant_files"`
-	LikelyEntryPoints []string    `json:"likely_entry_points"`
-	ExistingPatterns  []string    `json:"existing_patterns"`
-	Risks             []string    `json:"risks"`
-	SuggestedTests    []string    `json:"suggested_tests"`
-	Items             []ScoutItem `json:"items,omitempty"`
-	DoNotBlock        bool        `json:"do_not_block,omitempty"`
+	SchemaVersion      int             `json:"schema_version,omitempty"`
+	Mode               string          `json:"mode,omitempty"`
+	Summary            string          `json:"summary,omitempty"`
+	RelevantFiles      []string        `json:"relevant_files"`
+	LikelyEntryPoints  []string        `json:"likely_entry_points"`
+	ExistingPatterns   []string        `json:"existing_patterns"`
+	Risks              []string        `json:"risks"`
+	SuggestedTests     []string        `json:"suggested_tests"`
+	RetrievalQueries   []string        `json:"retrieval_queries,omitempty"`
+	Evidence           []ScoutEvidence `json:"evidence,omitempty"`
+	RetrievalStatus    string          `json:"retrieval_status,omitempty"`
+	RetrievalTruncated bool            `json:"retrieval_truncated,omitempty"`
+	Items              []ScoutItem     `json:"items,omitempty"`
+	DoNotBlock         bool            `json:"do_not_block,omitempty"`
+}
+
+type ScoutEvidence struct {
+	File   string `json:"file"`
+	Line   int    `json:"line,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Reason string `json:"reason"`
 }
 
 type ScoutItem struct {
@@ -413,6 +424,7 @@ type DefaultsConfig struct {
 	Supervisor              string `toml:"supervisor"`
 	ScoutMode               string `toml:"scout_mode"`
 	PostScoutMode           string `toml:"post_scout_mode"`
+	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
 	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
 	MaxPackages             int    `toml:"max_packages"`
 	Package                 string `toml:"package"`
@@ -436,6 +448,7 @@ type ProfileConfig struct {
 	Supervisor              string `toml:"supervisor"`
 	ScoutMode               string `toml:"scout_mode"`
 	PostScoutMode           string `toml:"post_scout_mode"`
+	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
 	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
 	MaxPackages             int    `toml:"max_packages"`
 	Package                 string `toml:"package"`
@@ -499,6 +512,7 @@ type FlagInputs struct {
 	Scout                   string
 	ScoutMode               string
 	PostScoutMode           string
+	NoScoutRetrieval        bool
 	Supervisor              string
 	Reviewer                string
 	SupervisorCanEdit       bool
@@ -562,6 +576,7 @@ type RunOptions struct {
 	ScoutExplicitMode         Mode
 	ScoutMode                 string
 	PostScoutMode             string
+	ScoutRetrieval            bool
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool
 	SupervisorSlicing         bool

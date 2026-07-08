@@ -72,7 +72,7 @@ Supported adapters in this repo today:
 - `claude`
 - `agy`
 - `gosling` (coder-only)
-- `openai-compatible` / `oai` (review-only first cut)
+- `openai-compatible` / `oai` (read-only reviewer/scout first cut)
 
 ## Authentication
 
@@ -172,6 +172,17 @@ Relay mode runs a cost-aware three-agent pipeline: read-only scout reconnaissanc
 tagteam --relay "add OAuth login"
 ```
 
+Relay pre-scout `recon` uses bounded local retrieval by default before the
+scout model runs. Retrieval is host-owned, local-only, advisory, and does not
+use embeddings, network search, persistent indexes, daemons, or background
+caches. It writes `retrieval-round-1.json` with status/evidence metadata, then
+passes only a compact bounded summary into the scout prompt. Disable this layer
+with `--no-scout-retrieval`:
+
+```bash
+tagteam --relay --no-scout-retrieval "add OAuth login"
+```
+
 The built-in relay profile uses:
 
 ```toml
@@ -181,6 +192,7 @@ scout = "agy:gemini-3.5-flash-low"
 coder = "codex:gpt-5.4-mini"
 supervisor = "claude:sonnet"
 scout_mode = "recon"
+scout_retrieval = true
 post_scout_mode = "polish"
 rounds = 2
 ```
@@ -200,6 +212,13 @@ tagteam \
 
 In relay mode, legacy `-mc` selects the coder and `-ma` selects the supervisor.
 Scout modes are task-typed: `recon`, `lint`, `polish`, `tests`, or `risk`. Scout findings are advisory context only; only the supervisor review can fail a run with blocker/major findings.
+
+Retrieval runs only for relay pre-scout `scout_mode = "recon"` and never for
+post-scout, supervisor mode, adversarial mode, or solo mode. If `rg` is
+missing, retrieval times out, or no useful matches are found, tagteam records
+that status and continues with normal scout reconnaissance. Configure it with
+`scout_retrieval = true|false` or `TAGTEAM_SCOUT_RETRIEVAL=false`; flags still
+have highest precedence.
 
 ### Adversarial mode (backward compatible)
 
@@ -230,7 +249,7 @@ The built-in `agy` default model is `gemini-3.5-flash`; override it with `agy:<m
 
 ### OpenAI-compatible reviewers
 
-`openai-compatible` adds a small HTTP adapter for OpenAI-compatible `/chat/completions` APIs such as Featherless.ai, OpenRouter, and local gateways. This first cut is review-only: use it as the adversary/reviewer, not as the coder/worker.
+`openai-compatible` adds a small HTTP adapter for OpenAI-compatible `/chat/completions` APIs such as Featherless.ai, OpenRouter, and local gateways. This first cut is read-only: use it as the adversary/reviewer or relay scout, not as the coder/worker.
 
 Featherless.ai:
 
@@ -341,6 +360,7 @@ Relevant `defaults` keys:
 - `coder` / `adversary` — `adapter[:model]` targets used in adversarial mode
 - `scout` / `coder` / `supervisor` — `adapter[:model]` targets used in relay mode
 - `scout_mode` / `post_scout_mode` — relay scout task modes: `recon`, `lint`, `polish`, `tests`, or `risk`
+- `scout_retrieval` — enable bounded local retrieval for relay pre-scout `recon` (default `true`; disable with `--no-scout-retrieval` or `TAGTEAM_SCOUT_RETRIEVAL=false`)
 - `supervisor_slicing` — split supervisor-mode work into bounded packages before implementation
 - `max_packages` — maximum package count for supervisor slicing
 - `package` — selected package ID to execute from the work plan
@@ -349,7 +369,7 @@ Relevant `defaults` keys:
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
 - `test`, `git_safety`
 
-Profiles may override `mode`, `scout`, `scout_mode`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
 
 ```toml
 [defaults]
@@ -391,6 +411,7 @@ Typical contents include:
 - `solo-round-1.md` (solo mode)
 - `supervisor-work-plan.json` (supervisor mode with slicing)
 - `supervisor-brief.md` (supervisor or relay mode, round 1)
+- `retrieval-round-1.json` (relay pre-scout `recon` when retrieval is enabled)
 - `scout-round-1.json` (relay mode)
 - `supervisor-instructions.md` (relay mode)
 - `worker-round-N.md` (supervisor mode) / `coder-round-N.md` (adversarial or relay mode)

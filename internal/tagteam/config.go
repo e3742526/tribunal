@@ -19,6 +19,7 @@ func DefaultConfig() Config {
 	autoNextPackage := false
 	respectRepoInstructions := true
 	decisionMemory := false
+	scoutRetrieval := true
 	return Config{
 		Defaults: DefaultsConfig{
 			Mode:                    "supervisor",
@@ -29,6 +30,7 @@ func DefaultConfig() Config {
 			Supervisor:              "claude:opus",
 			ScoutMode:               "recon",
 			PostScoutMode:           "polish",
+			ScoutRetrieval:          &scoutRetrieval,
 			SupervisorSlicing:       &supervisorSlicing,
 			MaxPackages:             5,
 			AutoNextPackage:         &autoNextPackage,
@@ -54,13 +56,14 @@ func DefaultConfig() Config {
 				Test:      "make check",
 			},
 			"relay": {
-				Mode:          "relay",
-				Scout:         "agy:gemini-3.5-flash-low",
-				Coder:         "codex:gpt-5.4-mini",
-				Supervisor:    "claude:sonnet",
-				ScoutMode:     "recon",
-				PostScoutMode: "polish",
-				Rounds:        2,
+				Mode:           "relay",
+				Scout:          "agy:gemini-3.5-flash-low",
+				Coder:          "codex:gpt-5.4-mini",
+				Supervisor:     "claude:sonnet",
+				ScoutMode:      "recon",
+				PostScoutMode:  "polish",
+				ScoutRetrieval: &scoutRetrieval,
+				Rounds:         2,
 			},
 		},
 		Adapters: AdapterConfigSet{
@@ -300,6 +303,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.PostScoutMode != "" {
 		dst.Defaults.PostScoutMode = src.Defaults.PostScoutMode
 	}
+	if src.Defaults.ScoutRetrieval != nil {
+		dst.Defaults.ScoutRetrieval = src.Defaults.ScoutRetrieval
+	}
 	if src.Defaults.SupervisorSlicing != nil {
 		dst.Defaults.SupervisorSlicing = src.Defaults.SupervisorSlicing
 	}
@@ -365,6 +371,9 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.PostScoutMode != "" {
 				current.PostScoutMode = profile.PostScoutMode
+			}
+			if profile.ScoutRetrieval != nil {
+				current.ScoutRetrieval = profile.ScoutRetrieval
 			}
 			if profile.SupervisorSlicing != nil {
 				current.SupervisorSlicing = profile.SupervisorSlicing
@@ -464,6 +473,7 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_SCOUT",
 		"TAGTEAM_SCOUT_MODE",
 		"TAGTEAM_POST_SCOUT_MODE",
+		"TAGTEAM_SCOUT_RETRIEVAL",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_SUPERVISOR_SLICING",
 		"TAGTEAM_MAX_PACKAGES",
@@ -521,6 +531,11 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_POST_SCOUT_MODE"); ok {
 		cfg.Defaults.PostScoutMode = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_RETRIEVAL"); ok {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.Defaults.ScoutRetrieval = &parsed
+		}
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SUPERVISOR"); ok {
 		cfg.Defaults.Supervisor = value
@@ -651,6 +666,10 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	gitSafety := cfg.Defaults.GitSafety
 	scoutMode := cfg.Defaults.ScoutMode
 	postScoutMode := cfg.Defaults.PostScoutMode
+	scoutRetrieval := true
+	if cfg.Defaults.ScoutRetrieval != nil {
+		scoutRetrieval = *cfg.Defaults.ScoutRetrieval
+	}
 	supervisorSlicing := true
 	if cfg.Defaults.SupervisorSlicing != nil {
 		supervisorSlicing = *cfg.Defaults.SupervisorSlicing
@@ -718,6 +737,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.PostScoutMode != "" {
 			postScoutMode = profile.PostScoutMode
+		}
+		if profile.ScoutRetrieval != nil {
+			scoutRetrieval = *profile.ScoutRetrieval
 		}
 		if profile.SupervisorSlicing != nil {
 			supervisorSlicing = *profile.SupervisorSlicing
@@ -945,6 +967,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["post-scout-mode"] {
 		postScoutMode = flags.PostScoutMode
 	}
+	if changed["no-scout-retrieval"] {
+		scoutRetrieval = false
+	}
 	if changed["slice"] {
 		supervisorSlicing = flags.Slice
 	}
@@ -1007,6 +1032,8 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if err := validateScoutMode("post-scout-mode", postScoutMode); err != nil {
 			return RunOptions{}, err
 		}
+	} else if changed["no-scout-retrieval"] {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--no-scout-retrieval is only valid in relay mode")}
 	}
 	if maxPackages <= 0 {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-packages must be > 0")}
@@ -1090,6 +1117,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		ScoutExplicitMode:         scoutExplicitMode,
 		ScoutMode:                 scoutMode,
 		PostScoutMode:             postScoutMode,
+		ScoutRetrieval:            scoutRetrieval,
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
 		SupervisorSlicing:         supervisorSlicing,

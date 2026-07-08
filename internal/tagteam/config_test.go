@@ -370,6 +370,9 @@ func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
 		t.Fatalf("scout modes = %q/%q", opts.ScoutMode, opts.PostScoutMode)
 	}
+	if !opts.ScoutRetrieval {
+		t.Fatal("relay should enable scout retrieval by default")
+	}
 }
 
 func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
@@ -395,6 +398,73 @@ func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
 	}
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
 		t.Fatalf("scout modes = %q/%q", opts.ScoutMode, opts.PostScoutMode)
+	}
+	if !opts.ScoutRetrieval {
+		t.Fatal("relay profile should enable scout retrieval by default")
+	}
+}
+
+func TestResolveOptions_NoScoutRetrievalDisablesRelayRetrieval(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:             "relay",
+		NoScoutRetrieval: true,
+		Timeout:          15 * time.Minute,
+	}, map[string]bool{"mode": true, "no-scout-retrieval": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutRetrieval {
+		t.Fatal("expected scout retrieval disabled")
+	}
+}
+
+func TestResolveOptions_ProfileCanDisableScoutRetrieval(t *testing.T) {
+	disabled := false
+	cfg := DefaultConfig()
+	cfg.Profiles["no-retrieval"] = ProfileConfig{
+		Mode:           "relay",
+		ScoutRetrieval: &disabled,
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "no-retrieval",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutRetrieval {
+		t.Fatal("expected profile to disable scout retrieval")
+	}
+}
+
+func TestResolveOptions_EnvCanDisableScoutRetrieval(t *testing.T) {
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg, map[string]string{"TAGTEAM_SCOUT_RETRIEVAL": "false"})
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:    "relay",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutRetrieval {
+		t.Fatal("expected env to disable scout retrieval")
+	}
+}
+
+func TestResolveOptions_NoScoutRetrievalRejectedOutsideRelay(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:             "supervisor",
+		NoScoutRetrieval: true,
+		Timeout:          15 * time.Minute,
+	}, map[string]bool{"mode": true, "no-scout-retrieval": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected no-scout-retrieval outside relay to fail")
+	}
+	if !strings.Contains(err.Error(), "--no-scout-retrieval is only valid in relay mode") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

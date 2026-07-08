@@ -1208,10 +1208,20 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	}
 	if opts.Mode == ModeRelay && initialReview == nil {
 		scoutOutputPath := filepath.Join(runDir, "scout-round-1.json")
+		retrievalContext := ""
+		if opts.ScoutRetrieval && opts.ScoutMode == "recon" {
+			logProgress(opts, "scout retrieval started")
+			retrieval, err := runScoutRetrieval(ctx, opts.Workdir, opts.Prompt, runDir, true)
+			if err != nil {
+				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write retrieval artifact: %w", err)}
+			}
+			retrievalContext = CompactRetrievalForPrompt(retrieval)
+			logProgress(opts, "scout retrieval completed status=%s evidence=%d", retrieval.Status, len(retrieval.Evidence))
+		}
 		logProgress(opts, "scout %s started adapter=%s", opts.ScoutMode, scout.ID())
 		scoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
 			Context:    ctx,
-			Prompt:     withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, "", opts.ScoutMode, "pre", "", ""), repoInstructions),
+			Prompt:     withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, "", opts.ScoutMode, "pre", "", "", retrievalContext), repoInstructions),
 			EnvOverlay: opts.EnvOverlay,
 			Model:      opts.Scout.Model,
 			Workdir:    opts.Workdir,
@@ -1226,6 +1236,15 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			return final, err
 		}
 		if scoutResult.Scout != nil {
+			if retrievalContext != "" && scoutResult.Scout.RetrievalStatus == "" {
+				var retrieval RetrievalArtifact
+				if err := json.Unmarshal([]byte(retrievalContext), &retrieval); err == nil {
+					scoutResult.Scout.RetrievalQueries = append([]string{}, retrieval.Queries...)
+					scoutResult.Scout.Evidence = retrievalScoutEvidence(retrieval.Evidence)
+					scoutResult.Scout.RetrievalStatus = retrieval.Status
+					scoutResult.Scout.RetrievalTruncated = retrieval.Truncated
+				}
+			}
 			relay.Scout = *scoutResult.Scout
 		}
 		final.Costs["scout"] += scoutResult.CostUSD
@@ -1391,7 +1410,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			logProgress(opts, "round %d post-scout %s started adapter=%s", round, opts.PostScoutMode, scout.ID())
 			postScoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
 				Context:    ctx,
-				Prompt:     withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, relay.Brief, opts.PostScoutMode, "post", diff, safeTestOutput(testOutput)), repoInstructions),
+				Prompt:     withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, relay.Brief, opts.PostScoutMode, "post", diff, safeTestOutput(testOutput), ""), repoInstructions),
 				EnvOverlay: opts.EnvOverlay,
 				Model:      opts.Scout.Model,
 				Workdir:    opts.Workdir,
@@ -1849,6 +1868,12 @@ func normalizeScout(scout *Scout) {
 	}
 	if scout.SuggestedTests == nil {
 		scout.SuggestedTests = []string{}
+	}
+	if scout.RetrievalQueries == nil {
+		scout.RetrievalQueries = []string{}
+	}
+	if scout.Evidence == nil {
+		scout.Evidence = []ScoutEvidence{}
 	}
 }
 
