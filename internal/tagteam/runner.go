@@ -168,6 +168,7 @@ func (a *App) Doctor(ctx context.Context, opts RunOptions) (map[string]VersionIn
 
 func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Review) (FinalRun, error) {
 	runID := newRunID()
+	logProgress(opts, "run %s preflight started workdir=%s", runID, opts.Workdir)
 	baseline, cleanup, err := preflight(opts, runID)
 	if err != nil {
 		return FinalRun{}, err
@@ -200,6 +201,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err := writeJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
 		return FinalRun{}, err
 	}
+	logProgress(opts, "run %s started baseline=%s run-dir=%s", runID, baseline, runDir)
 
 	registry := Registry(a.Config, opts)
 	coder, ok := registry[opts.Coder.Adapter]
@@ -229,6 +231,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	var sessionID string
 	var latestReview Review
 	for round := 1; round <= opts.Rounds; round++ {
+		logProgress(opts, "round %d/%d coder started adapter=%s", round, opts.Rounds, coder.ID())
 		coderPrompt := BuildCoderPrompt(opts.Workdir, opts.Prompt)
 		if round == 1 && initialReview != nil {
 			diff, err := gitDiffAgainst(opts.Workdir, baseline)
@@ -254,10 +257,14 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			OutputPath:   coderOutputPath,
 			ResumeID:     sessionID,
 			Timeout:      opts.Timeout,
+			Phase:        fmt.Sprintf("round %d coder %s", round, coder.ID()),
+			Quiet:        opts.Quiet,
+			Verbose:      opts.Verbose,
 		}, opts.DryRun)
 		if err != nil {
 			return final, err
 		}
+		logProgress(opts, "round %d coder completed output=%s", round, coderOutputPath)
 		final.Costs["coder"] += coderResult.CostUSD
 		if coderResult.SessionID != "" {
 			sessionID = coderResult.SessionID
@@ -272,22 +279,31 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			return final, err
 		}
 		final.LatestDiffPath = diffPath
+		logProgress(opts, "round %d diff captured bytes=%d path=%s", round, len(diff), diffPath)
 
 		testOutput := ""
 		if opts.TestCmd != "" && !opts.NoTest {
 			testPath := filepath.Join(runDir, fmt.Sprintf("test-round-%d.txt", round))
+			logProgress(opts, "round %d tests started command=%q", round, opts.TestCmd)
 			testRun, err := runTestCommand(ctx, opts.Workdir, opts.TestCmd, opts.Timeout, testPath, opts.DryRun)
 			if err != nil {
 				return final, err
 			}
 			final.Tests = append(final.Tests, testRun)
 			testOutput = testRun.Output
+			if testRun.Passed {
+				logProgress(opts, "round %d tests passed output=%s", round, testPath)
+			} else {
+				logProgress(opts, "round %d tests failed output=%s", round, testPath)
+			}
 		}
 
+		logProgress(opts, "round %d adversary started adapter=%s", round, adversary.ID())
 		review, cost, reviewPath, err := a.runAdversary(ctx, opts, round, runDir, schemaPath, opts.Prompt, baseline, diff, diffPath, testOutput)
 		if err != nil {
 			return final, err
 		}
+		logProgress(opts, "round %d adversary completed verdict=%s findings=%d output=%s", round, review.Verdict, len(review.Findings), reviewPath)
 		final.Costs["adversary"] += cost
 		final.RoundsCompleted = round
 		final.Review = review
@@ -313,6 +329,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	final.ChangedFiles = changedFiles(opts.Workdir, baseline)
 	final.FinishedAt = time.Now().UTC()
 	final.ExitCode = a.computeExitCode(final)
+	logProgress(opts, "run %s finished verdict=%s exit=%d rounds=%d/%d", runID, final.Verdict, final.ExitCode, final.RoundsCompleted, final.RoundsRequested)
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
@@ -347,6 +364,9 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 		SchemaPath:  schemaPath,
 		Passthrough: opts.ClaudeArgs,
 		Timeout:     opts.Timeout,
+		Phase:       fmt.Sprintf("round %d adversary %s", round, adversary.ID()),
+		Quiet:       opts.Quiet,
+		Verbose:     opts.Verbose,
 	}
 	req.Stdin = input.Stdin
 	result, err := a.runAdapter(ctx, adversary, RoleAdversary, req, opts.DryRun)
@@ -354,6 +374,7 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 		if !IsOutputContractError(err) {
 			return nil, 0, "", err
 		}
+		logProgress(opts, "round %d adversary output invalid; retrying once error=%q", round, err.Error())
 		req.Prompt = req.Prompt + "\n\nValidation error from the previous response:\n" + err.Error() + "\n\nReturn JSON exactly matching the schema."
 		result, err = a.runAdapter(ctx, adversary, RoleAdversary, req, opts.DryRun)
 		if err != nil {
@@ -385,6 +406,10 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		}
 		return result, nil
 	}
+	phase := req.Phase
+	if phase == "" {
+		phase = fmt.Sprintf("%s %s", role, adapter.ID())
+	}
 	runCtx := req.Context
 	if runCtx == nil {
 		runCtx = ctx
@@ -403,13 +428,34 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	started := time.Now()
+	logRequestProgress(req, "%s process starting output=%s", phase, spec.Output)
+	done := make(chan struct{})
+	if !req.Quiet {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logRequestProgress(req, "%s still running elapsed=%s", phase, shortDuration(time.Since(started)))
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
 	if err := cmd.Run(); err != nil {
+		close(done)
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
+		logRequestProgress(req, "%s failed elapsed=%s", phase, shortDuration(time.Since(started)))
 		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s failed: %s", adapter.ID(), msg)}
 	}
+	close(done)
+	logRequestProgress(req, "%s process completed elapsed=%s", phase, shortDuration(time.Since(started)))
 	raw := stdout.Bytes()
 	if req.OutputPath != "" && fileExists(req.OutputPath) {
 		var readErr error
@@ -687,6 +733,24 @@ func safeTestOutput(output string) string {
 		return "(no tests run)"
 	}
 	return output
+}
+
+func logProgress(opts RunOptions, format string, args ...any) {
+	if opts.Quiet {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "tagteam: "+format+"\n", args...)
+}
+
+func logRequestProgress(req Request, format string, args ...any) {
+	if req.Quiet {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "tagteam: "+format+"\n", args...)
+}
+
+func shortDuration(d time.Duration) string {
+	return d.Truncate(time.Second).String()
 }
 
 func prepareReviewInput(adversary Adapter, diff, diffPath string) reviewInput {

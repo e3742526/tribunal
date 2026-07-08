@@ -16,7 +16,7 @@ const ReviewSchema = `{
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["severity", "file", "issue", "fix"],
+        "required": ["severity", "file", "line", "issue", "fix"],
         "properties": {
           "severity": {
             "type": "string",

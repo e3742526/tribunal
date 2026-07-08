@@ -106,6 +106,9 @@ type Request struct {
 	Passthrough  []string
 	ResumeID     string
 	Stdin        []byte
+	Phase        string
+	Quiet        bool
+	Verbose      bool
 }
 
 type Adapter interface {

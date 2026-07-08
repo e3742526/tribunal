@@ -78,8 +78,16 @@ func runDefault(cmd *cobra.Command, flags *flagState, prompt string) error {
 	}
 	app := tagteam.NewApp(cfg)
 	final, err := app.Run(context.Background(), opts)
+	final = withErrorExitCode(final, err)
 	renderFinal(cmd, final, opts)
 	return err
+}
+
+func withErrorExitCode(final tagteam.FinalRun, err error) tagteam.FinalRun {
+	if err != nil && final.RunID != "" && final.ExitCode == tagteam.ExitSuccess {
+		final.ExitCode = tagteam.ExitCode(err)
+	}
+	return final
 }
 
 func newReviewCommand(shared *flagState) *cobra.Command {
@@ -94,6 +102,7 @@ func newReviewCommand(shared *flagState) *cobra.Command {
 			}
 			app := tagteam.NewApp(cfg)
 			final, err := app.Review(context.Background(), opts, "")
+			final = withErrorExitCode(final, err)
 			renderFinal(cmd, final, opts)
 			return err
 		},
@@ -113,6 +122,7 @@ func newFixCommand(shared *flagState) *cobra.Command {
 			}
 			app := tagteam.NewApp(cfg)
 			final, err := app.Fix(context.Background(), opts)
+			final = withErrorExitCode(final, err)
 			renderFinal(cmd, final, opts)
 			return err
 		},

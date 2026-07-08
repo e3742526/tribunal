@@ -24,6 +24,31 @@ func TestReviewValidation(t *testing.T) {
 	}
 }
 
+func TestReviewSchemaRequiresAllFindingProperties(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Findings struct {
+				Items struct {
+					Required   []string       `json:"required"`
+					Properties map[string]any `json:"properties"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(ReviewSchema), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	required := map[string]bool{}
+	for _, key := range schema.Properties.Findings.Items.Required {
+		required[key] = true
+	}
+	for key := range schema.Properties.Findings.Items.Properties {
+		if !required[key] {
+			t.Fatalf("finding property %q is not required", key)
+		}
+	}
+}
+
 func TestPrepareReviewInput_UsesStdinWhenSupported(t *testing.T) {
 	input := prepareReviewInput(&ClaudeAdapter{}, "diff --git a b", "/tmp/diff.patch")
 	if !input.ViaStdin {

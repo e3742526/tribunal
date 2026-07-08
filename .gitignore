@@ -3,3 +3,4 @@
 dist/
 tagteam
 coverage.out
+.dory/
