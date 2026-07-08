@@ -2,10 +2,13 @@ package tagteam
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +166,63 @@ func TestGitDirty_IgnoresTeamCLIRoot(t *testing.T) {
 	}
 }
 
+func TestCaptureDiffArtifact_IncludesUntrackedAndExcludesTagteam(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+	baseline := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new file.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(repo, ".tagteam", "runs", "test-run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "internal-artifact.txt"), []byte("ignore me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifact, err := captureDiffArtifact(context.Background(), repo, baseline, runDir, 1)
+	if err != nil {
+		t.Fatalf("captureDiffArtifact() error = %v", err)
+	}
+	for _, path := range []string{artifact.PatchPath, artifact.NumstatPath, artifact.FilesPath, artifact.SHA256Path} {
+		if !fileExists(path) {
+			t.Fatalf("expected artifact %s", path)
+		}
+	}
+	if !strings.Contains(artifact.Patch, "diff --git a/README.md b/README.md") {
+		t.Fatalf("patch missing tracked modification:\n%s", artifact.Patch)
+	}
+	if !strings.Contains(artifact.Patch, "diff --git a/new file.txt b/new file.txt") {
+		t.Fatalf("patch missing untracked file:\n%s", artifact.Patch)
+	}
+	if strings.Contains(artifact.Patch, ".tagteam") {
+		t.Fatalf("patch should exclude .tagteam artifacts:\n%s", artifact.Patch)
+	}
+	hashBytes, err := os.ReadFile(artifact.SHA256Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(artifact.Patch))
+	if strings.TrimSpace(string(hashBytes)) != hex.EncodeToString(sum[:]) {
+		t.Fatalf("sha256 artifact mismatch")
+	}
+	if got := artifact.ChangedFiles(); !reflect.DeepEqual(got, []string{"README.md", "new file.txt"}) {
+		t.Fatalf("changed files = %#v", got)
+	}
+}
+
 func TestComputeExitCode_UsesLastTestOnly(t *testing.T) {
 	app := NewApp(DefaultConfig())
 	final := FinalRun{
@@ -173,6 +233,49 @@ func TestComputeExitCode_UsesLastTestOnly(t *testing.T) {
 	}
 	if got := app.computeExitCode(final); got != ExitSuccess {
 		t.Fatalf("exit code = %d", got)
+	}
+}
+
+func TestRoleLabels(t *testing.T) {
+	editor, reviewer := roleLabels(ModeSupervisor)
+	if editor != "worker" || reviewer != "supervisor" {
+		t.Fatalf("supervisor labels = %q/%q", editor, reviewer)
+	}
+	editor, reviewer = roleLabels(ModeAdversarial)
+	if editor != "coder" || reviewer != "adversary" {
+		t.Fatalf("adversarial labels = %q/%q", editor, reviewer)
+	}
+	editor, reviewer = roleLabels("")
+	if editor != "coder" || reviewer != "adversary" {
+		t.Fatalf("zero-value mode labels = %q/%q", editor, reviewer)
+	}
+}
+
+func TestSupervisorBriefRole(t *testing.T) {
+	if got := supervisorBriefRole(false); got != RoleSupervisor {
+		t.Fatalf("supervisorBriefRole(false) = %q", got)
+	}
+	if got := supervisorBriefRole(true); got != RoleCoder {
+		t.Fatalf("supervisorBriefRole(true) = %q", got)
+	}
+}
+
+func TestBuildRoundLimitReportPromptStopsWork(t *testing.T) {
+	prompt := BuildRoundLimitReportPrompt("worker", "supervisor", ModeSupervisor, "ship it", "diff", Review{
+		Verdict:  "needs_changes",
+		Summary:  "needs fixes",
+		Findings: []Finding{{Severity: "major", File: "main.go", Issue: "bug", Fix: "fix it"}},
+	}, []TestRun{{Command: "go test ./...", Passed: false}})
+	for _, want := range []string{
+		"The user-defined round limit has been reached",
+		"Do not edit",
+		"It is acceptable if the change is incomplete",
+		"disagree",
+		"What remains incomplete or risky",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -253,4 +356,955 @@ func runGit(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 	return string(out)
+}
+
+func TestIntegration_GoslingAdversaryRejected(t *testing.T) {
+	app := NewApp(DefaultConfig())
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	opts := RunOptions{
+		Workdir:   repo,
+		Adversary: RoleTarget{Adapter: "gosling"},
+		Timeout:   time.Second,
+	}
+	_, err := app.Review(context.Background(), opts, "review this code")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "gosling is not supported as an adversary adapter") {
+		t.Fatalf("expected error containing 'gosling is not supported as an adversary adapter', got: %v", err)
+	}
+}
+
+func TestRunLoop_SupervisorModeDryRun(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	execLookPath = func(file string) (string, error) {
+		return filepath.Join("/mock/bin", file), nil
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	opts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "agy"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    2,
+		DryRun:    true,
+		Timeout:   5 * time.Second,
+	}
+	final, err := app.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if final.Verdict != "pass" {
+		t.Fatalf("verdict = %q", final.Verdict)
+	}
+	if final.RoundsCompleted != 1 {
+		t.Fatalf("rounds completed = %d", final.RoundsCompleted)
+	}
+	if final.Adapters["worker"] != "agy" || final.Adapters["supervisor"] != "claude" {
+		t.Fatalf("adapters = %#v", final.Adapters)
+	}
+	if _, ok := final.Adapters["coder"]; ok {
+		t.Fatalf("did not expect legacy 'coder' label in supervisor mode: %#v", final.Adapters)
+	}
+	if !strings.Contains(final.LatestReviewPath, "supervisor-round-1.json") {
+		t.Fatalf("latest review path = %q", final.LatestReviewPath)
+	}
+}
+
+func TestRun_NormalizesEmptyModeToSupervisor(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	execLookPath = func(file string) (string, error) {
+		return filepath.Join("/mock/bin", file), nil
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Coder:     RoleTarget{Adapter: "agy"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		DryRun:    true,
+		Timeout:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if final.Mode != ModeSupervisor {
+		t.Fatalf("empty mode should normalize to supervisor, got %q", final.Mode)
+	}
+	if final.Adapters["worker"] != "agy" || final.Adapters["supervisor"] != "claude" {
+		t.Fatalf("expected supervisor-mode labels, got %#v", final.Adapters)
+	}
+}
+
+func TestRunLoop_SupervisorCanEditUsesCoderRoleForBrief(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	execLookPath = func(file string) (string, error) {
+		return filepath.Join("/mock/bin", file), nil
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	opts := RunOptions{
+		Prompt:            "add a feature",
+		Workdir:           repo,
+		Mode:              ModeSupervisor,
+		Coder:             RoleTarget{Adapter: "agy"},
+		Adversary:         RoleTarget{Adapter: "claude"},
+		SupervisorCanEdit: true,
+		Rounds:            1,
+		DryRun:            true,
+		Timeout:           5 * time.Second,
+	}
+	final, err := app.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if final.Verdict != "pass" {
+		t.Fatalf("verdict = %q", final.Verdict)
+	}
+}
+
+// fakeClaudeScript returns a shell script that emulates the parts of the
+// `claude` CLI tagteam depends on: --version for Detect, and, for -p
+// invocations, a coder-style "ok" result unless the invocation carries the
+// adversary/supervisor "dontAsk" permission mode, in which case it returns a
+// blocking (needs_changes/major) review.
+const fakeClaudeScript = `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "1.0.0"
+  exit 0
+fi
+if [ -n "$CLAUDE_ARGS_LOG" ]; then
+  printf '%s\n---\n' "$*" >> "$CLAUDE_ARGS_LOG"
+fi
+is_review=0
+for arg in "$@"; do
+  if [ "$arg" = "dontAsk" ]; then
+    is_review=1
+  fi
+done
+if [ "$is_review" = "1" ]; then
+  printf '%s' '{"result":"{\"verdict\":\"needs_changes\",\"summary\":\"needs fixes\",\"findings\":[{\"severity\":\"major\",\"file\":\"main.go\",\"issue\":\"bug\",\"fix\":\"fix it\"}],\"test_suggestions\":[]}","session_id":"","total_cost_usd":0}'
+else
+  printf '%s' '{"result":"ok","session_id":"sess1","total_cost_usd":0}'
+fi
+`
+
+func installFakeClaudeBinary(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	scriptPath := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(scriptPath, []byte(fakeClaudeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestFix_RestoresAdversarialModeAndTargetsOverSupervisorDefault(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+
+	// Simulate `tagteam --mode adversarial "..."`: an explicit adversarial
+	// run that exhausts its single round with a blocking review.
+	runOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	final, err := app.Run(context.Background(), runOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the initial run")
+	}
+	if final.Mode != ModeAdversarial {
+		t.Fatalf("persisted mode = %q", final.Mode)
+	}
+	if !final.Review.HasBlockingFindings() {
+		t.Fatalf("expected the seeded review to have blocking findings: %#v", final.Review)
+	}
+	if !final.RoundLimitReached {
+		t.Fatal("expected the initial run to record round limit exhaustion")
+	}
+	if len(final.RoundLimitReports) != 2 {
+		t.Fatalf("expected final reports from both agents, got %#v", final.RoundLimitReports)
+	}
+	for _, report := range final.RoundLimitReports {
+		if report.Path == "" || !fileExists(report.Path) {
+			t.Fatalf("expected report artifact for %s at %q", report.Role, report.Path)
+		}
+		if strings.TrimSpace(report.Text) == "" {
+			t.Fatalf("expected report text for %s", report.Role)
+		}
+	}
+
+	// Simulate bare `tagteam fix`: no --mode/--worker/--supervisor flags,
+	// so ResolveOptions would hand Fix the current (supervisor) defaults.
+	fixOpts := RunOptions{
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "agy"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "opus"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+		// ModeExplicit/CoderExplicit/AdversaryExplicit left false: this is
+		// exactly what ResolveOptions produces when the user didn't pass
+		// --mode/--worker/--supervisor/-mc/-ma on the fix invocation.
+	}
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("fix should have resumed the saved adversarial mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Adapter != "claude" || fixed.Adversary.Adapter != "claude" {
+		t.Fatalf("fix should have resumed the saved coder/adversary targets: %#v / %#v", fixed.Coder, fixed.Adversary)
+	}
+	if fixed.Adapters["coder"] != "claude" || fixed.Adapters["adversary"] != "claude" {
+		t.Fatalf("fix should report coder/adversary labels, got: %#v", fixed.Adapters)
+	}
+	if _, ok := fixed.Adapters["worker"]; ok {
+		t.Fatalf("fix should not have switched to supervisor-mode labels: %#v", fixed.Adapters)
+	}
+	if !strings.Contains(fixed.LatestReviewPath, "adversary-round-1.json") {
+		t.Fatalf("expected an adversary-labeled review artifact, got %q", fixed.LatestReviewPath)
+	}
+	if !fileExists(filepath.Join(fixed.RunDir, "coder-round-1.md")) {
+		t.Fatalf("expected a coder-labeled transcript in %s", fixed.RunDir)
+	}
+}
+
+func TestFix_ExplicitModeOverridesSavedRun(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	runOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), runOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the initial run")
+	}
+
+	// Simulate `tagteam fix --mode adversarial -mc claude -ma claude`: the
+	// caller explicitly pins mode/targets for this invocation, so Fix must
+	// not override them even though they happen to match the saved run.
+	fixOpts := RunOptions{
+		Workdir:           repo,
+		Mode:              ModeAdversarial,
+		ModeExplicit:      true,
+		Coder:             RoleTarget{Adapter: "claude"},
+		Adversary:         RoleTarget{Adapter: "claude"},
+		CoderExplicit:     true,
+		AdversaryExplicit: true,
+		Rounds:            1,
+		Timeout:           10 * time.Second,
+	}
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q", fixed.Mode)
+	}
+}
+
+func TestFix_ProfileSelectedModeNotOverwrittenBySavedRun(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	// Seed a saved run in supervisor mode (the current default), so a naive
+	// resume would try to reapply supervisor mode/targets on the fix below.
+	app := NewApp(DefaultConfig())
+	seedOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), seedOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the seed run")
+	}
+
+	// Resolve `tagteam fix --profile legacy` against a config whose
+	// "legacy" profile selects adversarial mode with its own targets. This
+	// mirrors ResolveOptions's real output: profile selection marks
+	// mode/targets explicit even though the user passed no --mode/-mc/-ma
+	// flags directly.
+	cfg := DefaultConfig()
+	cfg.Profiles["legacy"] = ProfileConfig{
+		Mode:      "adversarial",
+		Coder:     "claude:sonnet",
+		Adversary: "claude:haiku",
+	}
+	fixOpts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "legacy",
+		Workdir: repo,
+		Timeout: 10 * time.Second,
+	}, map[string]bool{}, "")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if !fixOpts.ModeExplicit || !fixOpts.CoderExplicit || !fixOpts.AdversaryExplicit {
+		t.Fatalf("expected profile selection to mark mode/targets explicit: %#v", fixOpts)
+	}
+
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("fix should have kept the profile-resolved adversarial mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Adapter != "claude" || fixed.Coder.Model != "sonnet" {
+		t.Fatalf("fix should have kept the profile-resolved coder target, got %#v", fixed.Coder)
+	}
+	if fixed.Adversary.Adapter != "claude" || fixed.Adversary.Model != "haiku" {
+		t.Fatalf("fix should have kept the profile-resolved adversary target, got %#v", fixed.Adversary)
+	}
+}
+
+func TestFix_ProfileWithOnlyRoundsResumesSavedRunModeAndTargets(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	// Seed a saved adversarial-mode run, distinct from the current
+	// supervisor default, so a naive resume that ignores the saved run
+	// would flip mode/targets away from it.
+	app := NewApp(DefaultConfig())
+	seedOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), seedOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the seed run")
+	}
+
+	// Resolve `tagteam fix --profile quick`, where "quick" only overrides
+	// rounds. A profile that doesn't touch mode/coder/adversary/worker/
+	// supervisor must not block Fix() from resuming the saved run's mode
+	// and targets.
+	cfg := DefaultConfig()
+	cfg.Profiles["quick"] = ProfileConfig{Rounds: 3}
+	fixOpts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "quick",
+		Workdir: repo,
+		Timeout: 10 * time.Second,
+	}, map[string]bool{}, "")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if fixOpts.ModeExplicit || fixOpts.CoderExplicit || fixOpts.AdversaryExplicit {
+		t.Fatalf("expected a rounds-only profile to leave mode/targets non-explicit: %#v", fixOpts)
+	}
+	if fixOpts.Mode != ModeSupervisor {
+		t.Fatalf("expected the rounds-only profile to resolve to the current supervisor default before Fix() resumes, got %q", fixOpts.Mode)
+	}
+
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("fix should have resumed the saved adversarial mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Adapter != "claude" || fixed.Adversary.Adapter != "claude" {
+		t.Fatalf("fix should have resumed the saved coder/adversary targets: %#v / %#v", fixed.Coder, fixed.Adversary)
+	}
+	if fixed.RoundsRequested != 3 {
+		t.Fatalf("fix should still apply the profile's rounds override, got %d", fixed.RoundsRequested)
+	}
+}
+
+func TestReview_PersistsEditorTargetForFixResume(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+
+	// Simulate `tagteam review --mode adversarial -mc claude:sonnet -ma
+	// claude:haiku`: a review-only run with a non-default editor target.
+	// The editor is never invoked by Review(), so it doesn't need a
+	// distinct fake binary.
+	reviewOpts := RunOptions{
+		Workdir:       repo,
+		Mode:          ModeAdversarial,
+		Coder:         RoleTarget{Adapter: "claude", Model: "sonnet"},
+		CoderExplicit: true,
+		Adversary:     RoleTarget{Adapter: "claude", Model: "haiku"},
+		Timeout:       10 * time.Second,
+	}
+	reviewed, err := app.Review(context.Background(), reviewOpts, "review this diff")
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if reviewed.Coder.Adapter != "claude" || reviewed.Coder.Model != "sonnet" {
+		t.Fatalf("review should have persisted the editor target, got %#v", reviewed.Coder)
+	}
+	if reviewed.Review == nil || !reviewed.Review.HasBlockingFindings() {
+		t.Fatalf("expected the seeded review to have blocking findings: %#v", reviewed.Review)
+	}
+
+	// Simulate bare `tagteam fix`: no --mode/--worker/--supervisor/-mc/-ma
+	// flags, so ResolveOptions hands Fix the current (supervisor) defaults.
+	fixOpts := RunOptions{
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "agy"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "opus"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("fix should have resumed the review-only run's adversarial mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Adapter != "claude" || fixed.Coder.Model != "sonnet" {
+		t.Fatalf("fix should have resumed the review-only run's editor target, got %#v", fixed.Coder)
+	}
+	if fixed.Adversary.Adapter != "claude" || fixed.Adversary.Model != "haiku" {
+		t.Fatalf("fix should have resumed the review-only run's reviewer target, got %#v", fixed.Adversary)
+	}
+}
+
+func TestReviewRejectsUnknownEditorTargetBeforePersisting(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	opts := RunOptions{
+		Workdir:       repo,
+		Mode:          ModeSupervisor,
+		Coder:         RoleTarget{Adapter: "typo-worker"},
+		CoderExplicit: true,
+		Adversary:     RoleTarget{Adapter: "claude"},
+		Timeout:       10 * time.Second,
+	}
+	_, err := app.Review(context.Background(), opts, "review this diff")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	exitErr, ok := err.(*ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ExitInvalidArguments {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitInvalidArguments)
+	}
+	if !strings.Contains(err.Error(), "unknown worker adapter") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if fileExists(filepath.Join(repo, ".tagteam", "latest.json")) {
+		t.Fatal("review should fail before persisting latest.json")
+	}
+}
+
+func TestReviewIgnoresUnknownDefaultEditorTarget(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	opts := RunOptions{
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "stale-default-worker"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Timeout:   10 * time.Second,
+	}
+	reviewed, err := app.Review(context.Background(), opts, "review this diff")
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if reviewed.Coder.Adapter != "" {
+		t.Fatalf("review should not persist implicit/default editor target, got %#v", reviewed.Coder)
+	}
+}
+
+func TestFix_ExplicitModeDoesNotRestoreSavedTargets(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	seedOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "claude", Model: "worker-model"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "supervisor-model"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), seedOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the seed run")
+	}
+
+	fixOpts := RunOptions{
+		Workdir:      repo,
+		Mode:         ModeAdversarial,
+		ModeExplicit: true,
+		Coder:        RoleTarget{Adapter: "claude", Model: "coder-default"},
+		Adversary:    RoleTarget{Adapter: "claude", Model: "adversary-default"},
+		Rounds:       1,
+		Timeout:      10 * time.Second,
+	}
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("fix should keep explicit mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Model != "coder-default" {
+		t.Fatalf("fix should not restore saved worker as coder, got %#v", fixed.Coder)
+	}
+	if fixed.Adversary.Model != "adversary-default" {
+		t.Fatalf("fix should not restore saved supervisor as adversary, got %#v", fixed.Adversary)
+	}
+}
+
+func TestFix_ExplicitSameModeRestoresSavedTargets(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	seedOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "claude", Model: "saved-worker"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "saved-supervisor"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), seedOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the seed run")
+	}
+
+	fixed, err := app.Fix(context.Background(), RunOptions{
+		Workdir:      repo,
+		Mode:         ModeSupervisor,
+		ModeExplicit: true,
+		Coder:        RoleTarget{Adapter: "claude", Model: "current-worker-default"},
+		Adversary:    RoleTarget{Adapter: "claude", Model: "current-supervisor-default"},
+		Rounds:       1,
+		Timeout:      10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeSupervisor {
+		t.Fatalf("mode = %q", fixed.Mode)
+	}
+	if fixed.Coder.Model != "saved-worker" {
+		t.Fatalf("fix should restore saved worker target for explicit same-mode fix, got %#v", fixed.Coder)
+	}
+	if fixed.Adversary.Model != "saved-supervisor" {
+		t.Fatalf("fix should restore saved supervisor target for explicit same-mode fix, got %#v", fixed.Adversary)
+	}
+}
+
+func TestFixRejectsModeSpecificTargetAfterSavedModeRestore(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	seedOpts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	if _, err := app.Run(context.Background(), seedOpts); err == nil {
+		t.Fatal("expected blocking-findings error from the seed run")
+	}
+
+	_, err := app.Fix(context.Background(), RunOptions{
+		Workdir:           repo,
+		Mode:              ModeSupervisor,
+		Coder:             RoleTarget{Adapter: "claude", Model: "worker-from-flag"},
+		CoderExplicit:     true,
+		CoderExplicitMode: ModeSupervisor,
+		Adversary:         RoleTarget{Adapter: "claude", Model: "opus"},
+		Rounds:            1,
+		Timeout:           10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	exitErr, ok := err.(*ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ExitInvalidArguments {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitInvalidArguments)
+	}
+	if !strings.Contains(err.Error(), "selected for supervisor mode but latest run resumes as adversarial") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestFix_LegacyFinalJSONResumesAdversarialMode(t *testing.T) {
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+	baseline := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+
+	// Hand-write a final.json/latest.json pair shaped like a run saved
+	// before supervisor/worker mode existed: no mode/coder/adversary
+	// fields, only the legacy Adapters/Models maps with "coder"/"adversary"
+	// keys and a saved blocking review.
+	runDir := filepath.Join(repo, ".tagteam", "runs", "legacy-run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "input.md"), []byte("add a feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyFinal := map[string]any{
+		"run_id":   "legacy-run",
+		"run_dir":  runDir,
+		"workdir":  repo,
+		"baseline": baseline,
+		"verdict":  "needs_changes",
+		"summary":  "needs fixes",
+		"review": map[string]any{
+			"verdict": "needs_changes",
+			"summary": "needs fixes",
+			"findings": []map[string]any{
+				{"severity": "major", "file": "main.go", "issue": "bug", "fix": "fix it"},
+			},
+		},
+		"adapters": map[string]string{"coder": "claude", "adversary": "claude"},
+		"models":   map[string]string{"coder": "", "adversary": ""},
+	}
+	finalPath := filepath.Join(runDir, "final.json")
+	finalBytes, err := json.MarshalIndent(legacyFinal, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(finalPath, finalBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	latest := LatestRun{RunID: "legacy-run", RunDir: runDir, FinalPath: finalPath, Verdict: "needs_changes"}
+	latestBytes, err := json.MarshalIndent(latest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam", "latest.json"), latestBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp(DefaultConfig())
+	// Simulate bare `tagteam fix`: no --mode/--worker/--supervisor flags,
+	// so ResolveOptions hands Fix the current (supervisor) defaults, exactly
+	// as in the non-legacy resume test above.
+	fixOpts := RunOptions{
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "agy"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "opus"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	fixed, err := app.Fix(context.Background(), fixOpts)
+	if err == nil {
+		t.Fatal("expected blocking-findings error from the resumed run")
+	}
+	if fixed.Mode != ModeAdversarial {
+		t.Fatalf("legacy final.json should resume as adversarial mode, got %q", fixed.Mode)
+	}
+	if fixed.Coder.Adapter != "claude" || fixed.Adversary.Adapter != "claude" {
+		t.Fatalf("legacy final.json should reconstruct coder/adversary targets from the Adapters map: %#v / %#v", fixed.Coder, fixed.Adversary)
+	}
+	if fixed.Adapters["coder"] != "claude" || fixed.Adapters["adversary"] != "claude" {
+		t.Fatalf("fix should report coder/adversary labels, got: %#v", fixed.Adapters)
+	}
+}
+
+func TestEditorSystemPromptForMode(t *testing.T) {
+	supervisorPrompt := editorSystemPromptForMode(ModeSupervisor)
+	if supervisorPrompt != workerSystemPrompt {
+		t.Fatal("supervisor mode should select workerSystemPrompt")
+	}
+	if strings.Contains(supervisorPrompt, "two-agent adversarial workflow") {
+		t.Fatalf("worker system prompt should not use adversarial coder wording: %q", supervisorPrompt)
+	}
+	if !strings.Contains(supervisorPrompt, "supervisor-worker") {
+		t.Fatalf("worker system prompt should describe the supervisor-worker workflow: %q", supervisorPrompt)
+	}
+
+	adversarialPrompt := editorSystemPromptForMode(ModeAdversarial)
+	if adversarialPrompt != coderSystemPrompt {
+		t.Fatal("adversarial mode should select coderSystemPrompt")
+	}
+}
+
+func TestRunLoop_SupervisorModeSendsWorkerSystemPrompt(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude-args.log")
+	t.Setenv("CLAUDE_ARGS_LOG", logPath)
+	installFakeClaudeBinary(t)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	opts := RunOptions{
+		Prompt:    "add a feature",
+		Workdir:   repo,
+		Mode:      ModeSupervisor,
+		Coder:     RoleTarget{Adapter: "claude"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Rounds:    1,
+		Timeout:   10 * time.Second,
+	}
+	// The fake claude script always returns a blocking "needs_changes"
+	// review, so Run() is expected to report an error; only the captured
+	// invocation arguments matter for this test.
+	_, _ = app.Run(context.Background(), opts)
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read claude args log: %v", err)
+	}
+	log := string(data)
+	if !strings.Contains(log, "supervisor-worker coding workflow") {
+		t.Fatalf("expected the worker invocation to carry the supervisor-worker system prompt, log:\n%s", log)
+	}
+	if strings.Contains(log, "two-agent adversarial workflow") {
+		t.Fatalf("worker invocation should not carry the adversarial coder system prompt, log:\n%s", log)
+	}
+}
+
+func TestDoctorRejectsGoslingAdversaryAfterStatusProbe(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+
+	execLookPath = func(file string) (string, error) {
+		return filepath.Join("/mock/bin", file), nil
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	app := NewApp(DefaultConfig())
+	status, err := app.Doctor(context.Background(), RunOptions{
+		Coder:     RoleTarget{Adapter: "codex"},
+		Adversary: RoleTarget{Adapter: "gosling"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	exitErr, ok := err.(*ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ExitInvalidArguments {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitInvalidArguments)
+	}
+	if !strings.Contains(err.Error(), "gosling is not supported as an adversary adapter") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if len(status) == 0 || !status["gosling"].Found {
+		t.Fatalf("expected populated status, got %#v", status)
+	}
 }

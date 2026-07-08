@@ -31,6 +31,10 @@ func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 			DefaultModel: cfg.Adapters.Agy.DefaultModel,
 			ExtraArgs:    opts.AgyArgs,
 		},
+		"gosling": &GoslingAdapter{
+			DefaultModel: cfg.Adapters.Gosling.DefaultModel,
+			ExtraArgs:    opts.GoslingArgs,
+		},
 	}
 }
 
@@ -65,7 +69,7 @@ func (a *CodexAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	switch role {
 	case RoleCoder:
 		argv = append(argv, "-s", "workspace-write")
-	case RoleAdversary:
+	case RoleAdversary, RoleSupervisor, RoleReporter:
 		argv = append(argv, "-s", "read-only")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
@@ -156,6 +160,14 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 			}
 			argv = append(argv, "--json-schema", string(schemaBytes))
 		}
+	case RoleSupervisor, RoleReporter:
+		argv = append(argv,
+			"--permission-mode", "dontAsk",
+			"--allowedTools", "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status *)",
+		)
+		if req.SystemPrompt != "" {
+			argv = append(argv, "--append-system-prompt", req.SystemPrompt)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
 	}
@@ -223,11 +235,11 @@ func (a *AgyAdapter) Capabilities() CapabilitySet {
 }
 
 func (a *AgyAdapter) Detect(ctx context.Context) (VersionInfo, error) {
-	path, err := exec.LookPath("agy")
+	path, err := execLookPath("agy")
 	if err != nil {
 		return VersionInfo{Found: false, Auth: "unknown", Hint: "install agy", Runnable: false}, nil
 	}
-	cmd := exec.CommandContext(ctx, "agy", "--help")
+	cmd := execCommandContext(ctx, "agy", "--help")
 	if err := cmd.Run(); err != nil {
 		return VersionInfo{
 			Found:    true,
@@ -263,7 +275,7 @@ func (a *AgyAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	switch role {
 	case RoleCoder:
 		argv = append(argv, "--dangerously-skip-permissions")
-	case RoleAdversary:
+	case RoleAdversary, RoleSupervisor, RoleReporter:
 		argv = append(argv, "--sandbox")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
@@ -295,16 +307,26 @@ func (a *AgyAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 	return result, nil
 }
 
+var (
+	execLookPath       = exec.LookPath
+	execCommandContext = exec.CommandContext
+)
+
 func detectBinary(ctx context.Context, binary string, versionArgs []string, hint string) (VersionInfo, error) {
-	path, err := exec.LookPath(binary)
+	path, err := execLookPath(binary)
 	if err != nil {
 		return VersionInfo{Found: false, Auth: "unknown", Hint: hint, Runnable: false}, nil
 	}
-	cmd := exec.CommandContext(ctx, binary, versionArgs...)
+	cmd := execCommandContext(ctx, binary, versionArgs...)
 	out, err := cmd.CombinedOutput()
 	version := strings.TrimSpace(string(out))
-	if err != nil && version == "" {
-		version = "unknown"
+	runnable := true
+	if err != nil {
+		runnable = false
+		if version == "" {
+			version = "unknown"
+		}
+		hint = fmt.Sprintf("%s (probe failed: %v)", hint, err)
 	}
 	return VersionInfo{
 		Found:    true,
@@ -312,7 +334,7 @@ func detectBinary(ctx context.Context, binary string, versionArgs []string, hint
 		Auth:     "unknown",
 		Binary:   path,
 		Hint:     hint,
-		Runnable: true,
+		Runnable: runnable,
 	}, nil
 }
 
@@ -354,4 +376,98 @@ func extractJSONObject(raw []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("unterminated JSON object")
+}
+
+type GoslingAdapter struct {
+	DefaultModel string
+	ExtraArgs    []string
+}
+
+func (a *GoslingAdapter) ID() string {
+	return "gosling"
+}
+
+func (a *GoslingAdapter) Capabilities() CapabilitySet {
+	return CapabilitySet{}
+}
+
+func (a *GoslingAdapter) Detect(ctx context.Context) (VersionInfo, error) {
+	hint := "install gosling"
+	return detectBinary(ctx, "gosling", []string{"--version"}, hint)
+}
+
+func (a *GoslingAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
+	switch role {
+	case RoleCoder, RoleReporter:
+	case RoleAdversary:
+		return nil, fmt.Errorf("gosling is not supported as an adversary adapter")
+	case RoleSupervisor:
+		return nil, fmt.Errorf("gosling is not supported as a supervisor adapter")
+	default:
+		return nil, fmt.Errorf("unsupported role %q", role)
+	}
+	model := req.Model
+	if model == "" {
+		model = a.DefaultModel
+	}
+	argv := []string{"gosling", "run", "--no-session", "--quiet", "--output-format", "json"}
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	argv = append(argv, "--text", req.Prompt)
+	argv = append(argv, a.ExtraArgs...)
+	return &CommandSpec{Argv: argv, Dir: req.Workdir, Output: req.OutputPath}, nil
+}
+
+type goslingMessageContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type goslingMessage struct {
+	Role    string                  `json:"role"`
+	Content []goslingMessageContent `json:"content"`
+}
+
+type goslingMetadata struct {
+	TotalTokens  *int `json:"total_tokens,omitempty"`
+	InputTokens  *int `json:"input_tokens,omitempty"`
+	OutputTokens *int `json:"output_tokens,omitempty"`
+}
+
+type goslingEnvelope struct {
+	Messages []goslingMessage `json:"messages"`
+	Metadata goslingMetadata  `json:"metadata"`
+}
+
+func (a *GoslingAdapter) ParseResult(role Role, raw []byte) (Result, error) {
+	if role == RoleAdversary {
+		return Result{}, &OutputContractError{Err: fmt.Errorf("gosling is not supported as an adversary adapter")}
+	}
+	var envelope goslingEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return Result{Raw: raw, Text: strings.TrimSpace(string(raw))}, nil
+	}
+
+	var assistantText string
+	for i := len(envelope.Messages) - 1; i >= 0; i-- {
+		msg := envelope.Messages[i]
+		if strings.ToLower(msg.Role) == "assistant" {
+			var sb strings.Builder
+			for _, item := range msg.Content {
+				if item.Type == "text" {
+					sb.WriteString(item.Text)
+				}
+			}
+			assistantText = sb.String()
+			break
+		}
+	}
+
+	result := Result{
+		Raw:  raw,
+		Text: strings.TrimSpace(assistantText),
+	}
+
+	return result, nil
 }

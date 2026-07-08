@@ -23,7 +23,7 @@ func NewRootCommand() *cobra.Command {
 	flags := &flagState{}
 	root := &cobra.Command{
 		Use:           "tagteam [flags] <prompt>",
-		Short:         "Run a coder and adversary loop over a repository",
+		Short:         "Run a supervisor/worker (default) or coder/adversary agent loop over a repository",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -50,11 +50,16 @@ func NewRootCommand() *cobra.Command {
 
 func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet := cmd.PersistentFlags()
-	flagSet.StringVar(&flags.Coder, "mc", "", "Coder adapter[:model]")
-	flagSet.StringVar(&flags.Adversary, "ma", "", "Adversary adapter[:model]")
+	flagSet.StringVar(&flags.Mode, "mode", "", "Orchestration mode: supervisor (default) or adversarial")
+	flagSet.StringVar(&flags.Coder, "mc", "", "Editor adapter[:model] (coder in adversarial mode, worker in supervisor mode)")
+	flagSet.StringVar(&flags.Adversary, "ma", "", "Reviewer adapter[:model] (adversary in adversarial mode, supervisor in supervisor mode)")
+	flagSet.StringVar(&flags.Worker, "worker", "", "Worker adapter[:model] (supervisor mode only; alias for --mc)")
+	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Supervisor adapter[:model] (supervisor mode only; alias for --ma)")
+	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Reviewer adapter[:model] (adversarial mode only; alias for --ma)")
+	flagSet.BoolVar(&flags.SupervisorCanEdit, "supervisor-can-edit", false, "Allow the supervisor to edit files while writing its brief (default: read-only)")
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")
 	flagSet.StringVarP(&flags.Workdir, "workdir", "C", ".", "Working directory")
-	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Max rounds")
+	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Hard cap on implementation/review rounds before final no-edit reports")
 	flagSet.StringVarP(&flags.Test, "test", "t", "", "Test command")
 	flagSet.BoolVar(&flags.NoTest, "no-test", false, "Skip tests")
 	flagSet.BoolVar(&flags.JSON, "json", false, "Print machine-readable final result")
@@ -69,6 +74,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVar(&flags.CodexArgsRaw, "codex-args", "", "Raw args appended to codex invocations")
 	flagSet.StringVar(&flags.ClaudeArgsRaw, "claude-args", "", "Raw args appended to claude invocations")
 	flagSet.StringVar(&flags.AgyArgsRaw, "agy-args", "", "Raw args appended to agy invocations")
+	flagSet.StringVar(&flags.GoslingArgsRaw, "gosling-args", "", "Raw args appended to gosling invocations")
 }
 
 func runDefault(cmd *cobra.Command, flags *flagState, prompt string) error {
@@ -93,7 +99,7 @@ func withErrorExitCode(final tagteam.FinalRun, err error) tagteam.FinalRun {
 func newReviewCommand(shared *flagState) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "review",
-		Short:        "Adversary-only review over the current diff",
+		Short:        "Reviewer-only review over the current diff (supervisor or adversary depending on --mode)",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts, cfg, err := resolve(cmd, shared, "")
@@ -113,7 +119,7 @@ func newReviewCommand(shared *flagState) *cobra.Command {
 func newFixCommand(shared *flagState) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "fix",
-		Short:        "Coder applies fixes from the latest saved review",
+		Short:        "Editor applies fixes from the latest saved review (worker or coder depending on --mode)",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts, cfg, err := resolve(cmd, shared, "")
@@ -186,7 +192,7 @@ func newDoctorCommand(shared *flagState) *cobra.Command {
 			}
 			app := tagteam.NewApp(cfg)
 			status, err := app.Doctor(context.Background(), opts)
-			for _, key := range []string{"codex", "codex-oss", "claude", "agy"} {
+			for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling"} {
 				item := status[key]
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\tfound=%t\tversion=%s\tauth=%s\thint=%s\n", key, item.Found, item.Version, item.Auth, item.Hint)
 			}

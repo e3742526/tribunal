@@ -15,18 +15,23 @@ import (
 func DefaultConfig() Config {
 	return Config{
 		Defaults: DefaultsConfig{
-			Coder:     "codex",
-			Adversary: "claude",
-			Rounds:    2,
-			GitSafety: "clean",
+			Mode:       "supervisor",
+			Coder:      "codex",
+			Adversary:  "claude",
+			Worker:     "agy:Gemini 3.5 Flash (High)",
+			Supervisor: "claude:opus",
+			Rounds:     2,
+			GitSafety:  "clean",
 		},
 		Profiles: map[string]ProfileConfig{
 			"fast": {
+				Mode:      "adversarial",
 				Coder:     "codex:gpt-5-codex-mini",
 				Adversary: "claude:haiku",
 				Rounds:    1,
 			},
 			"paranoid": {
+				Mode:      "adversarial",
 				Adversary: "claude:opus",
 				Rounds:    4,
 				Test:      "make check",
@@ -44,6 +49,10 @@ func DefaultConfig() Config {
 			},
 			Agy: AgyConfig{
 				DefaultModel: "gemini-3.5-flash",
+				ExtraArgs:    []string{},
+			},
+			Gosling: GoslingConfig{
+				DefaultModel: "",
 				ExtraArgs:    []string{},
 			},
 		},
@@ -102,11 +111,27 @@ func mergeConfigFile(dst *Config, path string) error {
 }
 
 func mergeConfig(dst *Config, src Config) {
+	legacyDefaultsOnly := src.Defaults.Mode == "" &&
+		(src.Defaults.Coder != "" || src.Defaults.Adversary != "") &&
+		src.Defaults.Worker == "" &&
+		src.Defaults.Supervisor == ""
+	if legacyDefaultsOnly {
+		dst.Defaults.Mode = string(ModeAdversarial)
+	}
+	if src.Defaults.Mode != "" {
+		dst.Defaults.Mode = src.Defaults.Mode
+	}
 	if src.Defaults.Coder != "" {
 		dst.Defaults.Coder = src.Defaults.Coder
 	}
 	if src.Defaults.Adversary != "" {
 		dst.Defaults.Adversary = src.Defaults.Adversary
+	}
+	if src.Defaults.Worker != "" {
+		dst.Defaults.Worker = src.Defaults.Worker
+	}
+	if src.Defaults.Supervisor != "" {
+		dst.Defaults.Supervisor = src.Defaults.Supervisor
 	}
 	if src.Defaults.Rounds != 0 {
 		dst.Defaults.Rounds = src.Defaults.Rounds
@@ -123,11 +148,20 @@ func mergeConfig(dst *Config, src Config) {
 		}
 		for key, profile := range src.Profiles {
 			current := dst.Profiles[key]
+			if profile.Mode != "" {
+				current.Mode = profile.Mode
+			}
 			if profile.Coder != "" {
 				current.Coder = profile.Coder
 			}
 			if profile.Adversary != "" {
 				current.Adversary = profile.Adversary
+			}
+			if profile.Worker != "" {
+				current.Worker = profile.Worker
+			}
+			if profile.Supervisor != "" {
+				current.Supervisor = profile.Supervisor
 			}
 			if profile.Rounds != 0 {
 				current.Rounds = profile.Rounds
@@ -168,18 +202,28 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.Adapters.Agy.ExtraArgs) > 0 {
 		dst.Adapters.Agy.ExtraArgs = append([]string{}, src.Adapters.Agy.ExtraArgs...)
 	}
+	if src.Adapters.Gosling.DefaultModel != "" {
+		dst.Adapters.Gosling.DefaultModel = src.Adapters.Gosling.DefaultModel
+	}
+	if len(src.Adapters.Gosling.ExtraArgs) > 0 {
+		dst.Adapters.Gosling.ExtraArgs = append([]string{}, src.Adapters.Gosling.ExtraArgs...)
+	}
 }
 
 func hasTagteamEnv() bool {
 	for _, key := range []string{
+		"TAGTEAM_MODE",
 		"TAGTEAM_CODER",
 		"TAGTEAM_ADVERSARY",
+		"TAGTEAM_WORKER",
+		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
 		"TAGTEAM_GIT_SAFETY",
 		"TAGTEAM_CODEX_ARGS",
 		"TAGTEAM_CLAUDE_ARGS",
 		"TAGTEAM_AGY_ARGS",
+		"TAGTEAM_GOSLING_ARGS",
 	} {
 		if _, ok := os.LookupEnv(key); ok {
 			return true
@@ -189,11 +233,29 @@ func hasTagteamEnv() bool {
 }
 
 func mergeEnvConfig(cfg *Config) {
+	legacyRoleEnvSet := false
 	if value := os.Getenv("TAGTEAM_CODER"); value != "" {
 		cfg.Defaults.Coder = value
+		legacyRoleEnvSet = true
 	}
 	if value := os.Getenv("TAGTEAM_ADVERSARY"); value != "" {
 		cfg.Defaults.Adversary = value
+		legacyRoleEnvSet = true
+	}
+	if value := os.Getenv("TAGTEAM_WORKER"); value != "" {
+		cfg.Defaults.Worker = value
+	}
+	if value := os.Getenv("TAGTEAM_SUPERVISOR"); value != "" {
+		cfg.Defaults.Supervisor = value
+	}
+	if value := os.Getenv("TAGTEAM_MODE"); value != "" {
+		cfg.Defaults.Mode = value
+	} else if legacyRoleEnvSet {
+		// TAGTEAM_CODER/TAGTEAM_ADVERSARY predate TAGTEAM_MODE and the
+		// supervisor default; keep them selecting adversarial mode instead
+		// of being silently ignored now that default resolution reads
+		// Defaults.Worker/Defaults.Supervisor.
+		cfg.Defaults.Mode = string(ModeAdversarial)
 	}
 	if value := os.Getenv("TAGTEAM_ROUNDS"); value != "" {
 		if rounds, err := strconv.Atoi(value); err == nil && rounds > 0 {
@@ -221,25 +283,42 @@ func mergeEnvConfig(cfg *Config) {
 			cfg.Adapters.Agy.ExtraArgs = parsed
 		}
 	}
+	if value := os.Getenv("TAGTEAM_GOSLING_ARGS"); value != "" {
+		if parsed, err := shlex.Split(value); err == nil {
+			cfg.Adapters.Gosling.ExtraArgs = parsed
+		}
+	}
 }
 
 func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[string]bool, prompt string) (RunOptions, error) {
-	coder := cfg.Defaults.Coder
-	adversary := cfg.Defaults.Adversary
+	modeRaw := cfg.Defaults.Mode
 	rounds := cfg.Defaults.Rounds
 	testCmd := cfg.Defaults.Test
 	gitSafety := cfg.Defaults.GitSafety
 
+	var profile ProfileConfig
+	hasProfile := false
+	profileSetsMode := false
 	if flags.Profile != "" {
-		profile, ok := cfg.Profiles[flags.Profile]
+		p, ok := cfg.Profiles[flags.Profile]
 		if !ok {
 			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown profile %q", flags.Profile)}
 		}
-		if profile.Coder != "" {
-			coder = profile.Coder
-		}
-		if profile.Adversary != "" {
-			adversary = profile.Adversary
+		profile = p
+		hasProfile = true
+		switch {
+		case profile.Mode != "":
+			modeRaw = profile.Mode
+			profileSetsMode = true
+		case profile.Coder != "" || profile.Adversary != "":
+			// Legacy profiles that only set coder/adversary predate the
+			// mode field; keep them resolving as adversarial-mode profiles
+			// instead of being silently ignored under the supervisor default.
+			modeRaw = string(ModeAdversarial)
+			profileSetsMode = true
+		case profile.Worker != "" || profile.Supervisor != "":
+			modeRaw = string(ModeSupervisor)
+			profileSetsMode = true
 		}
 		if profile.Rounds != 0 {
 			rounds = profile.Rounds
@@ -248,13 +327,105 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 			testCmd = profile.Test
 		}
 	}
+	if changed["mode"] {
+		modeRaw = flags.Mode
+	}
+	// modeExplicit only reflects choices that actually pin the mode for
+	// this invocation (a --mode flag, or a profile that sets `mode` or the
+	// legacy coder/adversary keys). A profile that only overrides
+	// rounds/test must not block Fix() from resuming a saved run's mode.
+	modeExplicit := profileSetsMode || changed["mode"]
+	mode, err := ParseMode(modeRaw)
+	if err != nil {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+	}
 
+	// editor is the "coder" (adversarial mode) / "worker" (supervisor mode)
+	// role; reviewer is "adversary" / "supervisor" respectively.
+	//
+	// editorExplicit/reviewerExplicit mirror modeExplicit: they're only set
+	// when the profile actually supplies the role key for the resolved
+	// mode, not merely because a profile was selected. Otherwise
+	// `tagteam fix --profile ...` would have its profile-derived mode and
+	// targets silently overwritten by Fix's saved-run resume logic below
+	// even when the profile left those targets untouched.
+	var editorRaw, reviewerRaw string
+	editorExplicit := false
+	reviewerExplicit := false
+	editorExplicitMode := Mode("")
+	reviewerExplicitMode := Mode("")
+	if mode == ModeAdversarial {
+		editorRaw = cfg.Defaults.Coder
+		reviewerRaw = cfg.Defaults.Adversary
+		if hasProfile {
+			if profile.Coder != "" {
+				editorRaw = profile.Coder
+				editorExplicit = true
+				editorExplicitMode = ModeAdversarial
+			}
+			if profile.Adversary != "" {
+				reviewerRaw = profile.Adversary
+				reviewerExplicit = true
+				reviewerExplicitMode = ModeAdversarial
+			}
+		}
+	} else {
+		editorRaw = cfg.Defaults.Worker
+		reviewerRaw = cfg.Defaults.Supervisor
+		if hasProfile {
+			if profile.Worker != "" {
+				editorRaw = profile.Worker
+				editorExplicit = true
+				editorExplicitMode = ModeSupervisor
+			}
+			if profile.Supervisor != "" {
+				reviewerRaw = profile.Supervisor
+				reviewerExplicit = true
+				reviewerExplicitMode = ModeSupervisor
+			}
+		}
+	}
+
+	// Legacy -mc/-ma flags always win over defaults/profile and are valid in
+	// either mode. The newer --worker/--supervisor flags are the supervisor-
+	// mode names for the same two slots, and --reviewer is the adversarial-
+	// mode name for the reviewer slot; using one of these three outside its
+	// matching mode is rejected rather than silently ignored or misapplied.
 	if changed["mc"] {
-		coder = flags.Coder
+		editorRaw = flags.Coder
+		editorExplicit = true
+		editorExplicitMode = ""
+	}
+	if changed["worker"] {
+		if mode != ModeSupervisor {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--worker is only valid in supervisor mode (current mode %q); use -mc/--mc in adversarial mode", mode)}
+		}
+		editorRaw = flags.Worker
+		editorExplicit = true
+		editorExplicitMode = ModeSupervisor
 	}
 	if changed["ma"] {
-		adversary = flags.Adversary
+		reviewerRaw = flags.Adversary
+		reviewerExplicit = true
+		reviewerExplicitMode = ""
 	}
+	if changed["reviewer"] {
+		if mode != ModeAdversarial {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--reviewer is only valid in adversarial mode (current mode %q); use --supervisor in supervisor mode", mode)}
+		}
+		reviewerRaw = flags.Reviewer
+		reviewerExplicit = true
+		reviewerExplicitMode = ModeAdversarial
+	}
+	if changed["supervisor"] {
+		if mode != ModeSupervisor {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--supervisor is only valid in supervisor mode (current mode %q); use --reviewer or -ma in adversarial mode", mode)}
+		}
+		reviewerRaw = flags.Supervisor
+		reviewerExplicit = true
+		reviewerExplicitMode = ModeSupervisor
+	}
+
 	if changed["rounds"] {
 		rounds = flags.Rounds
 	}
@@ -271,13 +442,14 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid git_safety %q", gitSafety)}
 	}
 
-	coderTarget, err := ParseRoleTarget(coder)
+	editorLabel, reviewerLabel := roleLabels(mode)
+	editorTarget, err := ParseRoleTarget(editorRaw)
 	if err != nil {
-		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve coder target: %w", err)}
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve %s target: %w", editorLabel, err)}
 	}
-	adversaryTarget, err := ParseRoleTarget(adversary)
+	reviewerTarget, err := ParseRoleTarget(reviewerRaw)
 	if err != nil {
-		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve adversary target: %w", err)}
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("resolve %s target: %w", reviewerLabel, err)}
 	}
 
 	codexArgs, err := mergePassthrough(cfg.Adapters.Codex.ExtraArgs, flags.CodexArgsRaw)
@@ -291,6 +463,10 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	agyArgs, err := mergePassthrough(cfg.Adapters.Agy.ExtraArgs, flags.AgyArgsRaw)
 	if err != nil {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse --agy-args: %w", err)}
+	}
+	goslingArgs, err := mergePassthrough(cfg.Adapters.Gosling.ExtraArgs, flags.GoslingArgsRaw)
+	if err != nil {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse --gosling-args: %w", err)}
 	}
 
 	workdir := flags.Workdir
@@ -306,27 +482,36 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 
 	return RunOptions{
-		Prompt:        strings.TrimSpace(prompt),
-		Workdir:       workdir,
-		Coder:         coderTarget,
-		Adversary:     adversaryTarget,
-		Rounds:        rounds,
-		TestCmd:       testCmd,
-		NoTest:        flags.NoTest,
-		JSON:          flags.JSON,
-		DryRun:        flags.DryRun,
-		ShowReview:    flags.ShowReview,
-		FailOnReview:  flags.FailOnReview,
-		AllowDirty:    flags.AllowDirty,
-		Autostash:     flags.Autostash,
-		Timeout:       flags.Timeout,
-		Quiet:         flags.Quiet,
-		Verbose:       flags.Verbose,
-		GitSafety:     gitSafety,
-		CodexArgs:     codexArgs,
-		ClaudeArgs:    claudeArgs,
-		AgyArgs:       agyArgs,
-		ConfigSources: sources,
+		Prompt:                    strings.TrimSpace(prompt),
+		Workdir:                   workdir,
+		Mode:                      mode,
+		ModeExplicit:              modeExplicit,
+		Coder:                     editorTarget,
+		Adversary:                 reviewerTarget,
+		CoderExplicit:             editorExplicit,
+		AdversaryExplicit:         reviewerExplicit,
+		CoderExplicitMode:         editorExplicitMode,
+		AdversaryExplicitMode:     reviewerExplicitMode,
+		SupervisorCanEdit:         flags.SupervisorCanEdit,
+		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
+		Rounds:                    rounds,
+		TestCmd:                   testCmd,
+		NoTest:                    flags.NoTest,
+		JSON:                      flags.JSON,
+		DryRun:                    flags.DryRun,
+		ShowReview:                flags.ShowReview,
+		FailOnReview:              flags.FailOnReview,
+		AllowDirty:                flags.AllowDirty,
+		Autostash:                 flags.Autostash,
+		Timeout:                   flags.Timeout,
+		Quiet:                     flags.Quiet,
+		Verbose:                   flags.Verbose,
+		GitSafety:                 gitSafety,
+		CodexArgs:                 codexArgs,
+		ClaudeArgs:                claudeArgs,
+		AgyArgs:                   agyArgs,
+		GoslingArgs:               goslingArgs,
+		ConfigSources:             sources,
 	}, nil
 }
 

@@ -3,11 +3,14 @@ package tagteam
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,18 +28,39 @@ type reviewInput struct {
 	ViaStdin  bool
 }
 
+type DiffArtifact struct {
+	PatchPath   string
+	NumstatPath string
+	FilesPath   string
+	SHA256Path  string
+	Patch       string
+	Metadata    DiffFilesMetadata
+}
+
 func NewApp(cfg Config) *App {
 	return &App{Config: cfg}
 }
 
 func (a *App) Run(ctx context.Context, opts RunOptions) (FinalRun, error) {
+	normalizeDefaultMode(&opts)
 	if strings.TrimSpace(opts.Prompt) == "" {
 		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("prompt is required")}
+	}
+	if err := validateRunRoles(opts); err != nil {
+		return FinalRun{}, err
 	}
 	return a.runLoop(ctx, opts, nil)
 }
 
 func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (FinalRun, error) {
+	normalizeDefaultMode(&opts)
+	if err := validateReviewRoles(opts); err != nil {
+		return FinalRun{}, err
+	}
+	if err := a.validateReviewTargets(opts); err != nil {
+		return FinalRun{}, err
+	}
+	_, reviewerLabel := roleLabels(opts.Mode)
 	baseline, err := ensureGitRepo(opts.Workdir)
 	if err != nil {
 		return FinalRun{}, err
@@ -63,8 +87,8 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (Final
 		Command:       "review",
 		Prompt:        prompt,
 		StartedAt:     time.Now().UTC(),
-		Adapters:      map[string]string{"adversary": opts.Adversary.Adapter},
-		Models:        map[string]string{"adversary": opts.Adversary.Model},
+		Adapters:      map[string]string{reviewerLabel: opts.Adversary.Adapter},
+		Models:        map[string]string{reviewerLabel: opts.Adversary.Model},
 		ConfigSources: opts.ConfigSources,
 	}
 	if err := writeJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
@@ -74,37 +98,48 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (Final
 	if err := os.WriteFile(schemaPath, []byte(ReviewSchema), 0o644); err != nil {
 		return FinalRun{}, err
 	}
-	diff, err := gitDiffAgainst(opts.Workdir, baseline)
+	diffArtifact, err := captureDiffArtifact(ctx, opts.Workdir, baseline, runDir, 1)
 	if err != nil {
 		return FinalRun{}, err
 	}
-	diffPath := filepath.Join(runDir, "diff-round-1.patch")
-	if err := os.WriteFile(diffPath, []byte(diff), 0o644); err != nil {
-		return FinalRun{}, err
-	}
-	review, cost, outputPath, err := a.runAdversary(ctx, opts, 1, runDir, schemaPath, prompt, baseline, diff, diffPath, "")
+	review, cost, outputPath, err := a.runAdversary(ctx, opts, 1, runDir, schemaPath, prompt, baseline, diffArtifact.Patch, diffArtifact.PatchPath, "")
 	if err != nil {
 		return FinalRun{}, err
+	}
+	savedCoder := RoleTarget{}
+	if opts.CoderExplicit {
+		savedCoder = opts.Coder
 	}
 	final := FinalRun{
-		RunID:            runID,
-		RunDir:           runDir,
-		Workdir:          opts.Workdir,
-		Baseline:         baseline,
-		Verdict:          review.Verdict,
-		Summary:          review.Summary,
-		ExitCode:         ExitSuccess,
-		RoundsRequested:  1,
-		RoundsCompleted:  1,
-		ChangedFiles:     changedFiles(opts.Workdir, baseline),
-		LatestDiffPath:   diffPath,
-		LatestReviewPath: outputPath,
-		Review:           review,
-		Costs:            map[string]float64{"adversary": cost},
-		Adapters:         meta.Adapters,
-		Models:           meta.Models,
-		StartedAt:        meta.StartedAt,
-		FinishedAt:       time.Now().UTC(),
+		RunID:    runID,
+		RunDir:   runDir,
+		Workdir:  opts.Workdir,
+		Baseline: baseline,
+		Mode:     opts.Mode,
+		// Coder is persisted only when explicitly selected for this review
+		// invocation. Review never invokes the editor, so default/stale
+		// editor config must not block reviewer-only runs or poison a later
+		// bare `tagteam fix`; explicit -mc/--worker is preserved for fix.
+		Coder:             savedCoder,
+		Adversary:         opts.Adversary,
+		Verdict:           review.Verdict,
+		Summary:           review.Summary,
+		ExitCode:          ExitSuccess,
+		RoundsRequested:   1,
+		RoundsCompleted:   1,
+		ChangedFiles:      diffArtifact.ChangedFiles(),
+		LatestDiffPath:    diffArtifact.PatchPath,
+		LatestNumstatPath: diffArtifact.NumstatPath,
+		LatestFilesPath:   diffArtifact.FilesPath,
+		LatestSHA256Path:  diffArtifact.SHA256Path,
+		LatestDiffSHA256:  diffArtifact.Metadata.DiffSHA256,
+		LatestReviewPath:  outputPath,
+		Review:            review,
+		Costs:             map[string]float64{reviewerLabel: cost},
+		Adapters:          meta.Adapters,
+		Models:            meta.Models,
+		StartedAt:         meta.StartedAt,
+		FinishedAt:        time.Now().UTC(),
 	}
 	if opts.FailOnReview && review.HasBlockingFindings() {
 		final.ExitCode = ExitBlockingFindings
@@ -118,7 +153,24 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (Final
 	return final, nil
 }
 
+func (a *App) validateReviewTargets(opts RunOptions) error {
+	editorLabel, reviewerLabel := roleLabels(opts.Mode)
+	registry := Registry(a.Config, opts)
+	if opts.CoderExplicit && opts.Coder.Adapter != "" {
+		if _, ok := registry[opts.Coder.Adapter]; !ok {
+			return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", editorLabel, opts.Coder.Adapter)}
+		}
+	}
+	if opts.Adversary.Adapter != "" {
+		if _, ok := registry[opts.Adversary.Adapter]; !ok {
+			return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", reviewerLabel, opts.Adversary.Adapter)}
+		}
+	}
+	return nil
+}
+
 func (a *App) Fix(ctx context.Context, opts RunOptions) (FinalRun, error) {
+	normalizeDefaultMode(&opts)
 	latest, err := readLatest(opts.Workdir)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitPreflightFailed, Err: err}
@@ -137,18 +189,138 @@ func (a *App) Fix(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	opts.Prompt = prompt
 	opts.Baseline = final.Baseline
 	opts.SkipDirtyCheck = true
+
+	// Resume with the saved run's mode and role targets unless the caller
+	// explicitly requested different ones for this fix invocation (including
+	// via --profile). Without this, a run started with e.g. --mode
+	// adversarial would be resumed under whatever mode/adapters are
+	// currently the default (which may differ, since the default mode and
+	// role targets can change between invocations), handing the saved
+	// review to the wrong prompts/adapters.
+	//
+	// final.json files saved before supervisor/worker mode was added have
+	// no Mode/Coder/Adversary fields at all; they always ran the
+	// coder/adversary loop, so fall back to adversarial mode and reconstruct
+	// the coder/adversary targets from the legacy Adapters/Models maps
+	// (which have always been populated with "coder"/"adversary" keys).
+	legacyFinal := final.Mode == "" && final.Coder.Adapter == "" && final.Adversary.Adapter == ""
+	savedMode := final.Mode
+	if savedMode == "" && legacyFinal {
+		savedMode = ModeAdversarial
+	}
+	if !opts.ModeExplicit {
+		switch {
+		case final.Mode != "":
+			opts.Mode = final.Mode
+		case legacyFinal:
+			opts.Mode = ModeAdversarial
+		}
+	}
+	if err := validateExplicitTargetModes(opts); err != nil {
+		return FinalRun{}, err
+	}
+	canRestoreSavedTargets := !opts.ModeExplicit || savedMode == opts.Mode
+	if canRestoreSavedTargets && !opts.CoderExplicit {
+		switch {
+		case final.Coder.Adapter != "":
+			opts.Coder = final.Coder
+		case legacyFinal && final.Adapters["coder"] != "":
+			opts.Coder = RoleTarget{Adapter: final.Adapters["coder"], Model: final.Models["coder"]}
+		}
+	}
+	if canRestoreSavedTargets && !opts.AdversaryExplicit {
+		switch {
+		case final.Adversary.Adapter != "":
+			opts.Adversary = final.Adversary
+		case legacyFinal && final.Adapters["adversary"] != "":
+			opts.Adversary = RoleTarget{Adapter: final.Adapters["adversary"], Model: final.Models["adversary"]}
+		}
+	}
+	if !opts.SupervisorCanEditExplicit {
+		opts.SupervisorCanEdit = final.SupervisorCanEdit
+	}
+
+	if err := validateRunRoles(opts); err != nil {
+		return FinalRun{}, err
+	}
 	return a.runLoop(ctx, opts, final.Review)
+}
+
+func normalizeDefaultMode(opts *RunOptions) {
+	if opts.Mode == "" {
+		opts.Mode = ModeSupervisor
+	}
+}
+
+func validateExplicitTargetModes(opts RunOptions) error {
+	if opts.CoderExplicitMode != "" && opts.CoderExplicitMode != opts.Mode {
+		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("worker/coder target was selected for %s mode but latest run resumes as %s; pass --mode %s or use -mc for mode-neutral override", opts.CoderExplicitMode, opts.Mode, opts.CoderExplicitMode)}
+	}
+	if opts.AdversaryExplicitMode != "" && opts.AdversaryExplicitMode != opts.Mode {
+		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("reviewer/supervisor target was selected for %s mode but latest run resumes as %s; pass --mode %s or use -ma for mode-neutral override", opts.AdversaryExplicitMode, opts.Mode, opts.AdversaryExplicitMode)}
+	}
+	return nil
+}
+
+// roleLabels returns the display names for the editor and reviewer roles
+// used in progress output, run metadata, and transcript filenames.
+func roleLabels(mode Mode) (editor string, reviewer string) {
+	if mode == ModeSupervisor {
+		return "worker", "supervisor"
+	}
+	return "coder", "adversary"
+}
+
+// editorSystemPromptForMode returns the editor-role system prompt for the
+// active mode: the supervisor-worker-flavored prompt in ModeSupervisor, and
+// the original adversarial-flavored prompt in ModeAdversarial.
+func editorSystemPromptForMode(mode Mode) string {
+	if mode == ModeSupervisor {
+		return workerSystemPrompt
+	}
+	return coderSystemPrompt
+}
+
+// supervisorBriefRole picks the adapter role used to build the supervisor's
+// implementation brief. Supervisors are read-only by default; --supervisor-can-edit
+// grants them the same edit permissions as the editor role.
+func supervisorBriefRole(canEdit bool) Role {
+	if canEdit {
+		return RoleCoder
+	}
+	return RoleSupervisor
+}
+
+func validateRunRoles(opts RunOptions) error {
+	if err := validateRoleTarget(RoleCoder, opts.Coder); err != nil {
+		return err
+	}
+	return validateRoleTarget(RoleAdversary, opts.Adversary)
+}
+
+func validateReviewRoles(opts RunOptions) error {
+	return validateRoleTarget(RoleAdversary, opts.Adversary)
+}
+
+func validateRoleTarget(role Role, target RoleTarget) error {
+	if role == RoleAdversary && target.Adapter == "gosling" {
+		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("gosling is not supported as an adversary adapter")}
+	}
+	return nil
 }
 
 func (a *App) Doctor(ctx context.Context, opts RunOptions) (map[string]VersionInfo, error) {
 	registry := Registry(a.Config, opts)
 	status := map[string]VersionInfo{}
-	for _, key := range []string{"codex", "codex-oss", "claude", "agy"} {
+	for _, key := range []string{"codex", "codex-oss", "claude", "agy", "gosling"} {
 		info, err := registry[key].Detect(ctx)
 		if err != nil {
 			return nil, err
 		}
 		status[key] = info
+	}
+	if err := validateRunRoles(opts); err != nil {
+		return status, err
 	}
 	for _, target := range []RoleTarget{opts.Coder, opts.Adversary} {
 		if target.Adapter == "" {
@@ -167,6 +339,7 @@ func (a *App) Doctor(ctx context.Context, opts RunOptions) (map[string]VersionIn
 }
 
 func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Review) (FinalRun, error) {
+	editorLabel, reviewerLabel := roleLabels(opts.Mode)
 	runID := newRunID()
 	logProgress(opts, "run %s preflight started workdir=%s", runID, opts.Workdir)
 	baseline, cleanup, err := preflight(opts, runID)
@@ -194,92 +367,138 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		Command:       "run",
 		Prompt:        opts.Prompt,
 		StartedAt:     time.Now().UTC(),
-		Adapters:      map[string]string{"coder": opts.Coder.Adapter, "adversary": opts.Adversary.Adapter},
-		Models:        map[string]string{"coder": opts.Coder.Model, "adversary": opts.Adversary.Model},
+		Adapters:      map[string]string{editorLabel: opts.Coder.Adapter, reviewerLabel: opts.Adversary.Adapter},
+		Models:        map[string]string{editorLabel: opts.Coder.Model, reviewerLabel: opts.Adversary.Model},
 		ConfigSources: opts.ConfigSources,
 	}
 	if err := writeJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
 		return FinalRun{}, err
 	}
-	logProgress(opts, "run %s started baseline=%s run-dir=%s", runID, baseline, runDir)
+	logProgress(opts, "run %s started mode=%s baseline=%s run-dir=%s", runID, opts.Mode, baseline, runDir)
 
 	registry := Registry(a.Config, opts)
-	coder, ok := registry[opts.Coder.Adapter]
+	editor, ok := registry[opts.Coder.Adapter]
 	if !ok {
-		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown coder adapter %q", opts.Coder.Adapter)}
+		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", editorLabel, opts.Coder.Adapter)}
 	}
-	adversary, ok := registry[opts.Adversary.Adapter]
+	reviewer, ok := registry[opts.Adversary.Adapter]
 	if !ok {
-		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown adversary adapter %q", opts.Adversary.Adapter)}
+		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", reviewerLabel, opts.Adversary.Adapter)}
 	}
-	if err := checkAdapters(ctx, coder, adversary); err != nil {
+	if err := checkAdapters(ctx, editor, reviewer); err != nil {
 		return FinalRun{}, err
 	}
 
 	final := FinalRun{
-		RunID:           runID,
-		RunDir:          runDir,
-		Workdir:         opts.Workdir,
-		Baseline:        baseline,
-		RoundsRequested: opts.Rounds,
-		Costs:           map[string]float64{},
-		Adapters:        meta.Adapters,
-		Models:          meta.Models,
-		StartedAt:       meta.StartedAt,
+		RunID:             runID,
+		RunDir:            runDir,
+		Workdir:           opts.Workdir,
+		Baseline:          baseline,
+		Mode:              opts.Mode,
+		Coder:             opts.Coder,
+		Adversary:         opts.Adversary,
+		SupervisorCanEdit: opts.SupervisorCanEdit,
+		RoundsRequested:   opts.Rounds,
+		Costs:             map[string]float64{},
+		Adapters:          meta.Adapters,
+		Models:            meta.Models,
+		StartedAt:         meta.StartedAt,
 	}
+
+	var brief string
+	if opts.Mode == ModeSupervisor && initialReview == nil {
+		logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
+		briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
+		briefResult, err := a.runAdapter(ctx, reviewer, supervisorBriefRole(opts.SupervisorCanEdit), Request{
+			Context:    ctx,
+			Prompt:     BuildSupervisorBriefPrompt(opts.Workdir, opts.Prompt, opts.SupervisorCanEdit),
+			Model:      opts.Adversary.Model,
+			Workdir:    opts.Workdir,
+			RunDir:     runDir,
+			OutputPath: briefOutputPath,
+			Timeout:    opts.Timeout,
+			Phase:      fmt.Sprintf("supervisor brief %s", reviewer.ID()),
+			Quiet:      opts.Quiet,
+			Verbose:    opts.Verbose,
+		}, opts.DryRun)
+		if err != nil {
+			return final, err
+		}
+		final.Costs[reviewerLabel] += briefResult.CostUSD
+		brief = briefResult.Text
+		logProgress(opts, "supervisor brief completed output=%s", briefOutputPath)
+	}
+
+	editorSystemPrompt := editorSystemPromptForMode(opts.Mode)
 
 	var sessionID string
 	var latestReview Review
+	var latestDiff string
+	var latestDiffArtifact DiffArtifact
 	for round := 1; round <= opts.Rounds; round++ {
-		logProgress(opts, "round %d/%d coder started adapter=%s", round, opts.Rounds, coder.ID())
-		coderPrompt := BuildCoderPrompt(opts.Workdir, opts.Prompt)
-		if round == 1 && initialReview != nil {
-			diff, err := gitDiffAgainst(opts.Workdir, baseline)
-			if err != nil {
-				return final, err
+		logProgress(opts, "round %d/%d %s started adapter=%s", round, opts.Rounds, editorLabel, editor.ID())
+		var editorPrompt string
+		switch {
+		case round == 1 && initialReview == nil && opts.Mode == ModeSupervisor:
+			editorPrompt = BuildWorkerImplementPrompt(opts.Workdir, opts.Prompt, brief)
+		case round == 1 && initialReview == nil:
+			editorPrompt = BuildCoderPrompt(opts.Workdir, opts.Prompt)
+		default:
+			diff := latestDiff
+			if diff == "" {
+				patch, err := deterministicDiffPatch(ctx, opts.Workdir, baseline, filepath.Join(runDir, fmt.Sprintf("tmp-prompt-round-%d.index", round)))
+				if err != nil {
+					return final, err
+				}
+				diff = string(patch)
 			}
-			coderPrompt = BuildFixPrompt(round, opts.Prompt, diff, *initialReview)
-		} else if round > 1 {
-			diff, err := gitDiffAgainst(opts.Workdir, baseline)
-			if err != nil {
-				return final, err
+			review := latestReview
+			if round == 1 && initialReview != nil {
+				review = *initialReview
 			}
-			coderPrompt = BuildFixPrompt(round, opts.Prompt, diff, latestReview)
+			if opts.Mode == ModeSupervisor {
+				editorPrompt = BuildWorkerFixPrompt(round, opts.Prompt, diff, review)
+			} else {
+				editorPrompt = BuildFixPrompt(round, opts.Prompt, diff, review)
+			}
 		}
-		coderOutputPath := filepath.Join(runDir, fmt.Sprintf("coder-round-%d.md", round))
-		coderResult, err := a.runAdapter(ctx, coder, RoleCoder, Request{
+		editorOutputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.md", editorLabel, round))
+		editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
 			Context:      ctx,
-			Prompt:       coderPrompt,
-			SystemPrompt: coderSystemPrompt,
+			Prompt:       editorPrompt,
+			SystemPrompt: editorSystemPrompt,
 			Model:        opts.Coder.Model,
 			Workdir:      opts.Workdir,
 			RunDir:       runDir,
-			OutputPath:   coderOutputPath,
+			OutputPath:   editorOutputPath,
 			ResumeID:     sessionID,
 			Timeout:      opts.Timeout,
-			Phase:        fmt.Sprintf("round %d coder %s", round, coder.ID()),
+			Phase:        fmt.Sprintf("round %d %s %s", round, editorLabel, editor.ID()),
 			Quiet:        opts.Quiet,
 			Verbose:      opts.Verbose,
 		}, opts.DryRun)
 		if err != nil {
 			return final, err
 		}
-		logProgress(opts, "round %d coder completed output=%s", round, coderOutputPath)
-		final.Costs["coder"] += coderResult.CostUSD
-		if coderResult.SessionID != "" {
-			sessionID = coderResult.SessionID
+		logProgress(opts, "round %d %s completed output=%s", round, editorLabel, editorOutputPath)
+		final.Costs[editorLabel] += editorResult.CostUSD
+		if editorResult.SessionID != "" {
+			sessionID = editorResult.SessionID
 		}
 
-		diff, err := gitDiffAgainst(opts.Workdir, baseline)
+		diffArtifact, err := captureDiffArtifact(ctx, opts.Workdir, baseline, runDir, round)
 		if err != nil {
 			return final, err
 		}
-		diffPath := filepath.Join(runDir, fmt.Sprintf("diff-round-%d.patch", round))
-		if err := os.WriteFile(diffPath, []byte(diff), 0o644); err != nil {
-			return final, err
-		}
-		final.LatestDiffPath = diffPath
-		logProgress(opts, "round %d diff captured bytes=%d path=%s", round, len(diff), diffPath)
+		diff := diffArtifact.Patch
+		latestDiff = diff
+		latestDiffArtifact = diffArtifact
+		final.LatestDiffPath = diffArtifact.PatchPath
+		final.LatestNumstatPath = diffArtifact.NumstatPath
+		final.LatestFilesPath = diffArtifact.FilesPath
+		final.LatestSHA256Path = diffArtifact.SHA256Path
+		final.LatestDiffSHA256 = diffArtifact.Metadata.DiffSHA256
+		logProgress(opts, "round %d diff captured bytes=%d path=%s", round, len(diff), diffArtifact.PatchPath)
 
 		testOutput := ""
 		if opts.TestCmd != "" && !opts.NoTest {
@@ -298,13 +517,13 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			}
 		}
 
-		logProgress(opts, "round %d adversary started adapter=%s", round, adversary.ID())
-		review, cost, reviewPath, err := a.runAdversary(ctx, opts, round, runDir, schemaPath, opts.Prompt, baseline, diff, diffPath, testOutput)
+		logProgress(opts, "round %d %s started adapter=%s", round, reviewerLabel, reviewer.ID())
+		review, cost, reviewPath, err := a.runAdversary(ctx, opts, round, runDir, schemaPath, opts.Prompt, baseline, diff, diffArtifact.PatchPath, testOutput)
 		if err != nil {
 			return final, err
 		}
-		logProgress(opts, "round %d adversary completed verdict=%s findings=%d output=%s", round, review.Verdict, len(review.Findings), reviewPath)
-		final.Costs["adversary"] += cost
+		logProgress(opts, "round %d %s completed verdict=%s findings=%d output=%s", round, reviewerLabel, review.Verdict, len(review.Findings), reviewPath)
+		final.Costs[reviewerLabel] += cost
 		final.RoundsCompleted = round
 		final.Review = review
 		final.LatestReviewPath = reviewPath
@@ -323,10 +542,18 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		if round == opts.Rounds {
 			final.Verdict = review.Verdict
 			final.Summary = review.Summary
+			final.RoundLimitReached = true
+			logProgress(opts, "round limit reached after %d rounds; collecting final reports", opts.Rounds)
+			reports, reportCosts := a.collectRoundLimitReports(ctx, opts, runDir, baseline, diff, *review, final.Tests)
+			final.RoundLimitReports = reports
+			for role, cost := range reportCosts {
+				final.Costs[role] += cost
+			}
+			final.Summary = strings.TrimSpace(final.Summary + "\n\nRound limit reached; no more edits were requested. Final reports were collected from both agents when available.")
 		}
 	}
 
-	final.ChangedFiles = changedFiles(opts.Workdir, baseline)
+	final.ChangedFiles = latestDiffArtifact.ChangedFiles()
 	final.FinishedAt = time.Now().UTC()
 	final.ExitCode = a.computeExitCode(final)
 	logProgress(opts, "run %s finished verdict=%s exit=%d rounds=%d/%d", runID, final.Verdict, final.ExitCode, final.RoundsCompleted, final.RoundsRequested)
@@ -339,18 +566,102 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	return final, nil
 }
 
+func (a *App) collectRoundLimitReports(ctx context.Context, opts RunOptions, runDir, baseline, diff string, review Review, tests []TestRun) ([]RoundLimitReport, map[string]float64) {
+	editorLabel, reviewerLabel := roleLabels(opts.Mode)
+	registry := Registry(a.Config, opts)
+	costs := map[string]float64{}
+	reports := make([]RoundLimitReport, 0, 2)
+
+	targets := []struct {
+		label       string
+		counterpart string
+		target      RoleTarget
+		model       string
+	}{
+		{label: editorLabel, counterpart: reviewerLabel, target: opts.Coder, model: opts.Coder.Model},
+		{label: reviewerLabel, counterpart: editorLabel, target: opts.Adversary, model: opts.Adversary.Model},
+	}
+
+	for _, target := range targets {
+		adapter, ok := registry[target.target.Adapter]
+		reportPath := filepath.Join(runDir, fmt.Sprintf("%s-final-report.md", target.label))
+		report := RoundLimitReport{
+			Role:    target.label,
+			Adapter: target.target.Adapter,
+			Path:    reportPath,
+		}
+		if !ok {
+			report.Text = fmt.Sprintf("final report unavailable: unknown %s adapter %q", target.label, target.target.Adapter)
+			writeRoundLimitReportArtifact(reportPath, report.Text)
+			reports = append(reports, report)
+			continue
+		}
+		if err := checkAdapters(ctx, adapter); err != nil {
+			report.Text = fmt.Sprintf("final report unavailable: %v", err)
+			writeRoundLimitReportArtifact(reportPath, report.Text)
+			reports = append(reports, report)
+			continue
+		}
+		prompt := BuildRoundLimitReportPrompt(target.label, target.counterpart, opts.Mode, opts.Prompt, diffWithBaselineHeader(baseline, diff), review, tests)
+		result, err := a.runAdapter(ctx, adapter, RoleReporter, Request{
+			Context:    ctx,
+			Prompt:     prompt,
+			Model:      target.model,
+			Workdir:    opts.Workdir,
+			RunDir:     runDir,
+			OutputPath: reportPath,
+			Timeout:    opts.Timeout,
+			Phase:      fmt.Sprintf("round-limit %s %s", target.label, adapter.ID()),
+			Quiet:      opts.Quiet,
+			Verbose:    opts.Verbose,
+		}, opts.DryRun)
+		if err != nil {
+			report.Text = fmt.Sprintf("final report failed: %v", err)
+			writeRoundLimitReportArtifact(reportPath, report.Text)
+			logProgress(opts, "round-limit %s report failed error=%q", target.label, err.Error())
+			reports = append(reports, report)
+			continue
+		}
+		report.Text = result.Text
+		costs[target.label] += result.CostUSD
+		logProgress(opts, "round-limit %s report completed output=%s", target.label, reportPath)
+		reports = append(reports, report)
+	}
+	return reports, costs
+}
+
+func writeRoundLimitReportArtifact(path, text string) {
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, []byte(text), 0o644)
+}
+
+func diffWithBaselineHeader(baseline, diff string) string {
+	if strings.TrimSpace(baseline) == "" {
+		return diff
+	}
+	return fmt.Sprintf("Baseline: %s\n\n%s", baseline, diff)
+}
+
 func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runDir, schemaPath, prompt, baseline, diff, diffPath, testOutput string) (*Review, float64, string, error) {
-	outputPath := filepath.Join(runDir, fmt.Sprintf("adversary-round-%d.json", round))
+	_, reviewerLabel := roleLabels(opts.Mode)
+	outputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.json", reviewerLabel, round))
 	registry := Registry(a.Config, opts)
 	adversary, ok := registry[opts.Adversary.Adapter]
 	if !ok {
-		return nil, 0, "", &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown adversary adapter %q", opts.Adversary.Adapter)}
+		return nil, 0, "", &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", reviewerLabel, opts.Adversary.Adapter)}
 	}
 	if err := checkAdapters(ctx, adversary); err != nil {
 		return nil, 0, "", err
 	}
 	input := prepareReviewInput(adversary, diff, diffPath)
-	reviewPrompt := BuildAdversaryPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
+	var reviewPrompt string
+	if opts.Mode == ModeSupervisor {
+		reviewPrompt = BuildSupervisorReviewPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
+	} else {
+		reviewPrompt = BuildAdversaryPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
+	}
 	if !adversary.Capabilities().SupportsSchema {
 		reviewPrompt += "\n\nJSON schema:\n" + ReviewSchema
 	}
@@ -364,7 +675,7 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 		SchemaPath:  schemaPath,
 		Passthrough: opts.ClaudeArgs,
 		Timeout:     opts.Timeout,
-		Phase:       fmt.Sprintf("round %d adversary %s", round, adversary.ID()),
+		Phase:       fmt.Sprintf("round %d %s %s", round, reviewerLabel, adversary.ID()),
 		Quiet:       opts.Quiet,
 		Verbose:     opts.Verbose,
 	}
@@ -374,12 +685,12 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 		if !IsOutputContractError(err) {
 			return nil, 0, "", err
 		}
-		logProgress(opts, "round %d adversary output invalid; retrying once error=%q", round, err.Error())
+		logProgress(opts, "round %d %s output invalid; retrying once error=%q", round, reviewerLabel, err.Error())
 		req.Prompt = req.Prompt + "\n\nValidation error from the previous response:\n" + err.Error() + "\n\nReturn JSON exactly matching the schema."
 		result, err = a.runAdapter(ctx, adversary, RoleAdversary, req, opts.DryRun)
 		if err != nil {
 			if IsOutputContractError(err) {
-				return nil, 0, "", &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("adversary output failed validation after retry: %w", err)}
+				return nil, 0, "", &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s output failed validation after retry: %w", reviewerLabel, err)}
 			}
 			return nil, 0, "", err
 		}
@@ -663,24 +974,246 @@ func readLatestPrompt(workdir string) (string, error) {
 	return string(data), nil
 }
 
-func changedFiles(workdir, baseline string) []string {
-	out, err := runCommand(context.Background(), workdir, "git", "diff", "--name-only", baseline)
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	files := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			files = append(files, line)
-		}
+func (a DiffArtifact) ChangedFiles() []string {
+	files := make([]string, 0, len(a.Metadata.Files))
+	for _, file := range a.Metadata.Files {
+		files = append(files, file.Path)
 	}
 	return files
 }
 
-func gitDiffAgainst(workdir, baseline string) (string, error) {
-	return runCommand(context.Background(), workdir, "git", "diff", baseline)
+func captureDiffArtifact(ctx context.Context, workdir, baseline, runDir string, round int) (DiffArtifact, error) {
+	prefix := filepath.Join(runDir, fmt.Sprintf("diff-round-%d", round))
+	indexPath := filepath.Join(runDir, fmt.Sprintf("tmp-diff-round-%d.index", round))
+	defer os.Remove(indexPath)
+	defer os.Remove(indexPath + ".lock")
+
+	patch, numstat, statusZ, numstatZ, err := deterministicDiffOutputs(ctx, workdir, baseline, indexPath)
+	if err != nil {
+		return DiffArtifact{}, err
+	}
+	patchPath := prefix + ".patch"
+	if err := os.WriteFile(patchPath, patch, 0o644); err != nil {
+		return DiffArtifact{}, err
+	}
+	sum := sha256.Sum256(patch)
+	diffHash := hex.EncodeToString(sum[:])
+	shaPath := prefix + ".sha256"
+	if err := os.WriteFile(shaPath, []byte(diffHash+"\n"), 0o644); err != nil {
+		return DiffArtifact{}, err
+	}
+	numstatPath := prefix + ".numstat"
+	if err := os.WriteFile(numstatPath, normalizeTextFileNewline(numstat), 0o644); err != nil {
+		return DiffArtifact{}, err
+	}
+	files := buildDiffFiles(statusZ, numstatZ)
+	metadata := DiffFilesMetadata{
+		Baseline:    baseline,
+		Head:        currentWorkingTreeHead(ctx, workdir),
+		GeneratedAt: time.Now().UTC(),
+		DiffSHA256:  diffHash,
+		Files:       files,
+	}
+	filesPath := prefix + ".files.json"
+	if err := writeJSONWithNewline(filesPath, metadata); err != nil {
+		return DiffArtifact{}, err
+	}
+	return DiffArtifact{
+		PatchPath:   patchPath,
+		NumstatPath: numstatPath,
+		FilesPath:   filesPath,
+		SHA256Path:  shaPath,
+		Patch:       string(patch),
+		Metadata:    metadata,
+	}, nil
+}
+
+func deterministicDiffPatch(ctx context.Context, workdir, baseline, indexPath string) ([]byte, error) {
+	patch, _, _, _, err := deterministicDiffOutputs(ctx, workdir, baseline, indexPath)
+	return patch, err
+}
+
+func deterministicDiffOutputs(ctx context.Context, workdir, baseline, indexPath string) ([]byte, []byte, []byte, []byte, error) {
+	defer os.Remove(indexPath)
+	defer os.Remove(indexPath + ".lock")
+	env := []string{"LC_ALL=C", "GIT_INDEX_FILE=" + indexPath}
+	if _, err := runGitCommandBytes(ctx, workdir, env, "read-tree", baseline); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if _, err := runGitCommandBytes(ctx, workdir, env, "add", "-A", "--", ".", ":(exclude).tagteam"); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	patch, err := runGitCommandBytes(ctx, workdir, env, "-c", "core.quotepath=false", "diff", "--cached", "--no-ext-diff", "--no-color", "--binary", "--full-index", "--find-renames=50%", baseline, "--", ".")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	numstat, err := runGitCommandBytes(ctx, workdir, env, "-c", "core.quotepath=false", "diff", "--cached", "--no-ext-diff", "--no-color", "--numstat", baseline, "--", ".")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	statusZ, err := runGitCommandBytes(ctx, workdir, env, "-c", "core.quotepath=false", "diff", "--cached", "--no-ext-diff", "--no-color", "--name-status", "-z", "--find-renames=50%", baseline, "--", ".")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	numstatZ, err := runGitCommandBytes(ctx, workdir, env, "-c", "core.quotepath=false", "diff", "--cached", "--no-ext-diff", "--no-color", "--numstat", "-z", baseline, "--", ".")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return patch, numstat, statusZ, numstatZ, nil
+}
+
+func buildDiffFiles(statusZ, numstatZ []byte) []DiffFile {
+	stats := parseNumstatZ(numstatZ)
+	files := parseNameStatusZ(statusZ)
+	for i := range files {
+		if stat, ok := stats[files[i].Path]; ok {
+			files[i].Additions = stat.Additions
+			files[i].Deletions = stat.Deletions
+			files[i].Binary = stat.Binary
+		}
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		if files[i].Path == files[j].Path {
+			return files[i].OldPath < files[j].OldPath
+		}
+		return files[i].Path < files[j].Path
+	})
+	return files
+}
+
+func parseNameStatusZ(raw []byte) []DiffFile {
+	tokens := splitNULTokens(raw)
+	files := make([]DiffFile, 0, len(tokens)/2)
+	for i := 0; i < len(tokens); {
+		code := tokens[i]
+		i++
+		if code == "" {
+			continue
+		}
+		status := diffStatusName(code)
+		file := DiffFile{Status: status}
+		if strings.HasPrefix(code, "R") || strings.HasPrefix(code, "C") {
+			if i+1 >= len(tokens) {
+				break
+			}
+			file.OldPath = tokens[i]
+			file.Path = tokens[i+1]
+			i += 2
+		} else {
+			if i >= len(tokens) {
+				break
+			}
+			file.Path = tokens[i]
+			i++
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+func parseNumstatZ(raw []byte) map[string]DiffFile {
+	tokens := splitNULTokens(raw)
+	stats := map[string]DiffFile{}
+	for i := 0; i < len(tokens); i++ {
+		parts := strings.Split(tokens[i], "\t")
+		if len(parts) < 3 {
+			continue
+		}
+		stat := DiffFile{}
+		stat.Additions, stat.Binary = parseNumstatCount(parts[0])
+		var delBinary bool
+		stat.Deletions, delBinary = parseNumstatCount(parts[1])
+		stat.Binary = stat.Binary || delBinary
+		path := parts[2]
+		if path == "" {
+			if i+2 >= len(tokens) {
+				break
+			}
+			stat.OldPath = tokens[i+1]
+			path = tokens[i+2]
+			i += 2
+		}
+		stat.Path = path
+		stats[path] = stat
+	}
+	return stats
+}
+
+func splitNULTokens(raw []byte) []string {
+	parts := strings.Split(string(raw), "\x00")
+	tokens := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			tokens = append(tokens, part)
+		}
+	}
+	return tokens
+}
+
+func parseNumstatCount(raw string) (int, bool) {
+	if raw == "-" {
+		return 0, true
+	}
+	var n int
+	for _, ch := range raw {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n, false
+}
+
+func diffStatusName(code string) string {
+	switch code[0] {
+	case 'A':
+		return "added"
+	case 'C':
+		return "copied"
+	case 'D':
+		return "deleted"
+	case 'M':
+		return "modified"
+	case 'R':
+		return "renamed"
+	case 'T':
+		return "typechanged"
+	case 'U':
+		return "unmerged"
+	case 'X':
+		return "unknown"
+	default:
+		return strings.ToLower(code)
+	}
+}
+
+func currentWorkingTreeHead(ctx context.Context, workdir string) string {
+	out, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "working-tree"
+	}
+	head := strings.TrimSpace(string(out))
+	if head == "" {
+		return "working-tree"
+	}
+	return head + "-working-tree"
+}
+
+func normalizeTextFileNewline(data []byte) []byte {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return []byte(text)
+}
+
+func writeJSONWithNewline(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
 }
 
 func gitDirty(workdir string) (bool, error) {
@@ -726,6 +1259,17 @@ func runCommand(ctx context.Context, workdir, binary string, args ...string) (st
 		return "", fmt.Errorf("%s %s: %w: %s", binary, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+func runGitCommandBytes(ctx context.Context, workdir string, extraEnv []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workdir
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
 }
 
 func safeTestOutput(output string) string {

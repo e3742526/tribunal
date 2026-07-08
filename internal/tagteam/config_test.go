@@ -3,6 +3,7 @@ package tagteam
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +26,449 @@ func TestResolveOptions_ProfileAndFlags(t *testing.T) {
 	}
 	if opts.Rounds != 3 {
 		t.Fatalf("rounds = %d", opts.Rounds)
+	}
+}
+
+func TestDefaultConfig_SupervisorDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Defaults.Mode != "supervisor" {
+		t.Fatalf("mode = %q", cfg.Defaults.Mode)
+	}
+	if cfg.Defaults.Worker != "agy:Gemini 3.5 Flash (High)" {
+		t.Fatalf("worker = %q", cfg.Defaults.Worker)
+	}
+	if cfg.Defaults.Supervisor != "claude:opus" {
+		t.Fatalf("supervisor = %q", cfg.Defaults.Supervisor)
+	}
+	if cfg.Defaults.Rounds != 2 {
+		t.Fatalf("rounds = %d", cfg.Defaults.Rounds)
+	}
+	// Legacy adversarial-mode defaults must still be present.
+	if cfg.Defaults.Coder != "codex" || cfg.Defaults.Adversary != "claude" {
+		t.Fatalf("legacy defaults = coder=%q adversary=%q", cfg.Defaults.Coder, cfg.Defaults.Adversary)
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    Mode
+		wantErr bool
+	}{
+		{"", ModeSupervisor, false},
+		{"supervisor", ModeSupervisor, false},
+		{"adversarial", ModeAdversarial, false},
+		{"bogus", "", true},
+	}
+	for _, tc := range cases {
+		got, err := ParseMode(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("ParseMode(%q) expected error", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ParseMode(%q) error = %v", tc.raw, err)
+		}
+		if got != tc.want {
+			t.Fatalf("ParseMode(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestResolveOptions_DefaultsToSupervisorMode(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{Timeout: 15 * time.Minute}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeSupervisor {
+		t.Fatalf("mode = %q", opts.Mode)
+	}
+	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (High)" {
+		t.Fatalf("worker target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("supervisor target = %#v", opts.Adversary)
+	}
+	if opts.Rounds != 2 {
+		t.Fatalf("rounds = %d", opts.Rounds)
+	}
+	if opts.SupervisorCanEdit {
+		t.Fatal("expected supervisor-can-edit to default to false")
+	}
+}
+
+func TestResolveOptions_AdversarialModeUsesLegacyDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{
+		Mode:    "adversarial",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q", opts.Mode)
+	}
+	if opts.Coder.Adapter != "codex" {
+		t.Fatalf("coder adapter = %q", opts.Coder.Adapter)
+	}
+	if opts.Adversary.Adapter != "claude" {
+		t.Fatalf("adversary adapter = %q", opts.Adversary.Adapter)
+	}
+}
+
+func TestResolveOptions_InvalidMode(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{
+		Mode:    "bogus",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestResolveOptions_LegacyFlagsMapByMode(t *testing.T) {
+	cfg := DefaultConfig()
+	flags := FlagInputs{
+		Coder:     "claude:sonnet",
+		Adversary: "codex:o1",
+		Timeout:   15 * time.Minute,
+	}
+	changed := map[string]bool{"mc": true, "ma": true}
+
+	supervisorOpts, err := ResolveOptions(cfg, nil, flags, changed, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if supervisorOpts.Coder.Adapter != "claude" || supervisorOpts.Coder.Model != "sonnet" {
+		t.Fatalf("supervisor-mode worker target = %#v", supervisorOpts.Coder)
+	}
+	if supervisorOpts.Adversary.Adapter != "codex" || supervisorOpts.Adversary.Model != "o1" {
+		t.Fatalf("supervisor-mode supervisor target = %#v", supervisorOpts.Adversary)
+	}
+
+	flags.Mode = "adversarial"
+	changed["mode"] = true
+	adversarialOpts, err := ResolveOptions(cfg, nil, flags, changed, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if adversarialOpts.Coder.Adapter != "claude" || adversarialOpts.Coder.Model != "sonnet" {
+		t.Fatalf("adversarial-mode coder target = %#v", adversarialOpts.Coder)
+	}
+	if adversarialOpts.Adversary.Adapter != "codex" || adversarialOpts.Adversary.Model != "o1" {
+		t.Fatalf("adversarial-mode adversary target = %#v", adversarialOpts.Adversary)
+	}
+}
+
+func TestResolveOptions_NewRoleFlagsOverrideLegacy(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Coder:      "codex",
+		Worker:     "gosling:flash",
+		Adversary:  "claude:haiku",
+		Supervisor: "claude:opus",
+		Timeout:    15 * time.Minute,
+	}, map[string]bool{"mc": true, "worker": true, "ma": true, "supervisor": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Coder.Adapter != "gosling" || opts.Coder.Model != "flash" {
+		t.Fatalf("--worker should win over --mc: %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("--supervisor should win over --ma: %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_ReviewerIsAdversarialAliasForMa(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:     "adversarial",
+		Reviewer: "claude:opus",
+		Timeout:  15 * time.Minute,
+	}, map[string]bool{"mode": true, "reviewer": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("--reviewer target = %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_WorkerFlagRejectedInAdversarialMode(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:    "adversarial",
+		Worker:  "agy",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true, "worker": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected error using --worker in adversarial mode")
+	}
+	if !strings.Contains(err.Error(), "--worker is only valid in supervisor mode") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveOptions_SupervisorFlagRejectedInAdversarialMode(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:       "adversarial",
+		Supervisor: "claude:opus",
+		Timeout:    15 * time.Minute,
+	}, map[string]bool{"mode": true, "supervisor": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected error using --supervisor in adversarial mode")
+	}
+	if !strings.Contains(err.Error(), "--supervisor is only valid in supervisor mode") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveOptions_ReviewerFlagRejectedInSupervisorMode(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Reviewer: "claude:opus",
+		Timeout:  15 * time.Minute,
+	}, map[string]bool{"reviewer": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected error using --reviewer in supervisor mode")
+	}
+	if !strings.Contains(err.Error(), "--reviewer is only valid in adversarial mode") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveOptions_ProfileWorkerSupervisor(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Profiles["custom"] = ProfileConfig{
+		Worker:     "gosling:flash",
+		Supervisor: "claude:haiku",
+		Rounds:     5,
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "custom",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeSupervisor {
+		t.Fatalf("mode = %q", opts.Mode)
+	}
+	if opts.Coder.Adapter != "gosling" || opts.Coder.Model != "flash" {
+		t.Fatalf("worker target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "haiku" {
+		t.Fatalf("supervisor target = %#v", opts.Adversary)
+	}
+	if opts.Rounds != 5 {
+		t.Fatalf("rounds = %d", opts.Rounds)
+	}
+}
+
+func TestResolveOptions_ProfileWorkerSupervisorForcesSupervisorMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.Mode = string(ModeAdversarial)
+	cfg.Profiles["supervised"] = ProfileConfig{
+		Worker:     "agy:Gemini 3.5 Flash (High)",
+		Supervisor: "claude:opus",
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "supervised",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeSupervisor {
+		t.Fatalf("mode = %q, want supervisor", opts.Mode)
+	}
+	if opts.Coder.Adapter != "agy" {
+		t.Fatalf("worker target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("supervisor target = %#v", opts.Adversary)
+	}
+	if !opts.ModeExplicit || !opts.CoderExplicit || !opts.AdversaryExplicit {
+		t.Fatalf("expected profile worker/supervisor to mark mode/targets explicit: mode=%t coder=%t adversary=%t", opts.ModeExplicit, opts.CoderExplicit, opts.AdversaryExplicit)
+	}
+}
+
+func TestResolveOptions_ProfileSetsMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Profiles["legacy"] = ProfileConfig{
+		Mode:      "adversarial",
+		Coder:     "codex:gpt-5",
+		Adversary: "claude:sonnet",
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "legacy",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q", opts.Mode)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5" {
+		t.Fatalf("coder target = %#v", opts.Coder)
+	}
+}
+
+func TestResolveOptions_ProfileWithLegacyKeysOnlyResolvesAdversarial(t *testing.T) {
+	cfg := DefaultConfig()
+	// A profile written before `mode` existed: it only sets the legacy
+	// coder/adversary keys. It must still resolve as an adversarial-mode
+	// profile instead of being silently ignored under the supervisor
+	// default.
+	cfg.Profiles["oldschool"] = ProfileConfig{
+		Coder:     "codex:gpt-5",
+		Adversary: "claude:sonnet",
+		Rounds:    3,
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "oldschool",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q, want adversarial", opts.Mode)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5" {
+		t.Fatalf("coder target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
+		t.Fatalf("adversary target = %#v", opts.Adversary)
+	}
+	if opts.Rounds != 3 {
+		t.Fatalf("rounds = %d", opts.Rounds)
+	}
+	if !opts.ModeExplicit || !opts.CoderExplicit || !opts.AdversaryExplicit {
+		t.Fatalf("expected profile selection to mark mode/targets explicit: mode=%t coder=%t adversary=%t", opts.ModeExplicit, opts.CoderExplicit, opts.AdversaryExplicit)
+	}
+}
+
+func TestResolveOptions_SupervisorCanEdit(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		SupervisorCanEdit: true,
+		Timeout:           15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if !opts.SupervisorCanEdit {
+		t.Fatal("expected SupervisorCanEdit = true")
+	}
+}
+
+func TestResolveOptions_ProfileWithOnlyRoundsDoesNotMarkModeOrTargetsExplicit(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Profiles["quick"] = ProfileConfig{Rounds: 5}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "quick",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Rounds != 5 {
+		t.Fatalf("rounds = %d", opts.Rounds)
+	}
+	// The profile only overrides rounds; it must not pin mode/targets as
+	// explicit, or Fix() would refuse to resume a saved run's mode/adapters.
+	if opts.ModeExplicit || opts.CoderExplicit || opts.AdversaryExplicit {
+		t.Fatalf("expected a rounds-only profile to leave mode/targets non-explicit: mode=%t coder=%t adversary=%t", opts.ModeExplicit, opts.CoderExplicit, opts.AdversaryExplicit)
+	}
+}
+
+func TestMergeEnvConfig_ModeWorkerSupervisor(t *testing.T) {
+	t.Setenv("TAGTEAM_MODE", "adversarial")
+	t.Setenv("TAGTEAM_WORKER", "gosling:flash")
+	t.Setenv("TAGTEAM_SUPERVISOR", "claude:opus")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg)
+
+	if cfg.Defaults.Mode != "adversarial" {
+		t.Fatalf("mode = %q", cfg.Defaults.Mode)
+	}
+	if cfg.Defaults.Worker != "gosling:flash" {
+		t.Fatalf("worker = %q", cfg.Defaults.Worker)
+	}
+	if cfg.Defaults.Supervisor != "claude:opus" {
+		t.Fatalf("supervisor = %q", cfg.Defaults.Supervisor)
+	}
+}
+
+func TestMergeEnvConfig_LegacyCoderAdversaryImpliesAdversarialMode(t *testing.T) {
+	t.Setenv("TAGTEAM_CODER", "codex:gpt-5")
+	t.Setenv("TAGTEAM_ADVERSARY", "claude:haiku")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg)
+
+	if cfg.Defaults.Mode != string(ModeAdversarial) {
+		t.Fatalf("mode = %q, want adversarial", cfg.Defaults.Mode)
+	}
+	if cfg.Defaults.Coder != "codex:gpt-5" || cfg.Defaults.Adversary != "claude:haiku" {
+		t.Fatalf("coder/adversary = %q/%q", cfg.Defaults.Coder, cfg.Defaults.Adversary)
+	}
+}
+
+func TestMergeEnvConfig_ExplicitModeWinsOverLegacyCoderAdversary(t *testing.T) {
+	t.Setenv("TAGTEAM_MODE", "supervisor")
+	t.Setenv("TAGTEAM_CODER", "codex:gpt-5")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg)
+
+	if cfg.Defaults.Mode != string(ModeSupervisor) {
+		t.Fatalf("mode = %q, want supervisor", cfg.Defaults.Mode)
+	}
+	if cfg.Defaults.Coder != "codex:gpt-5" {
+		t.Fatalf("coder = %q", cfg.Defaults.Coder)
+	}
+}
+
+func TestResolveOptions_LegacyEnvRoleSelectionStillWorksUnderSupervisorDefault(t *testing.T) {
+	t.Setenv("TAGTEAM_CODER", "codex:gpt-5")
+	t.Setenv("TAGTEAM_ADVERSARY", "claude:haiku")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg)
+
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q, want adversarial", opts.Mode)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5" {
+		t.Fatalf("coder target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "haiku" {
+		t.Fatalf("adversary target = %#v", opts.Adversary)
+	}
+}
+
+func TestHasTagteamEnv_RecognizesNewModeVars(t *testing.T) {
+	if hasTagteamEnv() {
+		t.Fatal("expected no TAGTEAM_* env vars set")
+	}
+	t.Setenv("TAGTEAM_MODE", "adversarial")
+	if !hasTagteamEnv() {
+		t.Fatal("expected TAGTEAM_MODE to be recognized")
 	}
 }
 
@@ -56,6 +500,68 @@ func TestLoadConfig_RepoOverridesUser(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_LegacyDefaultCoderAdversaryImpliesAdversarialMode(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := []byte("[defaults]\ncoder = \"codex:gpt-5\"\nadversary = \"claude:sonnet\"\n")
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam.toml"), repoConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeAdversarial {
+		t.Fatalf("mode = %q, want adversarial", opts.Mode)
+	}
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5" {
+		t.Fatalf("coder target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
+		t.Fatalf("adversary target = %#v", opts.Adversary)
+	}
+}
+
+func TestLoadConfig_ExplicitSupervisorModeWinsOverLegacyDefaultRoles(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := []byte("[defaults]\nmode = \"supervisor\"\ncoder = \"codex:gpt-5\"\nadversary = \"claude:sonnet\"\nworker = \"agy:Gemini 3.5 Flash (High)\"\nsupervisor = \"claude:opus\"\n")
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam.toml"), repoConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.Mode != ModeSupervisor {
+		t.Fatalf("mode = %q, want supervisor", opts.Mode)
+	}
+	if opts.Coder.Adapter != "agy" {
+		t.Fatalf("worker target = %#v", opts.Coder)
+	}
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "opus" {
+		t.Fatalf("supervisor target = %#v", opts.Adversary)
+	}
+}
+
 func TestResolveOptions_RejectsInvalidGitSafety(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Defaults.GitSafety = "bad-mode"
@@ -82,6 +588,27 @@ func TestResolveOptions_AgyPassthrough(t *testing.T) {
 	for i := range want {
 		if opts.AgyArgs[i] != want[i] {
 			t.Fatalf("agy args[%d] = %q, want %q", i, opts.AgyArgs[i], want[i])
+		}
+	}
+}
+
+func TestResolveOptions_GoslingPassthrough(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Adapters.Gosling.ExtraArgs = []string{"--provider", "google"}
+	opts, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{
+		GoslingArgsRaw: "--model gemini-2.5-flash",
+		Timeout:        15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	want := []string{"--provider", "google", "--model", "gemini-2.5-flash"}
+	if len(opts.GoslingArgs) != len(want) {
+		t.Fatalf("gosling args length = %d, want %d: %#v", len(opts.GoslingArgs), len(want), opts.GoslingArgs)
+	}
+	for i := range want {
+		if opts.GoslingArgs[i] != want[i] {
+			t.Fatalf("gosling args[%d] = %q, want %q", i, opts.GoslingArgs[i], want[i])
 		}
 	}
 }
