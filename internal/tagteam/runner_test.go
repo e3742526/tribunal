@@ -91,6 +91,40 @@ func TestReviewSchemaRequiresAllFindingProperties(t *testing.T) {
 	}
 }
 
+func TestWorkPlanSchemaRequiresCoreFields(t *testing.T) {
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Packages struct {
+				Items struct {
+					Required []string `json:"required"`
+				} `json:"items"`
+			} `json:"packages"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(WorkPlanSchema), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	required := map[string]bool{}
+	for _, key := range schema.Required {
+		required[key] = true
+	}
+	for _, key := range []string{"schema_version", "summary", "packages", "selected_package"} {
+		if !required[key] {
+			t.Fatalf("work plan schema missing required key %q", key)
+		}
+	}
+	packageRequired := map[string]bool{}
+	for _, key := range schema.Properties.Packages.Items.Required {
+		packageRequired[key] = true
+	}
+	for _, key := range []string{"id", "title", "goal", "acceptance", "validation"} {
+		if !packageRequired[key] {
+			t.Fatalf("work plan package schema missing required key %q", key)
+		}
+	}
+}
+
 func TestRolePromptsDoNotLeakConflictingAuthority(t *testing.T) {
 	workerPrompts := []string{
 		BuildWorkerImplementPrompt("/repo", "ship it", "brief"),
@@ -664,6 +698,27 @@ func TestParseWorkPlanExtractsFencedJSON(t *testing.T) {
 	}
 	if plan.SelectedPackage != "P1" {
 		t.Fatalf("selected package = %q", plan.SelectedPackage)
+	}
+}
+
+func TestParseWorkPlanExtractsWrappedJSON(t *testing.T) {
+	raw := []byte("Here is the work plan:\n{\"schema_version\":1,\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\nDone.")
+	plan, err := parseWorkPlan(raw, "", 5)
+	if err != nil {
+		t.Fatalf("parseWorkPlan() error = %v", err)
+	}
+	if plan.SchemaVersion != ArtifactSchemaVersion || plan.SelectedPackage != "P1" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestParseWorkPlanInvalidReturnsContractError(t *testing.T) {
+	_, err := parseWorkPlan([]byte(`{"schema_version":1,"summary":"missing packages","selected_package":"P1"}`), "", 5)
+	if err == nil {
+		t.Fatal("expected parseWorkPlan() error")
+	}
+	if !IsOutputContractError(err) {
+		t.Fatalf("expected OutputContractError, got %T: %v", err, err)
 	}
 }
 
@@ -1314,7 +1369,7 @@ func TestRunLoop_SupervisorSlicingWritesWorkPlanAndScopesWorker(t *testing.T) {
 	if len(final.RemainingPackages) != 1 || !strings.Contains(final.RemainingPackages[0], "P2") {
 		t.Fatalf("remaining packages = %#v", final.RemainingPackages)
 	}
-	for _, name := range []string{"supervisor-work-plan.json", "supervisor-brief.md"} {
+	for _, name := range []string{"supervisor-work-plan.json", "work-plan-schema.json", "supervisor-brief.md"} {
 		if !fileExists(filepath.Join(final.RunDir, name)) {
 			t.Fatalf("expected artifact %s in %s", name, final.RunDir)
 		}
@@ -1355,6 +1410,10 @@ func TestRunLoop_SupervisorSlicingWritesWorkPlanAndScopesWorker(t *testing.T) {
 	if len(sections) < 2 {
 		t.Fatalf("expected at least slicing and worker invocations, log:\n%s", string(data))
 	}
+	slicingInvocation := sections[0]
+	if !strings.Contains(slicingInvocation, "--json-schema") || !strings.Contains(slicingInvocation, `"packages"`) {
+		t.Fatalf("slicing invocation did not use work-plan schema:\n%s", slicingInvocation)
+	}
 	workerInvocation := sections[1]
 	if !strings.Contains(workerInvocation, "Selected work package") || !strings.Contains(workerInvocation, "P1") {
 		t.Fatalf("worker invocation was not package-scoped:\n%s", workerInvocation)
@@ -1379,7 +1438,7 @@ if [ -n "$CLAUDE_ARGS_LOG" ]; then
 fi
 case "$*" in
   *"implementation work packages"*)
-    printf '%s' '{"result":"{\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
+    printf '%s' '{"result":"{\"schema_version\":1,\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
     exit 0
     ;;
 esac

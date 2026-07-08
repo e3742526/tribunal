@@ -1128,19 +1128,28 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		if opts.SupervisorSlicing {
 			logProgress(opts, "supervisor slicing started adapter=%s max-packages=%d", reviewer.ID(), opts.MaxPackages)
 			planOutputPath := filepath.Join(runDir, "supervisor-work-plan.json")
+			planSchemaPath := filepath.Join(runDir, "work-plan-schema.json")
 			var plan WorkPlan
 			var planCost float64
 			if opts.DryRun {
 				plan = syntheticWorkPlan(opts.Prompt, opts.Package)
 			} else {
+				if err := os.WriteFile(planSchemaPath, []byte(WorkPlanSchema), 0o644); err != nil {
+					return final, err
+				}
+				planPrompt := withRepoInstructions(BuildSupervisorWorkPlanPrompt(opts.Workdir, opts.Prompt, opts.MaxPackages, opts.Package), repoInstructions)
+				if !reviewer.Capabilities().SupportsSchema {
+					planPrompt += "\n\nJSON schema:\n" + WorkPlanSchema
+				}
 				planResult, err := a.runAdapter(ctx, reviewer, RoleSupervisor, Request{
 					Context:    ctx,
-					Prompt:     withRepoInstructions(BuildSupervisorWorkPlanPrompt(opts.Workdir, opts.Prompt, opts.MaxPackages, opts.Package), repoInstructions),
+					Prompt:     planPrompt,
 					EnvOverlay: opts.EnvOverlay,
 					Model:      opts.Adversary.Model,
 					Workdir:    opts.Workdir,
 					RunDir:     runDir,
 					OutputPath: planOutputPath,
+					SchemaPath: planSchemaPath,
 					Timeout:    opts.Timeout,
 					Phase:      fmt.Sprintf("supervisor slicing %s", reviewer.ID()),
 					Quiet:      opts.Quiet,

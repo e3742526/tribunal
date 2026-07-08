@@ -82,11 +82,25 @@ This note applies to the vendor CLI adapters; the separate `openai-compatible` a
 
 `tagteam` also reads a repo-local `.env` file from the selected workdir as a scoped overlay. It does not mutate the global process environment; exported shell variables still take precedence, and `.env` values are passed only to tagteam's config resolver and invoked adapters/tests. A starter template is included as [`.env_template`](/Users/eric/Documents/team-cli/.env_template:1).
 
-## Compatibility Risks
+## Compatibility Issues And Known Rough Edges
 
-`tagteam` depends on third-party agent CLIs whose command-line contracts are not stable. Flags, output formats, auth flows, and model-selection syntax may change upstream without warning.
+`tagteam` depends on third-party agent CLIs and compatible HTTP backends whose behavior can change without warning. Expect some adapter-specific rough edges, especially as upstream tools evolve.
 
-That means adapters in this repository can break when tools like `codex`, `claude`, `agy`, `codex-oss`, or `gosling` change their flags or behavior. Expect periodic adapter maintenance as those CLIs evolve.
+Current caveats:
+
+- Vendor CLI flag drift can break adapters. `codex`, `codex-oss`, `claude`, `agy`, `gosling`, and similar tools may rename flags, change output formats, or alter auth behavior between releases.
+- Authentication is adapter-specific. CLI-backed adapters usually rely on the vendor's own login/session flow; `openai-compatible` / `oai` relies on explicit environment/config values.
+- Supervisor slicing is more format-sensitive than the final review pass. The final review path is schema-validated, but some supervisor planning/instruction steps still depend on adapter output being reasonably well-formed.
+- Different adapters do not expose identical capabilities. Some support schema-constrained output, stdin, or session resume; others do not. `tagteam` degrades where possible, but behavior is not perfectly uniform.
+- Local `.env` loading is a convenience feature, not a secret-management system. It helps with local runs, but shell-exported environment variables still take precedence, and repository-local config can affect adapter behavior.
+- Published binaries are broader than real-world manual validation. Releases may include targets that pass Go-level CI but have not been exercised end-to-end with every supported vendor CLI.
+
+Practical guidance:
+
+- Prefer `tagteam doctor` before blaming orchestration logic.
+- Use `--dry-run` to inspect resolved invocations when an adapter behaves unexpectedly.
+- Start with small prompts and targeted tests when trying a new adapter/model pairing.
+- Treat new modes, new adapters, and unusual cross-vendor combinations as experimental until you have run them in your own environment.
 
 ## Install
 

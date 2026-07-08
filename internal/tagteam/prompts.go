@@ -169,6 +169,7 @@ one package for this run. %s
 
 Return JSON only, with this shape:
 {
+  "schema_version": 1,
   "summary": "One sentence summary of the selected package.",
   "packages": [
     {

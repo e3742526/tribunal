@@ -46,6 +46,22 @@ func TestCodexBuildCmdSupervisor(t *testing.T) {
 	}
 }
 
+func TestCodexBuildCmdSupervisorWithSchema(t *testing.T) {
+	adapter := &CodexAdapter{IDValue: "codex", DefaultModel: "gpt-5-codex"}
+	spec, err := adapter.BuildCmd(RoleSupervisor, Request{
+		Prompt:     "write a work plan",
+		Workdir:    "/repo",
+		SchemaPath: "/tmp/work-plan-schema.json",
+	})
+	if err != nil {
+		t.Fatalf("BuildCmd() error = %v", err)
+	}
+	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "--output-schema", "/tmp/work-plan-schema.json", "write a work plan"}
+	if !reflect.DeepEqual(spec.Argv, want) {
+		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+}
+
 func TestCodexBuildCmdReporterIsReadOnly(t *testing.T) {
 	adapter := &CodexAdapter{IDValue: "codex", DefaultModel: "gpt-5-codex"}
 	spec, err := adapter.BuildCmd(RoleReporter, Request{
@@ -110,6 +126,33 @@ func TestClaudeBuildCmdSupervisor(t *testing.T) {
 	}
 }
 
+func TestClaudeBuildCmdSupervisorWorkPlanUsesSchema(t *testing.T) {
+	tmp := t.TempDir()
+	schemaPath := filepath.Join(tmp, "work-plan-schema.json")
+	if err := os.WriteFile(schemaPath, []byte(WorkPlanSchema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &ClaudeAdapter{DefaultModel: "opus"}
+	spec, err := adapter.BuildCmd(RoleSupervisor, Request{
+		Prompt:     "write a work plan",
+		Workdir:    "/repo",
+		SchemaPath: schemaPath,
+	})
+	if err != nil {
+		t.Fatalf("BuildCmd() error = %v", err)
+	}
+	argv := strings.Join(spec.Argv, " ")
+	if !strings.Contains(argv, "--permission-mode dontAsk") {
+		t.Fatalf("expected read-only permission mode, got argv = %v", spec.Argv)
+	}
+	if !strings.Contains(argv, "--json-schema") {
+		t.Fatalf("expected supervisor work-plan schema, got argv = %v", spec.Argv)
+	}
+	if !strings.Contains(argv, `"packages"`) {
+		t.Fatalf("expected schema JSON in argv, got argv = %v", spec.Argv)
+	}
+}
+
 func TestClaudeBuildCmdReporterDoesNotUseSchema(t *testing.T) {
 	adapter := &ClaudeAdapter{DefaultModel: "opus"}
 	spec, err := adapter.BuildCmd(RoleReporter, Request{
@@ -140,6 +183,21 @@ func TestClaudeParseResult(t *testing.T) {
 	}
 	if result.Review == nil || result.Review.Verdict != "pass" {
 		t.Fatalf("review = %#v", result.Review)
+	}
+}
+
+func TestClaudeParseResultSupervisorStructuredOutput(t *testing.T) {
+	adapter := &ClaudeAdapter{}
+	raw := []byte(`{"result":"","session_id":"sess_1","total_cost_usd":0.5,"structured_output":{"schema_version":1,"summary":"split","packages":[{"id":"P1","title":"First","goal":"Do first","acceptance":["ok"],"validation":["go test ./..."]}],"selected_package":"P1","defer":[]}}`)
+	result, err := adapter.ParseResult(RoleSupervisor, raw)
+	if err != nil {
+		t.Fatalf("ParseResult() error = %v", err)
+	}
+	if result.SessionID != "sess_1" || result.CostUSD != 0.5 {
+		t.Fatalf("metadata = %q %v", result.SessionID, result.CostUSD)
+	}
+	if !strings.Contains(result.Text, `"selected_package":"P1"`) {
+		t.Fatalf("structured output was not exposed as text: %q", result.Text)
 	}
 }
 

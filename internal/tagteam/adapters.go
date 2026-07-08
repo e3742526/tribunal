@@ -91,7 +91,7 @@ func (a *CodexAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	if model != "" {
 		argv = append(argv, "-m", model)
 	}
-	if role == RoleAdversary && req.SchemaPath != "" {
+	if (role == RoleAdversary || role == RoleSupervisor) && req.SchemaPath != "" {
 		argv = append(argv, "--output-schema", req.SchemaPath)
 	}
 	if req.OutputPath != "" {
@@ -186,6 +186,13 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 			"--permission-mode", "dontAsk",
 			"--allowedTools", "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status *)",
 		)
+		if role == RoleSupervisor && req.SchemaPath != "" {
+			schemaBytes, err := osReadFile(req.SchemaPath)
+			if err != nil {
+				return nil, err
+			}
+			argv = append(argv, "--json-schema", string(schemaBytes))
+		}
 		if req.SystemPrompt != "" {
 			argv = append(argv, "--append-system-prompt", req.SystemPrompt)
 		}
@@ -238,6 +245,9 @@ func (a *ClaudeAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 		}
 		result.Review = &review
 		result.Text = review.Summary
+	}
+	if role == RoleSupervisor && len(envelope.StructuredOutput) > 0 && string(envelope.StructuredOutput) != "null" {
+		result.Text = strings.TrimSpace(string(envelope.StructuredOutput))
 	}
 	if role == RoleScout {
 		scoutRaw := []byte(envelope.Result)
