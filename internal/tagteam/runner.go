@@ -229,6 +229,234 @@ func normalizeInstructionText(data []byte) string {
 	return strings.TrimSpace(text)
 }
 
+func newExecutionPlanFromWorkPlan(runID string, mode Mode, workPlan WorkPlan, source string) *ExecutionPlan {
+	now := time.Now().UTC()
+	plan := &ExecutionPlan{
+		SchemaVersion: 1,
+		RunID:         runID,
+		Mode:          mode,
+		Status:        "running",
+		Summary:       workPlan.Summary,
+		Items:         make([]PlanItem, 0, len(workPlan.Packages)),
+		Events:        []PlanEvent{},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if source == "" {
+		source = "supervisor-initial"
+	}
+	for _, pkg := range workPlan.Packages {
+		status := PlanStatusPending
+		if pkg.ID == workPlan.SelectedPackage {
+			status = PlanStatusInProgress
+		}
+		plan.Items = append(plan.Items, PlanItem{
+			ID:           pkg.ID,
+			Title:        pkg.Title,
+			Status:       status,
+			Owner:        "worker",
+			Source:       source,
+			Reason:       pkg.Goal,
+			AllowedScope: append([]string{}, pkg.AllowedScope...),
+			Acceptance:   append([]string{}, pkg.Acceptance...),
+			Validation:   append([]string{}, pkg.Validation...),
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		})
+		plan.Events = append(plan.Events, PlanEvent{
+			Type:    "item_created",
+			ItemID:  pkg.ID,
+			By:      source,
+			At:      now,
+			To:      status,
+			Message: pkg.Title,
+		})
+		if status == PlanStatusInProgress {
+			plan.Events = append(plan.Events, PlanEvent{
+				Type:    "item_started",
+				ItemID:  pkg.ID,
+				By:      "runner",
+				At:      now,
+				To:      PlanStatusInProgress,
+				Message: "selected package started",
+			})
+		}
+	}
+	return plan
+}
+
+func setPlanItemStatus(plan *ExecutionPlan, itemID string, status PlanStatus, by, message string) bool {
+	if plan == nil || itemID == "" {
+		return false
+	}
+	now := time.Now().UTC()
+	if status == PlanStatusInProgress {
+		for _, item := range plan.Items {
+			if item.ID != itemID && item.Status == PlanStatusInProgress {
+				return false
+			}
+		}
+	}
+	for i := range plan.Items {
+		if plan.Items[i].ID != itemID {
+			continue
+		}
+		from := plan.Items[i].Status
+		if from == status {
+			return false
+		}
+		plan.Items[i].Status = status
+		plan.Items[i].UpdatedAt = now
+		plan.UpdatedAt = now
+		plan.Events = append(plan.Events, PlanEvent{
+			Type:    "item_status_changed",
+			ItemID:  itemID,
+			By:      by,
+			At:      now,
+			From:    from,
+			To:      status,
+			Message: message,
+		})
+		return true
+	}
+	return false
+}
+
+func deferRemainingPlanItems(plan *ExecutionPlan, selectedID, by, message string) {
+	if plan == nil {
+		return
+	}
+	for _, item := range plan.Items {
+		if item.ID == selectedID || item.Status != PlanStatusPending {
+			continue
+		}
+		setPlanItemStatus(plan, item.ID, PlanStatusDeferred, by, message)
+	}
+}
+
+func appendReviewFindingPlanItems(plan *ExecutionPlan, review Review, round int) {
+	if plan == nil {
+		return
+	}
+	source := fmt.Sprintf("supervisor-review-round-%d", round)
+	now := time.Now().UTC()
+	for i, finding := range review.Findings {
+		if finding.Severity != "blocker" && finding.Severity != "major" {
+			continue
+		}
+		id := fmt.Sprintf("R%d-F%d", round, i+1)
+		if planItemExists(plan, id) {
+			continue
+		}
+		title := strings.TrimSpace(finding.Issue)
+		if title == "" {
+			title = fmt.Sprintf("%s finding", finding.Severity)
+		}
+		item := PlanItem{
+			ID:         id,
+			Title:      title,
+			Status:     PlanStatusNeedsArbitration,
+			Owner:      "supervisor",
+			Source:     source,
+			Reason:     strings.TrimSpace(finding.Fix),
+			Acceptance: []string{strings.TrimSpace(finding.Fix)},
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if finding.File != "" {
+			item.AllowedScope = []string{finding.File}
+		}
+		plan.Items = append(plan.Items, item)
+		plan.Events = append(plan.Events, PlanEvent{
+			Type:    "item_added",
+			ItemID:  id,
+			By:      source,
+			At:      now,
+			To:      PlanStatusNeedsArbitration,
+			Message: title,
+		})
+		plan.UpdatedAt = now
+	}
+}
+
+func planItemExists(plan *ExecutionPlan, id string) bool {
+	for _, item := range plan.Items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func finalizeExecutionPlan(plan *ExecutionPlan, exitCode int) {
+	if plan == nil {
+		return
+	}
+	if exitCode == ExitSuccess {
+		plan.Status = "passed"
+	} else {
+		plan.Status = "failed"
+	}
+	plan.UpdatedAt = time.Now().UTC()
+	plan.Events = append(plan.Events, PlanEvent{
+		Type:    "plan_finished",
+		By:      "runner",
+		At:      plan.UpdatedAt,
+		Message: fmt.Sprintf("exit=%d", exitCode),
+	})
+}
+
+func summarizeExecutionPlan(runDir string, plan *ExecutionPlan) *PlanSummary {
+	if plan == nil {
+		return nil
+	}
+	summary := &PlanSummary{
+		Path:   filepath.Join(runDir, "plan.json"),
+		Status: plan.Status,
+		Total:  len(plan.Items),
+	}
+	for _, item := range plan.Items {
+		switch item.Status {
+		case PlanStatusPending:
+			summary.Pending++
+		case PlanStatusInProgress:
+			summary.InProgress++
+		case PlanStatusBlocked:
+			summary.Blocked++
+		case PlanStatusPassed:
+			summary.Passed++
+		case PlanStatusFailed:
+			summary.Failed++
+		case PlanStatusSkipped:
+			summary.Skipped++
+		case PlanStatusDeferred:
+			summary.Deferred++
+		case PlanStatusNeedsArbitration:
+			summary.Arbitration++
+		}
+	}
+	return summary
+}
+
+func persistExecutionPlan(runDir string, plan *ExecutionPlan) error {
+	if plan == nil {
+		return nil
+	}
+	if err := writeJSONWithNewline(filepath.Join(runDir, "plan.json"), plan); err != nil {
+		return err
+	}
+	var events bytes.Buffer
+	for _, event := range plan.Events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		events.Write(data)
+		events.WriteByte('\n')
+	}
+	return os.WriteFile(filepath.Join(runDir, "plan-events.jsonl"), events.Bytes(), 0o644)
+}
+
 func (a *App) Run(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	normalizeDefaultMode(&opts)
 	if strings.TrimSpace(opts.Prompt) == "" {
@@ -825,6 +1053,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	var relay RelayContext
 	var workPlan *WorkPlan
 	var selectedPackage *WorkPackage
+	var executionPlan *ExecutionPlan
 	if opts.Mode == ModeSupervisor && initialReview == nil {
 		if opts.SupervisorSlicing {
 			logProgress(opts, "supervisor slicing started adapter=%s max-packages=%d", reviewer.ID(), opts.MaxPackages)
@@ -871,6 +1100,11 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			final.WorkPlan = workPlan
 			final.SelectedPackage = selectedPackage
 			final.RemainingPackages = plan.RemainingPackageTitles()
+			executionPlan = newExecutionPlanFromWorkPlan(runID, opts.Mode, plan, "supervisor-initial")
+			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+				return final, err
+			}
+			final.Plan = summarizeExecutionPlan(runDir, executionPlan)
 			brief = BuildWorkPackageBrief(plan, pkg)
 			briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
 			if err := os.WriteFile(briefOutputPath, []byte(brief), 0o644); err != nil {
@@ -1013,6 +1247,13 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		editorPrompt = withRepoInstructions(editorPrompt, repoInstructions)
 		implementSelectedPackage = false
 		editorOutputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.md", editorLabel, round))
+		if selectedPackage != nil {
+			if setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusInProgress, "runner", fmt.Sprintf("round %d %s started", round, editorLabel)) {
+				if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+					return final, err
+				}
+			}
+		}
 		editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
 			Context:      ctx,
 			Prompt:       editorPrompt,
@@ -1097,6 +1338,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		if err != nil {
 			return final, err
 		}
+		appendReviewFindingPlanItems(executionPlan, *review, round)
 		logProgress(opts, "round %d %s completed verdict=%s findings=%d output=%s", round, reviewerLabel, review.Verdict, len(review.Findings), reviewPath)
 		final.Costs[reviewerLabel] += cost
 		final.RoundsCompleted = round
@@ -1105,6 +1347,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		latestReview = *review
 
 		if review.Verdict == "pass" {
+			if selectedPackage != nil {
+				setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusPassed, reviewerLabel, fmt.Sprintf("round %d review passed", round))
+			}
 			if opts.Mode == ModeSupervisor && opts.AutoNextPackage && workPlan != nil && selectedPackage != nil {
 				nextPackage, ok := nextWorkPackage(*workPlan, selectedPackage.ID)
 				if ok && round < opts.Rounds {
@@ -1117,9 +1362,18 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 					final.RemainingPackages = workPlan.RemainingPackageTitles()
 					brief = BuildWorkPackageBrief(*workPlan, nextPackage)
 					implementSelectedPackage = true
+					if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+						return final, err
+					}
 					logProgress(opts, "package %s passed; continuing to %s: %s", reviewPackageID(final.SelectedPackage), nextPackage.ID, nextPackage.Title)
 					continue
 				}
+			}
+			if selectedPackage != nil && !opts.AutoNextPackage {
+				deferRemainingPlanItems(executionPlan, selectedPackage.ID, "runner", "remaining packages not run without --auto-next-package")
+			}
+			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+				return final, err
 			}
 			final.Verdict = "pass"
 			final.Summary = review.Summary
@@ -1129,6 +1383,15 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			break
 		}
 		if review.OnlyMinorOrNit() {
+			if selectedPackage != nil {
+				setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusPassed, reviewerLabel, fmt.Sprintf("round %d review had only minor/nit findings", round))
+			}
+			if selectedPackage != nil && !opts.AutoNextPackage {
+				deferRemainingPlanItems(executionPlan, selectedPackage.ID, "runner", "remaining packages not run without --auto-next-package")
+			}
+			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+				return final, err
+			}
 			final.Verdict = review.Verdict
 			final.Summary = review.Summary
 			if len(final.RemainingPackages) > 0 {
@@ -1137,6 +1400,12 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			break
 		}
 		if round == opts.Rounds {
+			if selectedPackage != nil {
+				setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusFailed, reviewerLabel, fmt.Sprintf("round limit reached with %s review", review.Verdict))
+			}
+			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+				return final, err
+			}
 			final.Verdict = review.Verdict
 			final.Summary = review.Summary
 			final.RoundLimitReached = true
@@ -1153,6 +1422,16 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	final.ChangedFiles = latestDiffArtifact.ChangedFiles()
 	final.FinishedAt = time.Now().UTC()
 	final.ExitCode = a.computeExitCode(final)
+	if executionPlan != nil {
+		if final.ExitCode == ExitTestsFailed && selectedPackage != nil {
+			setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusFailed, "runner", "latest test command failed")
+		}
+		finalizeExecutionPlan(executionPlan, final.ExitCode)
+		if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+			return final, err
+		}
+		final.Plan = summarizeExecutionPlan(runDir, executionPlan)
+	}
 	logProgress(opts, "run %s finished verdict=%s exit=%d rounds=%d/%d", runID, final.Verdict, final.ExitCode, final.RoundsCompleted, final.RoundsRequested)
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
@@ -1719,6 +1998,18 @@ func readFinal(path string) (FinalRun, error) {
 		return FinalRun{}, err
 	}
 	return final, nil
+}
+
+func readExecutionPlan(runDir string) (ExecutionPlan, error) {
+	var plan ExecutionPlan
+	data, err := os.ReadFile(filepath.Join(runDir, "plan.json"))
+	if err != nil {
+		return ExecutionPlan{}, err
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ExecutionPlan{}, err
+	}
+	return plan, nil
 }
 
 func readMeta(path string) (Meta, error) {

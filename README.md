@@ -54,6 +54,7 @@ Current commands:
 - `tagteam review`
 - `tagteam fix`
 - `tagteam status`
+- `tagteam plan [RUN_ID]`
 - `tagteam transcript [RUN_ID]`
 - `tagteam doctor`
 - `tagteam init`
@@ -146,6 +147,11 @@ tagteam \
 ```
 
 The supervisor is read-only by default (it writes the brief and review findings but does not edit files). Allow it to make small exploratory edits with `--supervisor-can-edit`.
+
+Supervisor slicing also creates a run checklist. `plan.json` records package
+status, and `plan-events.jsonl` records status transitions and review-added
+items. `tagteam status` shows the latest checklist when present; use
+`tagteam plan [RUN_ID]` to print a run's checklist directly.
 
 ### Solo mode
 
@@ -352,6 +358,7 @@ Typical contents include:
 - `input.md`
 - `repo-instructions.md`
 - `repo-instructions.json`
+- `plan.json` / `plan-events.jsonl` (supervisor mode with slicing)
 - `solo-round-1.md` (solo mode)
 - `supervisor-work-plan.json` (supervisor mode with slicing)
 - `supervisor-brief.md` (supervisor or relay mode, round 1)

@@ -185,6 +185,69 @@ type WorkPackage struct {
 	Validation   []string `json:"validation"`
 }
 
+type PlanStatus string
+
+const (
+	PlanStatusPending          PlanStatus = "pending"
+	PlanStatusInProgress       PlanStatus = "in_progress"
+	PlanStatusBlocked          PlanStatus = "blocked"
+	PlanStatusPassed           PlanStatus = "passed"
+	PlanStatusFailed           PlanStatus = "failed"
+	PlanStatusSkipped          PlanStatus = "skipped"
+	PlanStatusDeferred         PlanStatus = "deferred"
+	PlanStatusNeedsArbitration PlanStatus = "needs_arbitration"
+)
+
+type ExecutionPlan struct {
+	SchemaVersion int         `json:"schema_version"`
+	RunID         string      `json:"run_id"`
+	Mode          Mode        `json:"mode,omitempty"`
+	Status        string      `json:"status"`
+	Summary       string      `json:"summary,omitempty"`
+	Items         []PlanItem  `json:"items"`
+	Events        []PlanEvent `json:"events"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
+}
+
+type PlanItem struct {
+	ID           string     `json:"id"`
+	Title        string     `json:"title"`
+	Status       PlanStatus `json:"status"`
+	Owner        string     `json:"owner,omitempty"`
+	Source       string     `json:"source"`
+	Reason       string     `json:"reason,omitempty"`
+	AllowedScope []string   `json:"allowed_scope,omitempty"`
+	Acceptance   []string   `json:"acceptance,omitempty"`
+	Validation   []string   `json:"validation,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type PlanEvent struct {
+	Type    string     `json:"type"`
+	ItemID  string     `json:"item_id,omitempty"`
+	By      string     `json:"by"`
+	At      time.Time  `json:"at"`
+	From    PlanStatus `json:"from,omitempty"`
+	To      PlanStatus `json:"to,omitempty"`
+	Message string     `json:"message,omitempty"`
+}
+
+type PlanSummary struct {
+	Path        string `json:"path,omitempty"`
+	Status      string `json:"status"`
+	Total       int    `json:"total"`
+	Pending     int    `json:"pending,omitempty"`
+	InProgress  int    `json:"in_progress,omitempty"`
+	Blocked     int    `json:"blocked,omitempty"`
+	Passed      int    `json:"passed,omitempty"`
+	Failed      int    `json:"failed,omitempty"`
+	Skipped     int    `json:"skipped,omitempty"`
+	Deferred    int    `json:"deferred,omitempty"`
+	Arbitration int    `json:"needs_arbitration,omitempty"`
+}
+
 func (p WorkPlan) Selected() (WorkPackage, bool) {
 	selected := strings.TrimSpace(p.SelectedPackage)
 	for _, pkg := range p.Packages {
@@ -556,6 +619,7 @@ type FinalRun struct {
 	Scout             RoleTarget         `json:"scout,omitempty"`
 	SupervisorCanEdit bool               `json:"supervisor_can_edit,omitempty"`
 	WorkPlan          *WorkPlan          `json:"work_plan,omitempty"`
+	Plan              *PlanSummary       `json:"plan,omitempty"`
 	SelectedPackage   *WorkPackage       `json:"selected_package,omitempty"`
 	RemainingPackages []string           `json:"remaining_packages,omitempty"`
 	Verdict           string             `json:"verdict"`

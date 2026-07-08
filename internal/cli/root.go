@@ -42,6 +42,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newReviewCommand(flags))
 	root.AddCommand(newFixCommand(flags))
 	root.AddCommand(newStatusCommand(flags))
+	root.AddCommand(newPlanCommand(flags))
 	root.AddCommand(newTranscriptCommand(flags))
 	root.AddCommand(newInitCommand(flags))
 	root.AddCommand(newDoctorCommand(flags))
@@ -166,6 +167,43 @@ func newStatusCommand(shared *flagState) *cobra.Command {
 				return err
 			}
 			renderFinal(cmd, final, tagteam.RunOptions{JSON: shared.JSON, ShowReview: shared.ShowReview})
+			if !shared.JSON {
+				if plan, err := tagteam.ReadPlanForCLI(latest.RunDir); err == nil {
+					renderPlan(cmd, plan)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func newPlanCommand(shared *flagState) *cobra.Command {
+	return &cobra.Command{
+		Use:          "plan [RUN_ID]",
+		Short:        "Show the persisted checklist for a run",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			workdir, _ := filepath.Abs(shared.Workdir)
+			runDir := ""
+			if len(args) == 0 {
+				latest, err := tagteam.ReadLatestForCLI(workdir)
+				if err != nil {
+					return err
+				}
+				runDir = latest.RunDir
+			} else {
+				runDir = filepath.Join(workdir, ".tagteam", "runs", args[0])
+			}
+			plan, err := tagteam.ReadPlanForCLI(runDir)
+			if err != nil {
+				return err
+			}
+			if shared.JSON {
+				payload, _ := json.MarshalIndent(plan, "", "  ")
+				fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+				return nil
+			}
+			renderPlan(cmd, plan)
 			return nil
 		},
 	}
@@ -301,9 +339,19 @@ func renderFinal(cmd *cobra.Command, final tagteam.FinalRun, opts tagteam.RunOpt
 	if len(final.RemainingPackages) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "remaining-packages=%s\n", strings.Join(final.RemainingPackages, "; "))
 	}
+	if final.Plan != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "plan=%s status=%s items=%d passed=%d failed=%d deferred=%d arbitration=%d\n", final.Plan.Path, final.Plan.Status, final.Plan.Total, final.Plan.Passed, final.Plan.Failed, final.Plan.Deferred, final.Plan.Arbitration)
+	}
 	if opts.ShowReview && final.Review != nil {
 		for _, finding := range final.Review.Findings {
 			fmt.Fprintf(cmd.OutOrStdout(), "- [%s] %s:%d %s\n", finding.Severity, finding.File, finding.Line, finding.Issue)
 		}
+	}
+}
+
+func renderPlan(cmd *cobra.Command, plan tagteam.ExecutionPlan) {
+	fmt.Fprintf(cmd.OutOrStdout(), "plan-run=%s mode=%s status=%s items=%d\n", plan.RunID, plan.Mode, plan.Status, len(plan.Items))
+	for _, item := range plan.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "[%s] %-17s %s\n", item.ID, item.Status, item.Title)
 	}
 }

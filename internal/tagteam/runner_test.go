@@ -235,6 +235,31 @@ func TestWithRepoInstructions_AppendsBundle(t *testing.T) {
 	}
 }
 
+func TestExecutionPlanStatusTransitions(t *testing.T) {
+	workPlan := WorkPlan{
+		Summary: "two packages",
+		Packages: []WorkPackage{
+			{ID: "P1", Title: "First", Goal: "Do first", Acceptance: []string{"first ok"}, Validation: []string{"go test ./..."}},
+			{ID: "P2", Title: "Second", Goal: "Do second", Acceptance: []string{"second ok"}, Validation: []string{"go test ./..."}},
+		},
+		SelectedPackage: "P1",
+	}
+	plan := newExecutionPlanFromWorkPlan("run-1", ModeSupervisor, workPlan, "supervisor-initial")
+	if len(plan.Items) != 2 {
+		t.Fatalf("items = %#v", plan.Items)
+	}
+	if plan.Items[0].Status != PlanStatusInProgress || plan.Items[1].Status != PlanStatusPending {
+		t.Fatalf("initial statuses = %#v", plan.Items)
+	}
+	setPlanItemStatus(plan, "P1", PlanStatusPassed, "supervisor", "review passed")
+	deferRemainingPlanItems(plan, "P1", "runner", "not auto-running remaining work")
+	finalizeExecutionPlan(plan, ExitSuccess)
+	summary := summarizeExecutionPlan("/tmp/run", plan)
+	if plan.Status != "passed" || summary.Passed != 1 || summary.Deferred != 1 {
+		t.Fatalf("plan=%#v summary=%#v", plan, summary)
+	}
+}
+
 func TestPreflightBranchModeCreatesBranch(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")
@@ -1129,6 +1154,33 @@ func TestRunLoop_SupervisorSlicingWritesWorkPlanAndScopesWorker(t *testing.T) {
 			t.Fatalf("expected artifact %s in %s", name, final.RunDir)
 		}
 	}
+	for _, name := range []string{"plan.json", "plan-events.jsonl"} {
+		if !fileExists(filepath.Join(final.RunDir, name)) {
+			t.Fatalf("expected plan artifact %s in %s", name, final.RunDir)
+		}
+	}
+	plan, err := readExecutionPlan(final.RunDir)
+	if err != nil {
+		t.Fatalf("readExecutionPlan() error = %v", err)
+	}
+	if plan.Status != "failed" {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if len(plan.Items) != 3 {
+		t.Fatalf("plan items = %#v", plan.Items)
+	}
+	if plan.Items[0].ID != "P1" || plan.Items[0].Status != PlanStatusFailed {
+		t.Fatalf("selected plan item = %#v", plan.Items[0])
+	}
+	if plan.Items[1].ID != "P2" || plan.Items[1].Status != PlanStatusPending {
+		t.Fatalf("deferred plan item should remain pending on failed selected package: %#v", plan.Items[1])
+	}
+	if plan.Items[2].ID != "R1-F1" || plan.Items[2].Status != PlanStatusNeedsArbitration {
+		t.Fatalf("review finding item = %#v", plan.Items[2])
+	}
+	if final.Plan == nil || final.Plan.Total != 3 || final.Plan.Failed != 1 || final.Plan.Arbitration != 1 {
+		t.Fatalf("final plan summary = %#v", final.Plan)
+	}
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -1161,7 +1213,7 @@ if [ -n "$CLAUDE_ARGS_LOG" ]; then
   printf '%s\n---\n' "$*" >> "$CLAUDE_ARGS_LOG"
 fi
 case "$*" in
-  *selected_package*)
+  *"implementation work packages"*)
     printf '%s' '{"result":"{\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
     exit 0
     ;;
