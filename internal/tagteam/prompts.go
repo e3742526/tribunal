@@ -3,6 +3,7 @@ package tagteam
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 const coderSystemPrompt = `You are the coder in a two-agent adversarial workflow. An independent adversarial reviewer will inspect your diff; it cannot edit files.
@@ -179,10 +180,25 @@ there are no blocker or major findings. Every finding must name a file
 and a concrete fix.`, userPrompt, baseline, diffSection, testOutput)
 }
 
-func BuildScoutPrompt(workdir, userPrompt, brief string) string {
+func BuildScoutPrompt(workdir, userPrompt, brief, mode, phase, diff, testOutput string) string {
+	if strings.TrimSpace(mode) == "" {
+		mode = "recon"
+	}
+	modeInstructions := scoutModeInstructions(mode)
+	diffSection := "(not available for this scout phase)"
+	if strings.TrimSpace(diff) != "" {
+		diffSection = diff
+	}
+	testSection := "(no tests run before this scout phase)"
+	if strings.TrimSpace(testOutput) != "" {
+		testSection = testOutput
+	}
 	return fmt.Sprintf(`You are the scout in a three-agent relay workflow.
 You are read-only. Do not edit files. Do not reveal hidden chain-of-thought;
 capture only public rationale: assumptions, decisions, risks, and checks.
+
+Scout phase: %s
+Scout mode: %s
 
 Repository: %s
 
@@ -192,14 +208,70 @@ Original request:
 Supervisor brief:
 %s
 
-Inspect the repository and return JSON with exactly these keys:
-- relevant_files: array of file paths
-- likely_entry_points: array of concise entry point descriptions
-- existing_patterns: array of relevant patterns to follow
-- risks: array of concrete implementation risks
-- suggested_tests: array of concrete tests or checks
+Current diff context:
+%s
 
-Keep values concise and specific.`, workdir, userPrompt, brief)
+Test output:
+%s
+
+%s
+
+Scout findings are advisory only and must not directly block the run.
+Keep values concise and specific.`, phase, mode, workdir, userPrompt, brief, diffSection, testSection, modeInstructions)
+}
+
+func scoutModeInstructions(mode string) string {
+	switch mode {
+	case "lint":
+		return `Perform a read-only static review for obvious defects, dead code, style drift, naming inconsistency, missing error handling, and duplicated logic.
+Return JSON:
+{
+  "mode": "lint",
+  "summary": "One concise summary.",
+  "items": [{"severity":"minor|nit","file":"path","line":123,"issue":"specific issue","suggestion":"specific suggestion"}],
+  "do_not_block": true
+}`
+	case "polish":
+		return `Look for small cleanup opportunities after implementation. Do not propose architecture rewrites.
+Return JSON:
+{
+  "mode": "polish",
+  "summary": "Small cleanup opportunities after the implementation.",
+  "items": [{"severity":"minor|nit","file":"path","line":123,"issue":"specific issue","suggestion":"specific suggestion"}],
+  "do_not_block": true
+}`
+	case "tests":
+		return `Suggest missing targeted tests and edge cases. Focus on changed behavior and likely regressions.
+Return JSON:
+{
+  "mode": "tests",
+  "summary": "Targeted test opportunities.",
+  "items": [{"severity":"minor|nit","file":"path","line":123,"issue":"missing coverage or edge case","suggestion":"specific test"}],
+  "do_not_block": true
+}`
+	case "risk":
+		return `Review security, data-loss, migration, backwards-compatibility, and operational risks.
+Return JSON:
+{
+  "mode": "risk",
+  "summary": "Concrete risk review.",
+  "items": [{"severity":"minor|nit","file":"path","line":123,"issue":"specific risk","suggestion":"specific mitigation"}],
+  "do_not_block": true
+}`
+	default:
+		return `Map files, entry points, existing patterns, risks, and likely tests.
+Return JSON:
+{
+  "mode": "recon",
+  "summary": "Concise reconnaissance summary.",
+  "relevant_files": ["path"],
+  "likely_entry_points": ["concise entry point"],
+  "existing_patterns": ["pattern to follow"],
+  "risks": ["concrete risk"],
+  "suggested_tests": ["specific check"],
+  "do_not_block": true
+}`
+	}
 }
 
 func BuildRelaySupervisorInstructionsPrompt(userPrompt, brief string, scout Scout) string {
@@ -254,8 +326,9 @@ Finish with a concise summary: files changed, behavior changed,
 checks run, known remaining risk.`, workdir, userPrompt, brief, string(scoutJSON), scoutInstructions)
 }
 
-func BuildRelayFixPrompt(round int, userPrompt, diff, brief, scoutInstructions string, scout Scout, review Review) string {
+func BuildRelayFixPrompt(round int, userPrompt, diff, brief, scoutInstructions string, scout Scout, postScout Scout, review Review) string {
 	scoutJSON, _ := json.MarshalIndent(scout, "", "  ")
+	postScoutJSON, _ := json.MarshalIndent(postScout, "", "  ")
 	findingsJSON, _ := json.MarshalIndent(review, "", "  ")
 	return fmt.Sprintf(`You are the coder in relay round %d. The supervisor
 found issues with your previous change.
@@ -269,6 +342,9 @@ Supervisor brief:
 Scout reconnaissance JSON:
 %s
 
+Latest post-scout advisory JSON:
+%s
+
 Final worker instructions:
 %s
 
@@ -280,15 +356,16 @@ Current diff vs baseline:
 
 Fix the findings, keep the original request satisfied, avoid unrelated
 changes, update tests as needed. Finish with: fixes made, checks run,
-any finding you dispute and why.`, round, userPrompt, brief, string(scoutJSON), scoutInstructions, string(findingsJSON), diff)
+any finding you dispute and why.`, round, userPrompt, brief, string(scoutJSON), string(postScoutJSON), scoutInstructions, string(findingsJSON), diff)
 }
 
-func BuildRelaySupervisorReviewPrompt(userPrompt, baseline, brief string, scout Scout, scoutInstructions, diffRef, testOutput string, diffViaStdin bool) string {
+func BuildRelaySupervisorReviewPrompt(userPrompt, baseline, brief string, scout Scout, postScout Scout, scoutInstructions, diffRef, testOutput string, diffViaStdin bool) string {
 	diffSection := diffRef
 	if diffViaStdin {
 		diffSection = "(diff provided via stdin)"
 	}
 	scoutJSON, _ := json.MarshalIndent(scout, "", "  ")
+	postScoutJSON, _ := json.MarshalIndent(postScout, "", "  ")
 	return fmt.Sprintf(`You are the supervisor reviewing the coder's diff in
 a three-agent relay workflow. You cannot edit files. Do not propose broad
 refactors unless required for correctness.
@@ -300,6 +377,9 @@ Supervisor brief:
 %s
 
 Scout reconnaissance JSON:
+%s
+
+Post-scout advisory JSON:
 %s
 
 Final worker instructions:
@@ -315,9 +395,12 @@ Evaluate: does the diff satisfy the request; correctness bugs; missed
 edge cases; missing tests for changed behavior; unrelated modifications;
 security/data-loss/migration risk; consistency with repo patterns.
 
+Scout findings are advisory only. Use them as context, but only your
+supervisor review can produce blocking findings.
+
 Respond with JSON matching the provided schema. Use "pass" only when
 there are no blocker or major findings. Every finding must name a file
-and a concrete fix.`, userPrompt, brief, string(scoutJSON), scoutInstructions, baseline, diffSection, testOutput)
+and a concrete fix.`, userPrompt, brief, string(scoutJSON), string(postScoutJSON), scoutInstructions, baseline, diffSection, testOutput)
 }
 
 func BuildRoundLimitReportPrompt(roleLabel, counterpartLabel string, mode Mode, userPrompt, diff string, review Review, tests []TestRun) string {

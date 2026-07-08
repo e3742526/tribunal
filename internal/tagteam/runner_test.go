@@ -283,6 +283,25 @@ func TestBuildRoundLimitReportPromptStopsWork(t *testing.T) {
 	}
 }
 
+func TestBuildRelaySupervisorReviewPromptIncludesPostScout(t *testing.T) {
+	prompt := BuildRelaySupervisorReviewPrompt(
+		"ship it",
+		"abc123",
+		"brief",
+		Scout{Mode: "recon", Summary: "mapped files", RelevantFiles: []string{"runner.go"}, DoNotBlock: true},
+		Scout{Mode: "polish", Summary: "cleanup", Items: []ScoutItem{{Severity: "minor", File: "runner.go", Line: 12, Issue: "duplication", Suggestion: "extract helper"}}, DoNotBlock: true},
+		"instructions",
+		"diff",
+		"tests passed",
+		false,
+	)
+	for _, want := range []string{"Post-scout advisory JSON", `"mode": "polish"`, "duplication", "advisory only"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRunAdapter_WritesMissingTranscript(t *testing.T) {
 	app := NewApp(DefaultConfig())
 	tmp := t.TempDir()
@@ -385,6 +404,160 @@ func TestIntegration_GoslingAdversaryRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "gosling is not supported as an adversary adapter") {
 		t.Fatalf("expected error containing 'gosling is not supported as an adversary adapter', got: %v", err)
+	}
+}
+
+func TestReview_PreflightsReviewerRunnable(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	execLookPath = func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	_, err := app.Review(context.Background(), RunOptions{
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "codex"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		DryRun:    true,
+		Timeout:   time.Second,
+	}, "review this diff")
+	if err == nil {
+		t.Fatal("expected preflight error")
+	}
+	if got := ExitCode(err); got != ExitPreflightFailed {
+		t.Fatalf("exit code = %d, want %d: %v", got, ExitPreflightFailed, err)
+	}
+	if !strings.Contains(err.Error(), "claude not runnable") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestReview_DoesNotPreflightExplicitEditorTarget(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	var probed []string
+	execLookPath = func(file string) (string, error) {
+		probed = append(probed, file)
+		if file == "claude" {
+			return filepath.Join("/mock/bin", file), nil
+		}
+		return "", exec.ErrNotFound
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	_, err := app.Review(context.Background(), RunOptions{
+		Workdir:       repo,
+		Mode:          ModeAdversarial,
+		Coder:         RoleTarget{Adapter: "codex"},
+		CoderExplicit: true,
+		Adversary:     RoleTarget{Adapter: "claude"},
+		DryRun:        true,
+		Timeout:       time.Second,
+	}, "review this diff")
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if strings.Contains(strings.Join(probed, ","), "codex") {
+		t.Fatalf("review should not preflight explicit editor adapter, probed=%v", probed)
+	}
+}
+
+func TestReview_DoesNotPreflightExplicitScoutTarget(t *testing.T) {
+	oldLookPath := execLookPath
+	oldCommandContext := execCommandContext
+	defer func() {
+		execLookPath = oldLookPath
+		execCommandContext = oldCommandContext
+	}()
+	var probed []string
+	execLookPath = func(file string) (string, error) {
+		probed = append(probed, file)
+		if file == "claude" {
+			return filepath.Join("/mock/bin", file), nil
+		}
+		return "", exec.ErrNotFound
+	}
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "1.0")
+	}
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	_, err := app.Review(context.Background(), RunOptions{
+		Workdir:       repo,
+		Mode:          ModeRelay,
+		Scout:         RoleTarget{Adapter: "agy"},
+		ScoutExplicit: true,
+		Coder:         RoleTarget{Adapter: "codex"},
+		Adversary:     RoleTarget{Adapter: "claude"},
+		DryRun:        true,
+		Timeout:       time.Second,
+	}, "review this diff")
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if strings.Contains(strings.Join(probed, ","), "agy") {
+		t.Fatalf("review should not preflight explicit scout adapter, probed=%v", probed)
+	}
+}
+
+func TestReview_UnknownReviewerStillInvalidArguments(t *testing.T) {
+	app := NewApp(DefaultConfig())
+	_, err := app.Review(context.Background(), RunOptions{
+		Workdir:   t.TempDir(),
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "codex"},
+		Adversary: RoleTarget{Adapter: "missing"},
+		DryRun:    true,
+		Timeout:   time.Second,
+	}, "review this diff")
+	if err == nil {
+		t.Fatal("expected invalid-arguments error")
+	}
+	if got := ExitCode(err); got != ExitInvalidArguments {
+		t.Fatalf("exit code = %d, want %d: %v", got, ExitInvalidArguments, err)
 	}
 }
 
@@ -608,14 +781,16 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 
 	app := NewApp(DefaultConfig())
 	final, err := app.Run(context.Background(), RunOptions{
-		Prompt:    "add a feature",
-		Workdir:   repo,
-		Mode:      ModeRelay,
-		Scout:     RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
-		Coder:     RoleTarget{Adapter: "claude"},
-		Adversary: RoleTarget{Adapter: "claude"},
-		Rounds:    1,
-		Timeout:   10 * time.Second,
+		Prompt:        "add a feature",
+		Workdir:       repo,
+		Mode:          ModeRelay,
+		Scout:         RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:         RoleTarget{Adapter: "claude"},
+		Adversary:     RoleTarget{Adapter: "claude"},
+		ScoutMode:     "recon",
+		PostScoutMode: "polish",
+		Rounds:        1,
+		Timeout:       10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("expected blocking-findings error from fake supervisor review")
@@ -629,6 +804,7 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 		"supervisor-instructions.md",
 		"coder-round-1.md",
 		"diff-round-1.patch",
+		"post-scout-round-1.json",
 		"supervisor-review-round-1.json",
 		"final.json",
 	} {

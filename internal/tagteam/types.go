@@ -163,11 +163,23 @@ type Result struct {
 }
 
 type Scout struct {
-	RelevantFiles     []string `json:"relevant_files"`
-	LikelyEntryPoints []string `json:"likely_entry_points"`
-	ExistingPatterns  []string `json:"existing_patterns"`
-	Risks             []string `json:"risks"`
-	SuggestedTests    []string `json:"suggested_tests"`
+	Mode              string      `json:"mode,omitempty"`
+	Summary           string      `json:"summary,omitempty"`
+	RelevantFiles     []string    `json:"relevant_files"`
+	LikelyEntryPoints []string    `json:"likely_entry_points"`
+	ExistingPatterns  []string    `json:"existing_patterns"`
+	Risks             []string    `json:"risks"`
+	SuggestedTests    []string    `json:"suggested_tests"`
+	Items             []ScoutItem `json:"items,omitempty"`
+	DoNotBlock        bool        `json:"do_not_block,omitempty"`
+}
+
+type ScoutItem struct {
+	Severity   string `json:"severity"`
+	File       string `json:"file"`
+	Line       int    `json:"line,omitempty"`
+	Issue      string `json:"issue"`
+	Suggestion string `json:"suggestion"`
 }
 
 type Review struct {
@@ -260,26 +272,30 @@ type Config struct {
 }
 
 type DefaultsConfig struct {
-	Mode       string `toml:"mode"`
-	Coder      string `toml:"coder"`
-	Adversary  string `toml:"adversary"`
-	Worker     string `toml:"worker"`
-	Scout      string `toml:"scout"`
-	Supervisor string `toml:"supervisor"`
-	Rounds     int    `toml:"rounds"`
-	Test       string `toml:"test"`
-	GitSafety  string `toml:"git_safety"`
+	Mode          string `toml:"mode"`
+	Coder         string `toml:"coder"`
+	Adversary     string `toml:"adversary"`
+	Worker        string `toml:"worker"`
+	Scout         string `toml:"scout"`
+	Supervisor    string `toml:"supervisor"`
+	ScoutMode     string `toml:"scout_mode"`
+	PostScoutMode string `toml:"post_scout_mode"`
+	Rounds        int    `toml:"rounds"`
+	Test          string `toml:"test"`
+	GitSafety     string `toml:"git_safety"`
 }
 
 type ProfileConfig struct {
-	Mode       string `toml:"mode"`
-	Coder      string `toml:"coder"`
-	Adversary  string `toml:"adversary"`
-	Worker     string `toml:"worker"`
-	Scout      string `toml:"scout"`
-	Supervisor string `toml:"supervisor"`
-	Rounds     int    `toml:"rounds"`
-	Test       string `toml:"test"`
+	Mode          string `toml:"mode"`
+	Coder         string `toml:"coder"`
+	Adversary     string `toml:"adversary"`
+	Worker        string `toml:"worker"`
+	Scout         string `toml:"scout"`
+	Supervisor    string `toml:"supervisor"`
+	ScoutMode     string `toml:"scout_mode"`
+	PostScoutMode string `toml:"post_scout_mode"`
+	Rounds        int    `toml:"rounds"`
+	Test          string `toml:"test"`
 }
 
 type AdapterConfigSet struct {
@@ -320,6 +336,8 @@ type FlagInputs struct {
 	Adversary         string
 	Worker            string
 	Scout             string
+	ScoutMode         string
+	PostScoutMode     string
 	Supervisor        string
 	Reviewer          string
 	SupervisorCanEdit bool
@@ -367,6 +385,8 @@ type RunOptions struct {
 	CoderExplicitMode         Mode
 	AdversaryExplicitMode     Mode
 	ScoutExplicitMode         Mode
+	ScoutMode                 string
+	PostScoutMode             string
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool
 	Rounds                    int

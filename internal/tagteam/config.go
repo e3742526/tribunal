@@ -15,14 +15,16 @@ import (
 func DefaultConfig() Config {
 	return Config{
 		Defaults: DefaultsConfig{
-			Mode:       "supervisor",
-			Coder:      "codex",
-			Adversary:  "claude",
-			Worker:     "agy:Gemini 3.5 Flash (High)",
-			Scout:      "agy:gemini-3.5-flash-low",
-			Supervisor: "claude:opus",
-			Rounds:     2,
-			GitSafety:  "clean",
+			Mode:          "supervisor",
+			Coder:         "codex",
+			Adversary:     "claude",
+			Worker:        "agy:Gemini 3.5 Flash (High)",
+			Scout:         "agy:gemini-3.5-flash-low",
+			Supervisor:    "claude:opus",
+			ScoutMode:     "recon",
+			PostScoutMode: "polish",
+			Rounds:        2,
+			GitSafety:     "clean",
 		},
 		Profiles: map[string]ProfileConfig{
 			"fast": {
@@ -38,11 +40,13 @@ func DefaultConfig() Config {
 				Test:      "make check",
 			},
 			"relay": {
-				Mode:       "relay",
-				Scout:      "agy:gemini-3.5-flash-low",
-				Coder:      "codex:gpt-5.4-mini",
-				Supervisor: "claude:sonnet",
-				Rounds:     2,
+				Mode:          "relay",
+				Scout:         "agy:gemini-3.5-flash-low",
+				Coder:         "codex:gpt-5.4-mini",
+				Supervisor:    "claude:sonnet",
+				ScoutMode:     "recon",
+				PostScoutMode: "polish",
+				Rounds:        2,
 			},
 		},
 		Adapters: AdapterConfigSet{
@@ -144,6 +148,12 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.Supervisor != "" {
 		dst.Defaults.Supervisor = src.Defaults.Supervisor
 	}
+	if src.Defaults.ScoutMode != "" {
+		dst.Defaults.ScoutMode = src.Defaults.ScoutMode
+	}
+	if src.Defaults.PostScoutMode != "" {
+		dst.Defaults.PostScoutMode = src.Defaults.PostScoutMode
+	}
 	if src.Defaults.Rounds != 0 {
 		dst.Defaults.Rounds = src.Defaults.Rounds
 	}
@@ -176,6 +186,12 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.Supervisor != "" {
 				current.Supervisor = profile.Supervisor
+			}
+			if profile.ScoutMode != "" {
+				current.ScoutMode = profile.ScoutMode
+			}
+			if profile.PostScoutMode != "" {
+				current.PostScoutMode = profile.PostScoutMode
 			}
 			if profile.Rounds != 0 {
 				current.Rounds = profile.Rounds
@@ -231,6 +247,8 @@ func hasTagteamEnv() bool {
 		"TAGTEAM_ADVERSARY",
 		"TAGTEAM_WORKER",
 		"TAGTEAM_SCOUT",
+		"TAGTEAM_SCOUT_MODE",
+		"TAGTEAM_POST_SCOUT_MODE",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
@@ -262,6 +280,12 @@ func mergeEnvConfig(cfg *Config) {
 	}
 	if value := os.Getenv("TAGTEAM_SCOUT"); value != "" {
 		cfg.Defaults.Scout = value
+	}
+	if value := os.Getenv("TAGTEAM_SCOUT_MODE"); value != "" {
+		cfg.Defaults.ScoutMode = value
+	}
+	if value := os.Getenv("TAGTEAM_POST_SCOUT_MODE"); value != "" {
+		cfg.Defaults.PostScoutMode = value
 	}
 	if value := os.Getenv("TAGTEAM_SUPERVISOR"); value != "" {
 		cfg.Defaults.Supervisor = value
@@ -313,6 +337,8 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	rounds := cfg.Defaults.Rounds
 	testCmd := cfg.Defaults.Test
 	gitSafety := cfg.Defaults.GitSafety
+	scoutMode := cfg.Defaults.ScoutMode
+	postScoutMode := cfg.Defaults.PostScoutMode
 
 	var profile ProfileConfig
 	hasProfile := false
@@ -346,6 +372,12 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.Test != "" {
 			testCmd = profile.Test
+		}
+		if profile.ScoutMode != "" {
+			scoutMode = profile.ScoutMode
+		}
+		if profile.PostScoutMode != "" {
+			postScoutMode = profile.PostScoutMode
 		}
 	}
 	if changed["mode"] {
@@ -505,6 +537,12 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		scoutExplicit = true
 		scoutExplicitMode = ModeRelay
 	}
+	if changed["scout-mode"] {
+		scoutMode = flags.ScoutMode
+	}
+	if changed["post-scout-mode"] {
+		postScoutMode = flags.PostScoutMode
+	}
 
 	if changed["rounds"] {
 		rounds = flags.Rounds
@@ -520,6 +558,20 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if gitSafety != "clean" && gitSafety != "autostash" && gitSafety != "branch" && gitSafety != "allow-dirty" {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid git_safety %q", gitSafety)}
+	}
+	if scoutMode == "" {
+		scoutMode = "recon"
+	}
+	if postScoutMode == "" {
+		postScoutMode = "polish"
+	}
+	if mode == ModeRelay {
+		if err := validateScoutMode("scout-mode", scoutMode); err != nil {
+			return RunOptions{}, err
+		}
+		if err := validateScoutMode("post-scout-mode", postScoutMode); err != nil {
+			return RunOptions{}, err
+		}
 	}
 
 	editorLabel, reviewerLabel := roleLabels(mode)
@@ -582,6 +634,8 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		CoderExplicitMode:         editorExplicitMode,
 		AdversaryExplicitMode:     reviewerExplicitMode,
 		ScoutExplicitMode:         scoutExplicitMode,
+		ScoutMode:                 scoutMode,
+		PostScoutMode:             postScoutMode,
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
 		Rounds:                    rounds,
@@ -615,6 +669,15 @@ func mergePassthrough(base []string, raw string) ([]string, error) {
 		return nil, err
 	}
 	return append(merged, parts...), nil
+}
+
+func validateScoutMode(label, value string) error {
+	switch strings.TrimSpace(value) {
+	case "recon", "lint", "polish", "tests", "risk":
+		return nil
+	default:
+		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid %s %q (want recon, lint, polish, tests, or risk)", label, value)}
+	}
 }
 
 func EncodeConfig(cfg Config) ([]byte, error) {

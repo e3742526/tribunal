@@ -109,7 +109,7 @@ The supervisor is read-only by default (it writes the brief and review findings 
 
 ### Relay mode
 
-Relay mode runs a cost-aware three-agent pipeline: supervisor brief, read-only scout reconnaissance, supervisor-condensed worker instructions, coder implementation, deterministic diff capture, tests, and strict supervisor review.
+Relay mode runs a cost-aware three-agent pipeline: read-only scout reconnaissance, supervisor brief, supervisor-condensed worker instructions, coder implementation, deterministic diff capture, tests, post-implementation scout advisory pass, and strict supervisor review.
 
 ```bash
 tagteam --relay "add OAuth login"
@@ -123,6 +123,8 @@ mode = "relay"
 scout = "agy:gemini-3.5-flash-low"
 coder = "codex:gpt-5.4-mini"
 supervisor = "claude:sonnet"
+scout_mode = "recon"
+post_scout_mode = "polish"
 rounds = 2
 ```
 
@@ -132,12 +134,15 @@ Override relay roles explicitly:
 tagteam \
   --mode relay \
   --scout agy:gemini-3.5-flash-low \
+  --scout-mode recon \
+  --post-scout-mode polish \
   --coder codex:gpt-5.4-mini \
   --supervisor claude:sonnet \
   "refactor billing flow"
 ```
 
 In relay mode, legacy `-mc` selects the coder and `-ma` selects the supervisor.
+Scout modes are task-typed: `recon`, `lint`, `polish`, `tests`, or `risk`. Scout findings are advisory context only; only the supervisor review can fail a run with blocker/major findings.
 
 ### Adversarial mode (backward compatible)
 
@@ -200,10 +205,11 @@ Relevant `defaults` keys:
 - `worker` / `supervisor` — `adapter[:model]` targets used in supervisor mode
 - `coder` / `adversary` — `adapter[:model]` targets used in adversarial mode
 - `scout` / `coder` / `supervisor` — `adapter[:model]` targets used in relay mode
+- `scout_mode` / `post_scout_mode` — relay scout task modes: `recon`, `lint`, `polish`, `tests`, or `risk`
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
 - `test`, `git_safety`
 
-Profiles may override `mode`, `scout`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `scout`, `scout_mode`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
 
 ```toml
 [defaults]
@@ -239,6 +245,7 @@ Typical contents include:
 - `diff-round-N.files.json`
 - `diff-round-N.sha256`
 - `test-round-N.txt`
+- `post-scout-round-N.json` (relay mode)
 - `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode) / `supervisor-review-round-N.json` (relay mode)
 - `worker-final-report.md` / `coder-final-report.md` and `supervisor-final-report.md` / `adversary-final-report.md` when the round limit is exhausted
 - `final.json`

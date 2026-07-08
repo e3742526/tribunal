@@ -252,6 +252,9 @@ func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
 	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
 	}
+	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
+		t.Fatalf("scout modes = %q/%q", opts.ScoutMode, opts.PostScoutMode)
+	}
 }
 
 func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
@@ -274,6 +277,9 @@ func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
 	}
 	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "sonnet" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
+	}
+	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
+		t.Fatalf("scout modes = %q/%q", opts.ScoutMode, opts.PostScoutMode)
 	}
 }
 
@@ -316,6 +322,37 @@ func TestResolveOptions_RelayRoleFlagsOverrideRoles(t *testing.T) {
 	}
 	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "supervisor-model" {
 		t.Fatalf("--supervisor target = %#v", opts.Adversary)
+	}
+}
+
+func TestResolveOptions_RelayScoutModeFlags(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:          "relay",
+		ScoutMode:     "tests",
+		PostScoutMode: "risk",
+		Timeout:       15 * time.Minute,
+	}, map[string]bool{"mode": true, "scout-mode": true, "post-scout-mode": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutMode != "tests" || opts.PostScoutMode != "risk" {
+		t.Fatalf("scout modes = %q/%q", opts.ScoutMode, opts.PostScoutMode)
+	}
+}
+
+func TestResolveOptions_InvalidRelayScoutModeRejected(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:      "relay",
+		ScoutMode: "chaos",
+		Timeout:   15 * time.Minute,
+	}, map[string]bool{"mode": true, "scout-mode": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected invalid scout mode error")
+	}
+	if !strings.Contains(err.Error(), "invalid scout-mode") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

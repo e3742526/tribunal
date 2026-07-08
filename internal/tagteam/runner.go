@@ -40,6 +40,7 @@ type DiffArtifact struct {
 type RelayContext struct {
 	Brief        string
 	Scout        Scout
+	PostScout    Scout
 	Instructions string
 }
 
@@ -67,8 +68,16 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (Final
 		return FinalRun{}, err
 	}
 	_, reviewerLabel := roleLabels(opts.Mode)
+	registry := Registry(a.Config, opts)
+	reviewer, ok := registry[opts.Adversary.Adapter]
+	if !ok {
+		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", reviewerLabel, opts.Adversary.Adapter)}
+	}
 	baseline, err := ensureGitRepo(opts.Workdir)
 	if err != nil {
+		return FinalRun{}, err
+	}
+	if err := checkAdapters(ctx, reviewer); err != nil {
 		return FinalRun{}, err
 	}
 	runID := newRunID()
@@ -165,6 +174,11 @@ func (a *App) validateReviewTargets(opts RunOptions) error {
 	if opts.CoderExplicit && opts.Coder.Adapter != "" {
 		if _, ok := registry[opts.Coder.Adapter]; !ok {
 			return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", editorLabel, opts.Coder.Adapter)}
+		}
+	}
+	if opts.Mode == ModeRelay && opts.ScoutExplicit && opts.Scout.Adapter != "" {
+		if _, ok := registry[opts.Scout.Adapter]; !ok {
+			return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown scout adapter %q", opts.Scout.Adapter)}
 		}
 	}
 	if opts.Adversary.Adapter != "" {
@@ -264,6 +278,14 @@ func normalizeDefaultMode(opts *RunOptions) {
 	if opts.Mode == "" {
 		opts.Mode = ModeSupervisor
 	}
+	if opts.Mode == ModeRelay {
+		if opts.ScoutMode == "" {
+			opts.ScoutMode = "recon"
+		}
+		if opts.PostScoutMode == "" {
+			opts.PostScoutMode = "polish"
+		}
+	}
 }
 
 func validateExplicitTargetModes(opts RunOptions) error {
@@ -319,6 +341,12 @@ func validateRunRoles(opts RunOptions) error {
 		return err
 	}
 	if opts.Mode == ModeRelay {
+		if err := validateScoutMode("scout-mode", opts.ScoutMode); err != nil {
+			return err
+		}
+		if err := validateScoutMode("post-scout-mode", opts.PostScoutMode); err != nil {
+			return err
+		}
 		return validateRoleTarget(RoleScout, opts.Scout)
 	}
 	return nil
@@ -455,7 +483,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 
 	var brief string
 	var relay RelayContext
-	if (opts.Mode == ModeSupervisor || opts.Mode == ModeRelay) && initialReview == nil {
+	if opts.Mode == ModeSupervisor && initialReview == nil {
 		logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
 		briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
 		briefResult, err := a.runAdapter(ctx, reviewer, supervisorBriefRole(opts.SupervisorCanEdit), Request{
@@ -478,18 +506,17 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		logProgress(opts, "supervisor brief completed output=%s", briefOutputPath)
 	}
 	if opts.Mode == ModeRelay && initialReview == nil {
-		relay.Brief = brief
 		scoutOutputPath := filepath.Join(runDir, "scout-round-1.json")
-		logProgress(opts, "scout reconnaissance started adapter=%s", scout.ID())
+		logProgress(opts, "scout %s started adapter=%s", opts.ScoutMode, scout.ID())
 		scoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
 			Context:    ctx,
-			Prompt:     BuildScoutPrompt(opts.Workdir, opts.Prompt, brief),
+			Prompt:     BuildScoutPrompt(opts.Workdir, opts.Prompt, "", opts.ScoutMode, "pre", "", ""),
 			Model:      opts.Scout.Model,
 			Workdir:    opts.Workdir,
 			RunDir:     runDir,
 			OutputPath: scoutOutputPath,
 			Timeout:    opts.Timeout,
-			Phase:      fmt.Sprintf("scout %s", scout.ID()),
+			Phase:      fmt.Sprintf("scout %s %s", opts.ScoutMode, scout.ID()),
 			Quiet:      opts.Quiet,
 			Verbose:    opts.Verbose,
 		}, opts.DryRun)
@@ -500,7 +527,29 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			relay.Scout = *scoutResult.Scout
 		}
 		final.Costs["scout"] += scoutResult.CostUSD
-		logProgress(opts, "scout reconnaissance completed output=%s", scoutOutputPath)
+		logProgress(opts, "scout %s completed output=%s", opts.ScoutMode, scoutOutputPath)
+
+		logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
+		briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
+		briefResult, err := a.runAdapter(ctx, reviewer, supervisorBriefRole(opts.SupervisorCanEdit), Request{
+			Context:    ctx,
+			Prompt:     BuildSupervisorBriefPrompt(opts.Workdir, opts.Prompt, opts.SupervisorCanEdit),
+			Model:      opts.Adversary.Model,
+			Workdir:    opts.Workdir,
+			RunDir:     runDir,
+			OutputPath: briefOutputPath,
+			Timeout:    opts.Timeout,
+			Phase:      fmt.Sprintf("supervisor brief %s", reviewer.ID()),
+			Quiet:      opts.Quiet,
+			Verbose:    opts.Verbose,
+		}, opts.DryRun)
+		if err != nil {
+			return final, err
+		}
+		final.Costs[reviewerLabel] += briefResult.CostUSD
+		brief = briefResult.Text
+		relay.Brief = brief
+		logProgress(opts, "supervisor brief completed output=%s", briefOutputPath)
 
 		instructionsPath := filepath.Join(runDir, "supervisor-instructions.md")
 		logProgress(opts, "supervisor relay instructions started adapter=%s", reviewer.ID())
@@ -554,7 +603,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				review = *initialReview
 			}
 			if opts.Mode == ModeRelay {
-				editorPrompt = BuildRelayFixPrompt(round, opts.Prompt, diff, relay.Brief, relay.Instructions, relay.Scout, review)
+				editorPrompt = BuildRelayFixPrompt(round, opts.Prompt, diff, relay.Brief, relay.Instructions, relay.Scout, relay.PostScout, review)
 			} else if opts.Mode == ModeSupervisor {
 				editorPrompt = BuildWorkerFixPrompt(round, opts.Prompt, diff, review)
 			} else {
@@ -614,6 +663,31 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			} else {
 				logProgress(opts, "round %d tests failed output=%s", round, testPath)
 			}
+		}
+
+		if opts.Mode == ModeRelay {
+			postScoutPath := filepath.Join(runDir, fmt.Sprintf("post-scout-round-%d.json", round))
+			logProgress(opts, "round %d post-scout %s started adapter=%s", round, opts.PostScoutMode, scout.ID())
+			postScoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
+				Context:    ctx,
+				Prompt:     BuildScoutPrompt(opts.Workdir, opts.Prompt, relay.Brief, opts.PostScoutMode, "post", diff, safeTestOutput(testOutput)),
+				Model:      opts.Scout.Model,
+				Workdir:    opts.Workdir,
+				RunDir:     runDir,
+				OutputPath: postScoutPath,
+				Timeout:    opts.Timeout,
+				Phase:      fmt.Sprintf("round %d post-scout %s %s", round, opts.PostScoutMode, scout.ID()),
+				Quiet:      opts.Quiet,
+				Verbose:    opts.Verbose,
+			}, opts.DryRun)
+			if err != nil {
+				return final, err
+			}
+			if postScoutResult.Scout != nil {
+				relay.PostScout = *postScoutResult.Scout
+			}
+			final.Costs["scout"] += postScoutResult.CostUSD
+			logProgress(opts, "round %d post-scout %s completed output=%s", round, opts.PostScoutMode, postScoutPath)
 		}
 
 		logProgress(opts, "round %d %s started adapter=%s", round, reviewerLabel, reviewer.ID())
@@ -761,7 +835,7 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 	input := prepareReviewInput(adversary, diff, diffPath)
 	var reviewPrompt string
 	if opts.Mode == ModeRelay {
-		reviewPrompt = BuildRelaySupervisorReviewPrompt(prompt, baseline, relay.Brief, relay.Scout, relay.Instructions, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
+		reviewPrompt = BuildRelaySupervisorReviewPrompt(prompt, baseline, relay.Brief, relay.Scout, relay.PostScout, relay.Instructions, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
 	} else if opts.Mode == ModeSupervisor {
 		reviewPrompt = BuildSupervisorReviewPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
 	} else {
@@ -822,11 +896,15 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		}
 		if role == RoleScout {
 			result.Scout = &Scout{
+				Mode:              "recon",
+				Summary:           "dry-run",
 				RelevantFiles:     []string{},
 				LikelyEntryPoints: []string{},
 				ExistingPatterns:  []string{},
 				Risks:             []string{},
 				SuggestedTests:    []string{},
+				Items:             []ScoutItem{},
+				DoNotBlock:        true,
 			}
 		}
 		return result, nil

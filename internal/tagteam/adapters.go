@@ -340,6 +340,9 @@ func parseScout(raw []byte) (*Scout, error) {
 			return nil, &OutputContractError{Err: fmt.Errorf("decode scout JSON: %w", err)}
 		}
 	}
+	if scout.DoNotBlock == false {
+		scout.DoNotBlock = true
+	}
 	return &scout, nil
 }
 
