@@ -188,6 +188,15 @@ Default run (supervisor mode, built-in worker `agy:Gemini 3.5 Flash (High)` and 
 tagteam "add OAuth login"
 ```
 
+That's the whole thing — no flags, no config. From your repo root you just describe the change:
+
+```bash
+cd my-project
+tagteam "add a --json flag to the export command and cover it with a test"
+```
+
+With no other options, `tagteam` uses the default supervisor mode: the `claude:opus` supervisor writes a brief and reviews, the `agy` worker implements, and findings loop back until the change passes review, tests fail, or the round limit is hit. Every brief, diff, review, and test run is written under `.tagteam/runs/<run-id>/`, and the final verdict prints to the terminal. Run `tagteam status` afterward to see the latest run, or `tagteam doctor` first if you're not sure your agent CLIs are set up.
+
 Supervisor mode slices work by default before the worker edits. The supervisor writes a bounded work plan, selects one package, and the worker implements only that package. If packages remain, `tagteam` stops after the selected package passes and reports the next packages unless `--auto-next-package` is set.
 
 ```bash
