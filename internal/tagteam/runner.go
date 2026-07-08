@@ -754,6 +754,9 @@ func normalizeDefaultMode(opts *RunOptions) {
 		if opts.PostScoutMode == "" {
 			opts.PostScoutMode = "polish"
 		}
+		if opts.ScoutFailurePolicy == "" {
+			opts.ScoutFailurePolicy = "continue"
+		}
 	}
 }
 
@@ -1217,6 +1220,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	}
 	if opts.Mode == ModeRelay && initialReview == nil {
 		scoutOutputPath := filepath.Join(runDir, "scout-round-1.json")
+		scoutStatusPath := filepath.Join(runDir, "scout-execution-round-1.json")
+		scoutStatus := newScoutExecutionArtifact(opts.ScoutMode, opts.ScoutFailurePolicy, opts.ScoutRetrieval && opts.ScoutMode == "recon")
+		skipScout := false
 		retrievalContext := ""
 		var retrieval RetrievalArtifact
 		if opts.ScoutRetrieval && opts.ScoutMode == "recon" {
@@ -1227,6 +1233,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write retrieval artifact: %w", err)}
 			}
 			retrievalContext = CompactRetrievalForPrompt(retrieval)
+			scoutStatus.RetrievalRan = true
+			scoutStatus.RetrievalStatus = retrieval.Status
+			scoutStatus.RetrievalDegraded = retrievalStatusIsDegraded(retrieval.Status)
 			logProgress(opts, "scout retrieval completed status=%s evidence=%d", retrieval.Status, len(retrieval.Evidence))
 		}
 		scoutPrompt := withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, "", opts.ScoutMode, "pre", "", "", retrievalContext), repoInstructions)
@@ -1256,6 +1265,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				contextBudget.Adapter = opts.Scout.Adapter
 				contextBudget.Model = opts.Scout.Model
 				contextBudget.RetrievalDisabledDueBudget = true
+				scoutStatus.RetrievalDisabledByBudget = true
 			}
 			if contextBudget.Status == scoutContextStatusNearLimit {
 				logProgress(opts, "scout context near configured limit estimated=%d usable=%d", contextBudget.EstimatedInputTokens, contextBudget.UsableContextTokens)
@@ -1264,40 +1274,66 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write scout context artifact: %w", err)}
 			}
 			if contextBudget.Status == scoutContextStatusExceeds {
-				return final, &ExitError{Code: ExitPreflightFailed, Err: invalidScoutContextBudgetError(contextBudget)}
-			}
-		}
-		logProgress(opts, "scout %s started adapter=%s", opts.ScoutMode, scout.ID())
-		scoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
-			Context:    ctx,
-			Prompt:     scoutPrompt,
-			EnvOverlay: opts.EnvOverlay,
-			Model:      opts.Scout.Model,
-			Workdir:    opts.Workdir,
-			RunDir:     runDir,
-			OutputPath: scoutOutputPath,
-			Timeout:    opts.Timeout,
-			Phase:      fmt.Sprintf("scout %s %s", opts.ScoutMode, scout.ID()),
-			Quiet:      opts.Quiet,
-			Verbose:    opts.Verbose,
-		}, opts.DryRun)
-		if err != nil {
-			return final, err
-		}
-		if scoutResult.Scout != nil {
-			if retrievalContext != "" && scoutResult.Scout.RetrievalStatus == "" {
-				var retrieval RetrievalArtifact
-				if err := json.Unmarshal([]byte(retrievalContext), &retrieval); err == nil {
-					scoutResult.Scout.RetrievalQueries = append([]string{}, retrieval.Queries...)
-					scoutResult.Scout.Evidence = retrievalScoutEvidence(retrieval.Evidence)
-					scoutResult.Scout.RetrievalStatus = retrieval.Status
-					scoutResult.Scout.RetrievalTruncated = retrieval.Truncated
+				budgetErr := invalidScoutContextBudgetError(contextBudget)
+				scoutStatus.FailureClass = scoutFailureClassContextBudget
+				scoutStatus.Failure = budgetErr.Error()
+				if opts.ScoutFailurePolicy == "fail" {
+					_ = writeJSONWithNewline(scoutStatusPath, scoutStatus)
+					return final, &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("scout failed and scout_failure_policy=fail; aborting relay run: %w", budgetErr)}
 				}
+				scoutStatus.ContinuedWithoutScoutContext = true
+				skipScout = true
+				logProgress(opts, "scout prompt exceeds configured budget; continuing without scout context")
 			}
-			relay.Scout = *scoutResult.Scout
 		}
-		final.Costs["scout"] += scoutResult.CostUSD
-		logProgress(opts, "scout %s completed output=%s", opts.ScoutMode, scoutOutputPath)
+		var scoutResult Result
+		if !skipScout {
+			logProgress(opts, "scout %s started adapter=%s", opts.ScoutMode, scout.ID())
+			scoutStatus.ScoutRan = true
+			var err error
+			scoutResult, err = a.runAdapter(ctx, scout, RoleScout, Request{
+				Context:    ctx,
+				Prompt:     scoutPrompt,
+				EnvOverlay: opts.EnvOverlay,
+				Model:      opts.Scout.Model,
+				Workdir:    opts.Workdir,
+				RunDir:     runDir,
+				OutputPath: scoutOutputPath,
+				Timeout:    opts.Timeout,
+				Phase:      fmt.Sprintf("scout %s %s", opts.ScoutMode, scout.ID()),
+				Quiet:      opts.Quiet,
+				Verbose:    opts.Verbose,
+			}, opts.DryRun)
+			if err != nil {
+				scoutStatus.FailureClass = classifyScoutFailure(err)
+				scoutStatus.Failure = err.Error()
+				if opts.ScoutFailurePolicy == "fail" {
+					_ = writeJSONWithNewline(scoutStatusPath, scoutStatus)
+					return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("scout failed and scout_failure_policy=fail; aborting relay run: %w", err)}
+				}
+				scoutStatus.ContinuedWithoutScoutContext = true
+				logProgress(opts, "scout failed; continuing without scout context error=%q", err.Error())
+			} else {
+				scoutStatus.ScoutSucceeded = true
+				if scoutResult.Scout != nil {
+					if retrievalContext != "" && scoutResult.Scout.RetrievalStatus == "" {
+						var retrieval RetrievalArtifact
+						if err := json.Unmarshal([]byte(retrievalContext), &retrieval); err == nil {
+							scoutResult.Scout.RetrievalQueries = append([]string{}, retrieval.Queries...)
+							scoutResult.Scout.Evidence = retrievalScoutEvidence(retrieval.Evidence)
+							scoutResult.Scout.RetrievalStatus = retrieval.Status
+							scoutResult.Scout.RetrievalTruncated = retrieval.Truncated
+						}
+					}
+					relay.Scout = *scoutResult.Scout
+				}
+				final.Costs["scout"] += scoutResult.CostUSD
+				logProgress(opts, "scout %s completed output=%s", opts.ScoutMode, scoutOutputPath)
+			}
+		}
+		if err := writeJSONWithNewline(scoutStatusPath, scoutStatus); err != nil {
+			return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write scout execution artifact: %w", err)}
+		}
 
 		logProgress(opts, "supervisor brief started adapter=%s", reviewer.ID())
 		briefOutputPath := filepath.Join(runDir, "supervisor-brief.md")
@@ -1456,7 +1492,10 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 
 		if opts.Mode == ModeRelay {
 			postScoutPath := filepath.Join(runDir, fmt.Sprintf("post-scout-round-%d.json", round))
+			postScoutStatusPath := filepath.Join(runDir, fmt.Sprintf("post-scout-execution-round-%d.json", round))
+			postScoutStatus := newScoutExecutionArtifact(opts.PostScoutMode, opts.ScoutFailurePolicy, false)
 			logProgress(opts, "round %d post-scout %s started adapter=%s", round, opts.PostScoutMode, scout.ID())
+			postScoutStatus.ScoutRan = true
 			postScoutResult, err := a.runAdapter(ctx, scout, RoleScout, Request{
 				Context:    ctx,
 				Prompt:     withRepoInstructions(BuildScoutPrompt(opts.Workdir, opts.Prompt, relay.Brief, opts.PostScoutMode, "post", diff, safeTestOutput(testOutput), ""), repoInstructions),
@@ -1471,13 +1510,25 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				Verbose:    opts.Verbose,
 			}, opts.DryRun)
 			if err != nil {
-				return final, err
+				postScoutStatus.FailureClass = classifyScoutFailure(err)
+				postScoutStatus.Failure = err.Error()
+				if opts.ScoutFailurePolicy == "fail" {
+					_ = writeJSONWithNewline(postScoutStatusPath, postScoutStatus)
+					return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("post-scout failed and scout_failure_policy=fail; aborting relay run: %w", err)}
+				}
+				postScoutStatus.ContinuedWithoutScoutContext = true
+				logProgress(opts, "round %d post-scout failed; continuing without post-scout context error=%q", round, err.Error())
+			} else {
+				postScoutStatus.ScoutSucceeded = true
+				if postScoutResult.Scout != nil {
+					relay.PostScout = *postScoutResult.Scout
+				}
+				final.Costs["scout"] += postScoutResult.CostUSD
+				logProgress(opts, "round %d post-scout %s completed output=%s", round, opts.PostScoutMode, postScoutPath)
 			}
-			if postScoutResult.Scout != nil {
-				relay.PostScout = *postScoutResult.Scout
+			if err := writeJSONWithNewline(postScoutStatusPath, postScoutStatus); err != nil {
+				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write post-scout execution artifact: %w", err)}
 			}
-			final.Costs["scout"] += postScoutResult.CostUSD
-			logProgress(opts, "round %d post-scout %s completed output=%s", round, opts.PostScoutMode, postScoutPath)
 		}
 
 		logProgress(opts, "round %d %s started adapter=%s", round, reviewerLabel, reviewer.ID())

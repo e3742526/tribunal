@@ -424,6 +424,7 @@ type DefaultsConfig struct {
 	Supervisor              string `toml:"supervisor"`
 	ScoutMode               string `toml:"scout_mode"`
 	PostScoutMode           string `toml:"post_scout_mode"`
+	ScoutFailurePolicy      string `toml:"scout_failure_policy"`
 	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
 	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
 	MaxPackages             int    `toml:"max_packages"`
@@ -448,6 +449,7 @@ type ProfileConfig struct {
 	Supervisor              string `toml:"supervisor"`
 	ScoutMode               string `toml:"scout_mode"`
 	PostScoutMode           string `toml:"post_scout_mode"`
+	ScoutFailurePolicy      string `toml:"scout_failure_policy"`
 	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
 	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
 	MaxPackages             int    `toml:"max_packages"`
@@ -522,6 +524,7 @@ type FlagInputs struct {
 	Scout                   string
 	ScoutMode               string
 	PostScoutMode           string
+	StrictScout             bool
 	NoScoutRetrieval        bool
 	Supervisor              string
 	Reviewer                string
@@ -586,6 +589,7 @@ type RunOptions struct {
 	ScoutExplicitMode         Mode
 	ScoutMode                 string
 	PostScoutMode             string
+	ScoutFailurePolicy        string
 	ScoutRetrieval            bool
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool

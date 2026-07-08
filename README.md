@@ -217,6 +217,7 @@ coder = "codex:gpt-5.4-mini"
 supervisor = "claude:sonnet"
 scout_mode = "recon"
 scout_retrieval = true
+scout_failure_policy = "continue"
 post_scout_mode = "polish"
 rounds = 2
 ```
@@ -249,9 +250,17 @@ also writes `scout-context-round-1.json` before calling the scout. The check is
 deterministic and conservative (`ceil(prompt_bytes/3)`), not provider metadata.
 Statuses are `unknown`, `ok`, `near_limit`, or `exceeds_limit`. Near-limit runs
 compact retrieval more aggressively; retrieval is disabled if it alone would
-push the scout prompt over the configured usable context. If the prompt still
-exceeds the limit without retrieval, the run fails early with an actionable
-message.
+push the scout prompt over the configured usable context.
+
+Scout model failures are explicit and configurable. By default,
+`scout_failure_policy = "continue"` warns, writes
+`scout-execution-round-1.json`, and continues without scout context so the coder
+and supervisor can still run. Use `--strict-scout` or
+`scout_failure_policy = "fail"` when evaluation or reproducibility should abort
+before coder edits if the scout invocation, scout JSON contract, or scout
+context-budget check fails. Retrieval unavailable/timeout/empty/degraded states
+are separate from scout model failure and continue into the scout pass where
+possible.
 
 ### Adversarial mode (backward compatible)
 
@@ -366,6 +375,7 @@ Relevant `defaults` keys:
 - `scout_mode` / `post_scout_mode` — relay scout task modes: `recon`, `lint`, `polish`, `tests`, or `risk`
 - `scout_retrieval` — enable bounded local retrieval for relay pre-scout `recon` (default `true`; disable with `--no-scout-retrieval` or `TAGTEAM_SCOUT_RETRIEVAL=false`)
   Relay scouts work best with `256k+` context and ideally at least as much context as the relay coder/supervisor.
+- `scout_failure_policy` — relay scout model failure handling: `continue` (default) or `fail`; `--strict-scout` maps to `fail`, and `TAGTEAM_SCOUT_FAILURE_POLICY` can override config
 - `supervisor_slicing` — split supervisor-mode work into bounded packages before implementation
 - `max_packages` — maximum package count for supervisor slicing
 - `package` — selected package ID to execute from the work plan
@@ -374,7 +384,7 @@ Relevant `defaults` keys:
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
 - `test`, `git_safety`
 
-Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`, `scout_failure_policy`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
 
 ```toml
 [defaults]
@@ -434,6 +444,7 @@ Typical contents include:
 - `supervisor-brief.md` (supervisor or relay mode, round 1)
 - `retrieval-round-1.json` (relay pre-scout `recon` when retrieval is enabled)
 - `scout-context-round-1.json` (relay pre-scout `recon` context-budget check)
+- `scout-execution-round-1.json` (relay scout host-owned success/failure/degraded status)
 - `scout-round-1.json` (relay mode)
 - `supervisor-instructions.md` (relay mode)
 - `worker-round-N.md` (supervisor mode) / `coder-round-N.md` (adversarial or relay mode)
@@ -442,6 +453,7 @@ Typical contents include:
 - `diff-round-N.files.json`
 - `diff-round-N.sha256`
 - `test-round-N.txt`
+- `post-scout-execution-round-N.json` (relay post-scout host-owned success/failure status)
 - `post-scout-round-N.json` (relay mode)
 - `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode) / `supervisor-review-round-N.json` (relay mode)
 - `worker-final-report.md` / `coder-final-report.md` and `supervisor-final-report.md` / `adversary-final-report.md` when the round limit is exhausted

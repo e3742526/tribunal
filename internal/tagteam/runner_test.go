@@ -1506,6 +1506,23 @@ fi
 printf '%s' '{"relevant_files":["README.md"],"likely_entry_points":["README"],"existing_patterns":["plain text"],"risks":["none"],"suggested_tests":["go test ./..."]}'
 `
 
+const fakeAgyFailScript = `#!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "--version" ]; then
+  echo "agy fake"
+  exit 0
+fi
+echo "scout adapter failed" >&2
+exit 2
+`
+
+const fakeAgyInvalidScript = `#!/bin/sh
+if [ "$1" = "--help" ] || [ "$1" = "--version" ]; then
+  echo "agy fake"
+  exit 0
+fi
+printf '%s' 'not-json'
+`
+
 func installFakeClaudeBinary(t *testing.T) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -1570,10 +1587,12 @@ func TestRunLoop_RelayModeWritesExpectedArtifacts(t *testing.T) {
 		"supervisor-brief.md",
 		"retrieval-round-1.json",
 		"scout-context-round-1.json",
+		"scout-execution-round-1.json",
 		"scout-round-1.json",
 		"supervisor-instructions.md",
 		"coder-round-1.md",
 		"diff-round-1.patch",
+		"post-scout-execution-round-1.json",
 		"post-scout-round-1.json",
 		"supervisor-review-round-1.json",
 		"final.json",
@@ -1612,17 +1631,18 @@ func TestRunLoop_RelayModeDisabledScoutRetrievalSkipsArtifact(t *testing.T) {
 
 	app := NewApp(DefaultConfig())
 	final, err := app.Run(context.Background(), RunOptions{
-		Prompt:         "add a feature",
-		Workdir:        repo,
-		Mode:           ModeRelay,
-		Scout:          RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
-		Coder:          RoleTarget{Adapter: "claude"},
-		Adversary:      RoleTarget{Adapter: "claude"},
-		ScoutMode:      "recon",
-		PostScoutMode:  "polish",
-		ScoutRetrieval: false,
-		Rounds:         1,
-		Timeout:        10 * time.Second,
+		Prompt:             "add a feature",
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     false,
+		ScoutFailurePolicy: "fail",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("expected blocking-findings error from fake supervisor review")
@@ -1633,8 +1653,197 @@ func TestRunLoop_RelayModeDisabledScoutRetrievalSkipsArtifact(t *testing.T) {
 	if !fileExists(filepath.Join(final.RunDir, "scout-context-round-1.json")) {
 		t.Fatal("expected scout context artifact")
 	}
+	if !fileExists(filepath.Join(final.RunDir, "scout-execution-round-1.json")) {
+		t.Fatal("expected scout execution artifact")
+	}
 	if !fileExists(filepath.Join(final.RunDir, "scout-round-1.json")) {
 		t.Fatal("expected normal scout artifact")
+	}
+}
+
+func TestRunLoop_RelayModeRetrievalUnavailableStillRunsScout(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyScript,
+		"claude": fakeClaudeScript,
+	})
+	oldLookPath := execLookPath
+	execLookPath = func(file string) (string, error) {
+		if file == "rg" {
+			return "", exec.ErrNotFound
+		}
+		return oldLookPath(file)
+	}
+	t.Cleanup(func() { execLookPath = oldLookPath })
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:             "add a feature",
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     true,
+		ScoutFailurePolicy: "continue",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error from fake supervisor review")
+	}
+	var retrieval RetrievalArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "retrieval-round-1.json"), &retrieval)
+	if retrieval.Status != "unavailable" {
+		t.Fatalf("retrieval = %#v", retrieval)
+	}
+	var status ScoutExecutionArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "scout-execution-round-1.json"), &status)
+	if !status.RetrievalDegraded || !status.ScoutRan || !status.ScoutSucceeded {
+		t.Fatalf("scout status = %#v", status)
+	}
+}
+
+func TestRunLoop_RelayModeScoutInvocationFailureContinue(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyFailScript,
+		"claude": fakeClaudeScript,
+	})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:             "add a feature",
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     false,
+		ScoutFailurePolicy: "continue",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error after continuing without scout")
+	}
+	if !fileExists(filepath.Join(final.RunDir, "coder-round-1.md")) {
+		t.Fatal("expected coder to run after scout failure")
+	}
+	if !fileExists(filepath.Join(final.RunDir, "supervisor-review-round-1.json")) {
+		t.Fatal("expected supervisor review to run after scout failure")
+	}
+	var status ScoutExecutionArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "scout-execution-round-1.json"), &status)
+	if !status.ScoutRan || status.ScoutSucceeded || status.FailureClass != scoutFailureClassInvocation || !status.ContinuedWithoutScoutContext {
+		t.Fatalf("scout status = %#v", status)
+	}
+	var postStatus ScoutExecutionArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "post-scout-execution-round-1.json"), &postStatus)
+	if !postStatus.ScoutRan || postStatus.ScoutSucceeded || postStatus.FailureClass != scoutFailureClassInvocation || !postStatus.ContinuedWithoutScoutContext {
+		t.Fatalf("post-scout status = %#v", postStatus)
+	}
+}
+
+func TestRunLoop_RelayModeScoutInvocationFailureFail(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyFailScript,
+		"claude": fakeClaudeScript,
+	})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:             "add a feature",
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     false,
+		ScoutFailurePolicy: "fail",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected strict scout failure")
+	}
+	if !strings.Contains(err.Error(), "scout_failure_policy=fail") {
+		t.Fatalf("error = %v", err)
+	}
+	if fileExists(filepath.Join(final.RunDir, "coder-round-1.md")) {
+		t.Fatal("coder should not run after strict scout failure")
+	}
+	var status ScoutExecutionArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "scout-execution-round-1.json"), &status)
+	if !status.ScoutRan || status.ScoutSucceeded || status.FailureClass != scoutFailureClassInvocation || status.ContinuedWithoutScoutContext {
+		t.Fatalf("scout status = %#v", status)
+	}
+}
+
+func TestRunLoop_RelayModeScoutOutputFailureContinue(t *testing.T) {
+	installFakeBinaries(t, map[string]string{
+		"agy":    fakeAgyInvalidScript,
+		"claude": fakeClaudeScript,
+	})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:             "add a feature",
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     false,
+		ScoutFailurePolicy: "continue",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected blocking-findings error after continuing without scout")
+	}
+	var status ScoutExecutionArtifact
+	readJSONFile(t, filepath.Join(final.RunDir, "scout-execution-round-1.json"), &status)
+	if status.FailureClass != scoutFailureClassOutput || !status.ContinuedWithoutScoutContext {
+		t.Fatalf("scout status = %#v", status)
 	}
 }
 
@@ -1805,17 +2014,18 @@ func TestRunLoop_RelayModeScoutContextExceedsWithoutRetrievalFailsEarly(t *testi
 	cfg.Adapters.Agy.ReservedOutputTokens = testIntPtr(0)
 	app := NewApp(cfg)
 	final, err := app.Run(context.Background(), RunOptions{
-		Prompt:         strings.Repeat("large prompt ", 200),
-		Workdir:        repo,
-		Mode:           ModeRelay,
-		Scout:          RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
-		Coder:          RoleTarget{Adapter: "claude"},
-		Adversary:      RoleTarget{Adapter: "claude"},
-		ScoutMode:      "recon",
-		PostScoutMode:  "polish",
-		ScoutRetrieval: false,
-		Rounds:         1,
-		Timeout:        10 * time.Second,
+		Prompt:             strings.Repeat("large prompt ", 200),
+		Workdir:            repo,
+		Mode:               ModeRelay,
+		Scout:              RoleTarget{Adapter: "agy", Model: "gemini-3.5-flash-low"},
+		Coder:              RoleTarget{Adapter: "claude"},
+		Adversary:          RoleTarget{Adapter: "claude"},
+		ScoutMode:          "recon",
+		PostScoutMode:      "polish",
+		ScoutRetrieval:     false,
+		ScoutFailurePolicy: "fail",
+		Rounds:             1,
+		Timeout:            10 * time.Second,
 	})
 	if err == nil {
 		t.Fatal("expected context budget error")

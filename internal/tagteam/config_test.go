@@ -373,6 +373,9 @@ func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
 	if !opts.ScoutRetrieval {
 		t.Fatal("relay should enable scout retrieval by default")
 	}
+	if opts.ScoutFailurePolicy != "continue" {
+		t.Fatalf("scout failure policy = %q", opts.ScoutFailurePolicy)
+	}
 }
 
 func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
@@ -438,6 +441,24 @@ func TestResolveOptions_ProfileCanDisableScoutRetrieval(t *testing.T) {
 	}
 }
 
+func TestResolveOptions_ProfileCanSetScoutFailurePolicy(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Profiles["strict-relay"] = ProfileConfig{
+		Mode:               "relay",
+		ScoutFailurePolicy: "fail",
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Profile: "strict-relay",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutFailurePolicy != "fail" {
+		t.Fatalf("scout failure policy = %q", opts.ScoutFailurePolicy)
+	}
+}
+
 func TestResolveOptions_EnvCanDisableScoutRetrieval(t *testing.T) {
 	cfg := DefaultConfig()
 	mergeEnvConfig(&cfg, map[string]string{"TAGTEAM_SCOUT_RETRIEVAL": "false"})
@@ -450,6 +471,66 @@ func TestResolveOptions_EnvCanDisableScoutRetrieval(t *testing.T) {
 	}
 	if opts.ScoutRetrieval {
 		t.Fatal("expected env to disable scout retrieval")
+	}
+}
+
+func TestResolveOptions_EnvCanSetScoutFailurePolicy(t *testing.T) {
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg, map[string]string{"TAGTEAM_SCOUT_FAILURE_POLICY": "fail"})
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:    "relay",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutFailurePolicy != "fail" {
+		t.Fatalf("scout failure policy = %q", opts.ScoutFailurePolicy)
+	}
+}
+
+func TestResolveOptions_StrictScoutMapsToFail(t *testing.T) {
+	cfg := DefaultConfig()
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:        "relay",
+		StrictScout: true,
+		Timeout:     15 * time.Minute,
+	}, map[string]bool{"mode": true, "strict-scout": true}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.ScoutFailurePolicy != "fail" {
+		t.Fatalf("scout failure policy = %q", opts.ScoutFailurePolicy)
+	}
+}
+
+func TestResolveOptions_InvalidScoutFailurePolicyRejected(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.ScoutFailurePolicy = "maybe"
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:    "relay",
+		Timeout: 15 * time.Minute,
+	}, map[string]bool{"mode": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected invalid scout failure policy error")
+	}
+	if !strings.Contains(err.Error(), "invalid scout_failure_policy") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveOptions_StrictScoutRejectedOutsideRelay(t *testing.T) {
+	cfg := DefaultConfig()
+	_, err := ResolveOptions(cfg, nil, FlagInputs{
+		Mode:        "supervisor",
+		StrictScout: true,
+		Timeout:     15 * time.Minute,
+	}, map[string]bool{"mode": true, "strict-scout": true}, "ship it")
+	if err == nil {
+		t.Fatal("expected strict-scout outside relay to fail")
+	}
+	if !strings.Contains(err.Error(), "--strict-scout is only valid in relay mode") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

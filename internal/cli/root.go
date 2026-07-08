@@ -94,6 +94,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVar(&flags.Scout, "scout", "", "Relay-mode scout adapter[:model] for pre-scout recon")
 	flagSet.StringVar(&flags.ScoutMode, "scout-mode", "", "Pre-scout task mode: recon, lint, polish, tests, or risk")
 	flagSet.StringVar(&flags.PostScoutMode, "post-scout-mode", "", "Post-scout task mode: recon, lint, polish, tests, or risk")
+	flagSet.BoolVar(&flags.StrictScout, "strict-scout", false, "Abort relay when the scout model fails instead of continuing without scout context")
 	flagSet.BoolVar(&flags.NoScoutRetrieval, "no-scout-retrieval", false, "Disable relay pre-scout recon retrieval (local rg-only, host-only, advisory)")
 	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Preferred review slot in supervisor/relay; alias for --ma")
 	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Adversarial-mode review slot; alias for --ma")

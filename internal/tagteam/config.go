@@ -30,6 +30,7 @@ func DefaultConfig() Config {
 			Supervisor:              "claude:opus",
 			ScoutMode:               "recon",
 			PostScoutMode:           "polish",
+			ScoutFailurePolicy:      "continue",
 			ScoutRetrieval:          &scoutRetrieval,
 			SupervisorSlicing:       &supervisorSlicing,
 			MaxPackages:             5,
@@ -56,14 +57,15 @@ func DefaultConfig() Config {
 				Test:      "make check",
 			},
 			"relay": {
-				Mode:           "relay",
-				Scout:          "agy:gemini-3.5-flash-low",
-				Coder:          "codex:gpt-5.4-mini",
-				Supervisor:     "claude:sonnet",
-				ScoutMode:      "recon",
-				PostScoutMode:  "polish",
-				ScoutRetrieval: &scoutRetrieval,
-				Rounds:         2,
+				Mode:               "relay",
+				Scout:              "agy:gemini-3.5-flash-low",
+				Coder:              "codex:gpt-5.4-mini",
+				Supervisor:         "claude:sonnet",
+				ScoutMode:          "recon",
+				PostScoutMode:      "polish",
+				ScoutFailurePolicy: "continue",
+				ScoutRetrieval:     &scoutRetrieval,
+				Rounds:             2,
 			},
 		},
 		Adapters: AdapterConfigSet{
@@ -306,6 +308,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.PostScoutMode != "" {
 		dst.Defaults.PostScoutMode = src.Defaults.PostScoutMode
 	}
+	if src.Defaults.ScoutFailurePolicy != "" {
+		dst.Defaults.ScoutFailurePolicy = src.Defaults.ScoutFailurePolicy
+	}
 	if src.Defaults.ScoutRetrieval != nil {
 		dst.Defaults.ScoutRetrieval = src.Defaults.ScoutRetrieval
 	}
@@ -374,6 +379,9 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.PostScoutMode != "" {
 				current.PostScoutMode = profile.PostScoutMode
+			}
+			if profile.ScoutFailurePolicy != "" {
+				current.ScoutFailurePolicy = profile.ScoutFailurePolicy
 			}
 			if profile.ScoutRetrieval != nil {
 				current.ScoutRetrieval = profile.ScoutRetrieval
@@ -499,6 +507,7 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_SCOUT",
 		"TAGTEAM_SCOUT_MODE",
 		"TAGTEAM_POST_SCOUT_MODE",
+		"TAGTEAM_SCOUT_FAILURE_POLICY",
 		"TAGTEAM_SCOUT_RETRIEVAL",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_SUPERVISOR_SLICING",
@@ -559,6 +568,9 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_POST_SCOUT_MODE"); ok {
 		cfg.Defaults.PostScoutMode = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_FAILURE_POLICY"); ok {
+		cfg.Defaults.ScoutFailurePolicy = value
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_RETRIEVAL"); ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
@@ -744,6 +756,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	gitSafety := cfg.Defaults.GitSafety
 	scoutMode := cfg.Defaults.ScoutMode
 	postScoutMode := cfg.Defaults.PostScoutMode
+	scoutFailurePolicy := cfg.Defaults.ScoutFailurePolicy
 	scoutRetrieval := true
 	if cfg.Defaults.ScoutRetrieval != nil {
 		scoutRetrieval = *cfg.Defaults.ScoutRetrieval
@@ -815,6 +828,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.PostScoutMode != "" {
 			postScoutMode = profile.PostScoutMode
+		}
+		if profile.ScoutFailurePolicy != "" {
+			scoutFailurePolicy = profile.ScoutFailurePolicy
 		}
 		if profile.ScoutRetrieval != nil {
 			scoutRetrieval = *profile.ScoutRetrieval
@@ -1045,6 +1061,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["post-scout-mode"] {
 		postScoutMode = flags.PostScoutMode
 	}
+	if changed["strict-scout"] {
+		scoutFailurePolicy = "fail"
+	}
 	if changed["no-scout-retrieval"] {
 		scoutRetrieval = false
 	}
@@ -1103,6 +1122,12 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if postScoutMode == "" {
 		postScoutMode = "polish"
 	}
+	if scoutFailurePolicy == "" {
+		scoutFailurePolicy = "continue"
+	}
+	if scoutFailurePolicy != "continue" && scoutFailurePolicy != "fail" {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid scout_failure_policy %q", scoutFailurePolicy)}
+	}
 	if mode == ModeRelay {
 		if err := validateScoutMode("scout-mode", scoutMode); err != nil {
 			return RunOptions{}, err
@@ -1110,6 +1135,8 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if err := validateScoutMode("post-scout-mode", postScoutMode); err != nil {
 			return RunOptions{}, err
 		}
+	} else if changed["strict-scout"] {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--strict-scout is only valid in relay mode")}
 	} else if changed["no-scout-retrieval"] {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("--no-scout-retrieval is only valid in relay mode")}
 	}
@@ -1195,6 +1222,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		ScoutExplicitMode:         scoutExplicitMode,
 		ScoutMode:                 scoutMode,
 		PostScoutMode:             postScoutMode,
+		ScoutFailurePolicy:        scoutFailurePolicy,
 		ScoutRetrieval:            scoutRetrieval,
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
