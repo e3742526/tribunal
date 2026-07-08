@@ -56,6 +56,63 @@ func TestDefaultConfig_SupervisorDefaults(t *testing.T) {
 	if cfg.Defaults.Coder != "codex" || cfg.Defaults.Adversary != "claude" {
 		t.Fatalf("legacy defaults = coder=%q adversary=%q", cfg.Defaults.Coder, cfg.Defaults.Adversary)
 	}
+	if cfg.Defaults.LossPolicy.Scout != LossPolicyDegrade || cfg.Defaults.LossPolicy.Supervisor != LossPolicyBlock {
+		t.Fatalf("loss policy = %#v", cfg.Defaults.LossPolicy)
+	}
+	if cfg.Defaults.ScoutContextPolicy != "warn" {
+		t.Fatalf("scout context policy = %q", cfg.Defaults.ScoutContextPolicy)
+	}
+}
+
+func TestResolveOptions_HardeningConfigFields(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.Mode = "relay"
+	cfg.Defaults.MaxRoleInvocations = 7
+	cfg.Defaults.ScoutContextPolicy = "skip"
+	cfg.Defaults.LossPolicy = RoleLossPolicies{
+		Reviewer:   LossPolicyReplaceThenBlock,
+		Supervisor: LossPolicyBlock,
+		Scout:      LossPolicyReplaceThenDegrade,
+	}
+	cfg.Defaults.Fallbacks = RoleFallbacks{
+		Supervisor: []string{"claude:sonnet", "claude:sonnet", "codex:gpt-5.4"},
+		Scout:      []string{"agy:gemini-3.5-flash-low", "openai-compatible:gpt-oss"},
+	}
+	opts, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, nil, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	if opts.MaxRoleInvocations != 7 {
+		t.Fatalf("max role invocations = %d", opts.MaxRoleInvocations)
+	}
+	if opts.ScoutContextPolicy != "skip" {
+		t.Fatalf("scout context policy = %q", opts.ScoutContextPolicy)
+	}
+	if opts.LossPolicy.Scout != LossPolicyReplaceThenDegrade {
+		t.Fatalf("loss policy = %#v", opts.LossPolicy)
+	}
+	if got := strings.Join(opts.Fallbacks.Supervisor, ","); got != "claude:sonnet,codex:gpt-5.4" {
+		t.Fatalf("supervisor fallbacks = %q", got)
+	}
+	if got := strings.Join(opts.Fallbacks.Scout, ","); got != "openai-compatible:gpt-oss" {
+		t.Fatalf("scout fallbacks = %q", got)
+	}
+}
+
+func TestResolveOptions_InvalidLossAndContextPolicies(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Defaults.LossPolicy.Scout = "maybe"
+	_, err := ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, nil, "ship it")
+	if err == nil || !strings.Contains(err.Error(), "invalid loss_policy.scout") {
+		t.Fatalf("expected invalid loss policy error, got %v", err)
+	}
+
+	cfg = DefaultConfig()
+	cfg.Defaults.ScoutContextPolicy = "explode"
+	_, err = ResolveOptions(cfg, nil, FlagInputs{Timeout: 15 * time.Minute}, nil, "ship it")
+	if err == nil || !strings.Contains(err.Error(), "invalid scout_context_policy") {
+		t.Fatalf("expected invalid context policy error, got %v", err)
+	}
 }
 
 func TestResolveOptions_NoRepoInstructionsDisablesLoading(t *testing.T) {

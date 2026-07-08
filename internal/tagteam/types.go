@@ -28,6 +28,84 @@ const (
 	ModeRelay       Mode = "relay"
 )
 
+type RunStatus string
+
+const (
+	RunStatusRunning  RunStatus = "running"
+	RunStatusPassed   RunStatus = "passed"
+	RunStatusFailed   RunStatus = "failed"
+	RunStatusDegraded RunStatus = "degraded"
+	RunStatusBlocked  RunStatus = "blocked"
+)
+
+type ReasonCode string
+
+const (
+	ReasonNone                  ReasonCode = ""
+	ReasonScoutUnavailable      ReasonCode = "scout_unavailable"
+	ReasonScoutContextTooSmall  ReasonCode = "scout_context_too_small"
+	ReasonReviewerJSONInvalid   ReasonCode = "reviewer_json_invalid"
+	ReasonReviewerUnavailable   ReasonCode = "reviewer_unavailable"
+	ReasonSupervisorUnavailable ReasonCode = "supervisor_unavailable"
+	ReasonWorkerTimeout         ReasonCode = "worker_timeout"
+	ReasonTestFailed            ReasonCode = "test_failed"
+	ReasonRoundsExhausted       ReasonCode = "rounds_exhausted"
+	ReasonArtifactMissing       ReasonCode = "artifact_missing"
+	ReasonFallbackUsed          ReasonCode = "fallback_used"
+	ReasonBudgetExceeded        ReasonCode = "budget_exceeded"
+)
+
+type LossPolicy string
+
+const (
+	LossPolicyBlock              LossPolicy = "block"
+	LossPolicyDegrade            LossPolicy = "degrade"
+	LossPolicyReplaceThenBlock   LossPolicy = "replace_then_block"
+	LossPolicyReplaceThenDegrade LossPolicy = "replace_then_degrade"
+)
+
+type RoleLossPolicies struct {
+	Reviewer   LossPolicy `json:"reviewer,omitempty" toml:"reviewer"`
+	Supervisor LossPolicy `json:"supervisor,omitempty" toml:"supervisor"`
+	Scout      LossPolicy `json:"scout,omitempty" toml:"scout"`
+}
+
+type RoleFallbacks struct {
+	Reviewer   []string `json:"reviewer,omitempty" toml:"reviewer"`
+	Supervisor []string `json:"supervisor,omitempty" toml:"supervisor"`
+	Scout      []string `json:"scout,omitempty" toml:"scout"`
+}
+
+type RoleStatus struct {
+	Role          string     `json:"role"`
+	Adapter       string     `json:"adapter,omitempty"`
+	Model         string     `json:"model,omitempty"`
+	Status        string     `json:"status"`
+	ReasonCode    ReasonCode `json:"reason_code,omitempty"`
+	Message       string     `json:"message,omitempty"`
+	Attempts      []string   `json:"attempts,omitempty"`
+	Selected      string     `json:"selected,omitempty"`
+	LastUpdatedAt time.Time  `json:"last_updated_at"`
+}
+
+type RoleLossRecord struct {
+	Role            string     `json:"role"`
+	Policy          LossPolicy `json:"policy"`
+	AttemptedAction string     `json:"attempted_action,omitempty"`
+	Outcome         string     `json:"outcome"`
+	ReasonCode      ReasonCode `json:"reason_code,omitempty"`
+	Message         string     `json:"message,omitempty"`
+}
+
+type BudgetState struct {
+	MaxRounds          int           `json:"max_rounds,omitempty"`
+	MaxRoleInvocations int           `json:"max_role_invocations,omitempty"`
+	MaxWallClock       time.Duration `json:"max_wall_clock,omitempty"`
+	RoleInvocations    int           `json:"role_invocations"`
+	Exhausted          bool          `json:"exhausted"`
+	ReasonCode         ReasonCode    `json:"reason_code,omitempty"`
+}
+
 // ParseMode validates a raw --mode/config value, defaulting an empty value to
 // ModeSupervisor.
 func ParseMode(raw string) (Mode, error) {
@@ -143,6 +221,12 @@ type Request struct {
 	Phase          string
 	Quiet          bool
 	Verbose        bool
+	Budget         *InvocationBudget
+}
+
+type InvocationBudget struct {
+	Max  int
+	Used int
 }
 
 type Adapter interface {
@@ -445,52 +529,60 @@ type Config struct {
 }
 
 type DefaultsConfig struct {
-	Mode                    string `toml:"mode"`
-	Coder                   string `toml:"coder"`
-	Adversary               string `toml:"adversary"`
-	Worker                  string `toml:"worker"`
-	Scout                   string `toml:"scout"`
-	Supervisor              string `toml:"supervisor"`
-	ScoutMode               string `toml:"scout_mode"`
-	PostScoutMode           string `toml:"post_scout_mode"`
-	ScoutFailurePolicy      string `toml:"scout_failure_policy"`
-	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
-	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
-	MaxPackages             int    `toml:"max_packages"`
-	Package                 string `toml:"package"`
-	AutoNextPackage         *bool  `toml:"auto_next_package"`
-	RespectRepoInstructions *bool  `toml:"respect_repo_instructions"`
-	DecisionMemory          *bool  `toml:"decision_memory"`
-	MaxFindings             int    `toml:"max_findings"`
-	MaxOutputBytes          int64  `toml:"max_output_bytes"`
-	MaxWallTime             string `toml:"max_wall_time"`
-	Rounds                  int    `toml:"rounds"`
-	Test                    string `toml:"test"`
-	GitSafety               string `toml:"git_safety"`
+	Mode                    string           `toml:"mode"`
+	Coder                   string           `toml:"coder"`
+	Adversary               string           `toml:"adversary"`
+	Worker                  string           `toml:"worker"`
+	Scout                   string           `toml:"scout"`
+	Supervisor              string           `toml:"supervisor"`
+	ScoutMode               string           `toml:"scout_mode"`
+	PostScoutMode           string           `toml:"post_scout_mode"`
+	ScoutFailurePolicy      string           `toml:"scout_failure_policy"`
+	LossPolicy              RoleLossPolicies `toml:"loss_policy"`
+	Fallbacks               RoleFallbacks    `toml:"fallbacks"`
+	ScoutRetrieval          *bool            `toml:"scout_retrieval"`
+	ScoutContextPolicy      string           `toml:"scout_context_policy"`
+	SupervisorSlicing       *bool            `toml:"supervisor_slicing"`
+	MaxPackages             int              `toml:"max_packages"`
+	Package                 string           `toml:"package"`
+	AutoNextPackage         *bool            `toml:"auto_next_package"`
+	RespectRepoInstructions *bool            `toml:"respect_repo_instructions"`
+	DecisionMemory          *bool            `toml:"decision_memory"`
+	MaxFindings             int              `toml:"max_findings"`
+	MaxOutputBytes          int64            `toml:"max_output_bytes"`
+	MaxWallTime             string           `toml:"max_wall_time"`
+	MaxRoleInvocations      int              `toml:"max_role_invocations"`
+	Rounds                  int              `toml:"rounds"`
+	Test                    string           `toml:"test"`
+	GitSafety               string           `toml:"git_safety"`
 }
 
 type ProfileConfig struct {
-	Mode                    string `toml:"mode"`
-	Coder                   string `toml:"coder"`
-	Adversary               string `toml:"adversary"`
-	Worker                  string `toml:"worker"`
-	Scout                   string `toml:"scout"`
-	Supervisor              string `toml:"supervisor"`
-	ScoutMode               string `toml:"scout_mode"`
-	PostScoutMode           string `toml:"post_scout_mode"`
-	ScoutFailurePolicy      string `toml:"scout_failure_policy"`
-	ScoutRetrieval          *bool  `toml:"scout_retrieval"`
-	SupervisorSlicing       *bool  `toml:"supervisor_slicing"`
-	MaxPackages             int    `toml:"max_packages"`
-	Package                 string `toml:"package"`
-	AutoNextPackage         *bool  `toml:"auto_next_package"`
-	RespectRepoInstructions *bool  `toml:"respect_repo_instructions"`
-	DecisionMemory          *bool  `toml:"decision_memory"`
-	MaxFindings             int    `toml:"max_findings"`
-	MaxOutputBytes          int64  `toml:"max_output_bytes"`
-	MaxWallTime             string `toml:"max_wall_time"`
-	Rounds                  int    `toml:"rounds"`
-	Test                    string `toml:"test"`
+	Mode                    string           `toml:"mode"`
+	Coder                   string           `toml:"coder"`
+	Adversary               string           `toml:"adversary"`
+	Worker                  string           `toml:"worker"`
+	Scout                   string           `toml:"scout"`
+	Supervisor              string           `toml:"supervisor"`
+	ScoutMode               string           `toml:"scout_mode"`
+	PostScoutMode           string           `toml:"post_scout_mode"`
+	ScoutFailurePolicy      string           `toml:"scout_failure_policy"`
+	LossPolicy              RoleLossPolicies `toml:"loss_policy"`
+	Fallbacks               RoleFallbacks    `toml:"fallbacks"`
+	ScoutRetrieval          *bool            `toml:"scout_retrieval"`
+	ScoutContextPolicy      string           `toml:"scout_context_policy"`
+	SupervisorSlicing       *bool            `toml:"supervisor_slicing"`
+	MaxPackages             int              `toml:"max_packages"`
+	Package                 string           `toml:"package"`
+	AutoNextPackage         *bool            `toml:"auto_next_package"`
+	RespectRepoInstructions *bool            `toml:"respect_repo_instructions"`
+	DecisionMemory          *bool            `toml:"decision_memory"`
+	MaxFindings             int              `toml:"max_findings"`
+	MaxOutputBytes          int64            `toml:"max_output_bytes"`
+	MaxWallTime             string           `toml:"max_wall_time"`
+	MaxRoleInvocations      int              `toml:"max_role_invocations"`
+	Rounds                  int              `toml:"rounds"`
+	Test                    string           `toml:"test"`
 }
 
 type AdapterConfigSet struct {
@@ -555,6 +647,7 @@ type FlagInputs struct {
 	PostScoutMode           string
 	StrictScout             bool
 	NoScoutRetrieval        bool
+	ScoutContextPolicy      string
 	TrustRepoConfig         bool
 	Supervisor              string
 	Reviewer                string
@@ -570,6 +663,7 @@ type FlagInputs struct {
 	MaxFindings             int
 	MaxOutputBytes          int64
 	MaxWallTime             time.Duration
+	MaxRoleInvocations      int
 	Profile                 string
 	Workdir                 string
 	Rounds                  int
@@ -620,7 +714,10 @@ type RunOptions struct {
 	ScoutMode                 string
 	PostScoutMode             string
 	ScoutFailurePolicy        string
+	LossPolicy                RoleLossPolicies
+	Fallbacks                 RoleFallbacks
 	ScoutRetrieval            bool
+	ScoutContextPolicy        string
 	TrustRepoConfig           bool
 	SupervisorCanEdit         bool
 	SupervisorCanEditExplicit bool
@@ -634,6 +731,7 @@ type RunOptions struct {
 	MaxFindings               int
 	MaxOutputBytes            int64
 	MaxWallTime               time.Duration
+	MaxRoleInvocations        int
 	Rounds                    int
 	TestCmd                   string
 	NoTest                    bool
@@ -656,6 +754,7 @@ type RunOptions struct {
 	ConfigSources             []string
 	Baseline                  string
 	SkipDirtyCheck            bool
+	InvocationBudget          *InvocationBudget
 }
 
 type Meta struct {
@@ -707,37 +806,44 @@ type FinalRun struct {
 	// empty in solo mode. `tagteam fix` uses these saved targets to resume
 	// with the same mode and adapters instead of re-resolving from current
 	// defaults/flags.
-	Coder             RoleTarget         `json:"coder,omitempty"`
-	Adversary         RoleTarget         `json:"adversary,omitempty"`
-	Scout             RoleTarget         `json:"scout,omitempty"`
-	SupervisorCanEdit bool               `json:"supervisor_can_edit,omitempty"`
-	WorkPlan          *WorkPlan          `json:"work_plan,omitempty"`
-	Plan              *PlanSummary       `json:"plan,omitempty"`
-	SelectedPackage   *WorkPackage       `json:"selected_package,omitempty"`
-	RemainingPackages []string           `json:"remaining_packages,omitempty"`
-	Verdict           string             `json:"verdict"`
-	Summary           string             `json:"summary"`
-	DegradedReason    string             `json:"degraded_reason,omitempty"`
-	ExitCode          int                `json:"exit_code"`
-	Caps              RunCaps            `json:"caps,omitempty"`
-	RoundsRequested   int                `json:"rounds_requested"`
-	RoundsCompleted   int                `json:"rounds_completed"`
-	ChangedFiles      []string           `json:"changed_files,omitempty"`
-	LatestDiffPath    string             `json:"latest_diff_path,omitempty"`
-	LatestNumstatPath string             `json:"latest_numstat_path,omitempty"`
-	LatestFilesPath   string             `json:"latest_files_path,omitempty"`
-	LatestSHA256Path  string             `json:"latest_sha256_path,omitempty"`
-	LatestDiffSHA256  string             `json:"latest_diff_sha256,omitempty"`
-	LatestReviewPath  string             `json:"latest_review_path,omitempty"`
-	RoundLimitReached bool               `json:"round_limit_reached,omitempty"`
-	RoundLimitReports []RoundLimitReport `json:"round_limit_reports,omitempty"`
-	Review            *Review            `json:"review,omitempty"`
-	Tests             []TestRun          `json:"tests,omitempty"`
-	Costs             map[string]float64 `json:"costs,omitempty"`
-	Adapters          map[string]string  `json:"adapters,omitempty"`
-	Models            map[string]string  `json:"models,omitempty"`
-	StartedAt         time.Time          `json:"started_at"`
-	FinishedAt        time.Time          `json:"finished_at"`
+	Coder             RoleTarget            `json:"coder,omitempty"`
+	Adversary         RoleTarget            `json:"adversary,omitempty"`
+	Scout             RoleTarget            `json:"scout,omitempty"`
+	SupervisorCanEdit bool                  `json:"supervisor_can_edit,omitempty"`
+	WorkPlan          *WorkPlan             `json:"work_plan,omitempty"`
+	Plan              *PlanSummary          `json:"plan,omitempty"`
+	SelectedPackage   *WorkPackage          `json:"selected_package,omitempty"`
+	RemainingPackages []string              `json:"remaining_packages,omitempty"`
+	Verdict           string                `json:"verdict"`
+	Summary           string                `json:"summary"`
+	Status            RunStatus             `json:"status,omitempty"`
+	Phase             string                `json:"phase,omitempty"`
+	Degraded          bool                  `json:"degraded"`
+	DegradedReason    string                `json:"degraded_reason,omitempty"`
+	BlockingReason    string                `json:"blocking_reason,omitempty"`
+	RoleStatuses      map[string]RoleStatus `json:"role_statuses,omitempty"`
+	RoleLosses        []RoleLossRecord      `json:"role_losses,omitempty"`
+	Budgets           BudgetState           `json:"budgets,omitempty"`
+	ExitCode          int                   `json:"exit_code"`
+	Caps              RunCaps               `json:"caps,omitempty"`
+	RoundsRequested   int                   `json:"rounds_requested"`
+	RoundsCompleted   int                   `json:"rounds_completed"`
+	ChangedFiles      []string              `json:"changed_files,omitempty"`
+	LatestDiffPath    string                `json:"latest_diff_path,omitempty"`
+	LatestNumstatPath string                `json:"latest_numstat_path,omitempty"`
+	LatestFilesPath   string                `json:"latest_files_path,omitempty"`
+	LatestSHA256Path  string                `json:"latest_sha256_path,omitempty"`
+	LatestDiffSHA256  string                `json:"latest_diff_sha256,omitempty"`
+	LatestReviewPath  string                `json:"latest_review_path,omitempty"`
+	RoundLimitReached bool                  `json:"round_limit_reached,omitempty"`
+	RoundLimitReports []RoundLimitReport    `json:"round_limit_reports,omitempty"`
+	Review            *Review               `json:"review,omitempty"`
+	Tests             []TestRun             `json:"tests,omitempty"`
+	Costs             map[string]float64    `json:"costs,omitempty"`
+	Adapters          map[string]string     `json:"adapters,omitempty"`
+	Models            map[string]string     `json:"models,omitempty"`
+	StartedAt         time.Time             `json:"started_at"`
+	FinishedAt        time.Time             `json:"finished_at"`
 }
 
 type RoundLimitReport struct {
@@ -762,6 +868,7 @@ type RunCaps struct {
 	MaxOutputBytes     int64 `json:"max_output_bytes,omitempty"`
 	TimeoutSeconds     int64 `json:"timeout_seconds,omitempty"`
 	MaxWallTimeSeconds int64 `json:"max_wall_time_seconds,omitempty"`
+	MaxRoleInvocations int   `json:"max_role_invocations,omitempty"`
 }
 
 type DeliveryRecord struct {
@@ -790,16 +897,20 @@ type DeliveryRecord struct {
 }
 
 type RunState struct {
-	SchemaVersion    int       `json:"schema_version"`
-	RunID            string    `json:"run_id"`
-	Mode             Mode      `json:"mode,omitempty"`
-	Status           string    `json:"status"`
-	Phase            string    `json:"phase,omitempty"`
-	CurrentRound     int       `json:"current_round,omitempty"`
-	LatestDiffPath   string    `json:"latest_diff_path,omitempty"`
-	LatestReviewPath string    `json:"latest_review_path,omitempty"`
-	ExitCode         int       `json:"exit_code,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	SchemaVersion    int                   `json:"schema_version"`
+	RunID            string                `json:"run_id"`
+	Mode             Mode                  `json:"mode,omitempty"`
+	Status           string                `json:"status"`
+	Phase            string                `json:"phase,omitempty"`
+	Degraded         bool                  `json:"degraded"`
+	DegradedReason   string                `json:"degraded_reason,omitempty"`
+	BlockingReason   string                `json:"blocking_reason,omitempty"`
+	RoleStatuses     map[string]RoleStatus `json:"role_statuses,omitempty"`
+	CurrentRound     int                   `json:"current_round,omitempty"`
+	LatestDiffPath   string                `json:"latest_diff_path,omitempty"`
+	LatestReviewPath string                `json:"latest_review_path,omitempty"`
+	ExitCode         int                   `json:"exit_code,omitempty"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 func (f FinalRun) MarshalJSON() ([]byte, error) {

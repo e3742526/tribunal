@@ -52,6 +52,10 @@ Role flags by mode
     Adversarial-mode review-slot name; alias for --ma.
   --scout
     Relay-mode scout slot only. Prefer a large-context scout; 256k+ is recommended, ideally at least as large as the coder/supervisor context.
+
+Operational behavior
+
+  Supervisor and relay runs may make one host-controlled mode adjustment before implementation: relay can simplify to supervisor, and supervisor can escalate to relay when both worker and supervisor advisory signals agree. Runs persist final.json and state.json with degraded/blocking reason codes, role statuses, budgets, and artifact paths.
 `,
 		Example: `tagteam "add OAuth login"
 tagteam --worker codex:gpt-5-codex --supervisor claude:opus "refactor billing flow"
@@ -97,6 +101,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVar(&flags.PostScoutMode, "post-scout-mode", "", "Post-scout task mode: recon, lint, polish, tests, or risk")
 	flagSet.BoolVar(&flags.StrictScout, "strict-scout", false, "Abort relay when the scout model fails instead of continuing without scout context")
 	flagSet.BoolVar(&flags.NoScoutRetrieval, "no-scout-retrieval", false, "Disable relay pre-scout recon retrieval (local rg-only, host-only, advisory)")
+	flagSet.StringVar(&flags.ScoutContextPolicy, "scout-context-policy", "", "Relay scout context policy when configured limits are too small: warn, skip, or block")
 	flagSet.BoolVar(&flags.TrustRepoConfig, "trust-repo-config", false, "Trust repo-local .tagteam.toml for tests, passthrough args, and adapter endpoints")
 	flagSet.StringVar(&flags.Supervisor, "supervisor", "", "Preferred review slot in supervisor/relay; alias for --ma")
 	flagSet.StringVar(&flags.Reviewer, "reviewer", "", "Adversarial-mode review slot; alias for --ma")
@@ -112,6 +117,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.IntVar(&flags.MaxFindings, "max-findings", 0, "Maximum findings retained from a review (default 50)")
 	flagSet.Int64Var(&flags.MaxOutputBytes, "max-output-bytes", 0, "Maximum raw bytes accepted from one adapter call (default 2097152)")
 	flagSet.DurationVar(&flags.MaxWallTime, "max-wall-time", 0, "Maximum total run wall time recorded/enforced when non-zero")
+	flagSet.IntVar(&flags.MaxRoleInvocations, "max-role-invocations", 0, "Maximum adapter invocations for one run (0 means unlimited)")
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")
 	flagSet.StringVarP(&flags.Workdir, "workdir", "C", ".", "Working directory")
 	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Hard cap on implementation/review rounds before final no-edit reports")
@@ -374,9 +380,15 @@ func renderFinal(cmd *cobra.Command, final tagteam.FinalRun, opts tagteam.RunOpt
 		fmt.Fprintln(cmd.OutOrStdout(), string(payload))
 		return
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "run=%s verdict=%s exit=%d rounds=%d/%d\n", final.RunID, final.Verdict, final.ExitCode, final.RoundsCompleted, final.RoundsRequested)
+	fmt.Fprintf(cmd.OutOrStdout(), "run=%s verdict=%s status=%s exit=%d rounds=%d/%d\n", final.RunID, final.Verdict, final.Status, final.ExitCode, final.RoundsCompleted, final.RoundsRequested)
 	if final.Summary != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), final.Summary)
+	}
+	if final.Degraded {
+		fmt.Fprintf(cmd.OutOrStdout(), "degraded=true reason=%s\n", final.DegradedReason)
+	}
+	if final.BlockingReason != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "blocking_reason=%s\n", final.BlockingReason)
 	}
 	if final.RunDir != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), final.RunDir)

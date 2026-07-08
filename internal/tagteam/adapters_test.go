@@ -1,6 +1,7 @@
 package tagteam
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -25,9 +26,12 @@ func TestCodexBuildCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"codex", "exec", "-C", "/repo", "-s", "workspace-write", "-m", "gpt-5-codex", "-o", "/tmp/out.md", "--foo", "bar", "make it work"}
+	want := []string{"codex", "exec", "-C", "/repo", "-s", "workspace-write", "-m", "gpt-5-codex", "-o", "/tmp/out.md", "--foo", "bar", "-"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "make it work\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -40,9 +44,12 @@ func TestCodexBuildCmdSupervisor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "write a brief"}
+	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "-"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "write a brief\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -56,9 +63,12 @@ func TestCodexBuildCmdSupervisorWithSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "--output-schema", "/tmp/work-plan-schema.json", "write a work plan"}
+	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "--output-schema", "/tmp/work-plan-schema.json", "-"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "write a work plan\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -71,9 +81,12 @@ func TestCodexBuildCmdReporterIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "report remaining work"}
+	want := []string{"codex", "exec", "-C", "/repo", "-s", "read-only", "-m", "gpt-5-codex", "-"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "report remaining work\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -97,11 +110,11 @@ func TestClaudeBuildCmdAdversary(t *testing.T) {
 	if spec.Argv[0] != "claude" {
 		t.Fatalf("binary = %q", spec.Argv[0])
 	}
-	if spec.Argv[4] != "opus" {
-		t.Fatalf("model = %q", spec.Argv[4])
+	if strings.Contains(strings.Join(spec.Argv, "\x00"), "review") {
+		t.Fatalf("prompt leaked into argv: %v", spec.Argv)
 	}
-	if len(spec.Stdin) == 0 {
-		t.Fatalf("stdin was not forwarded")
+	if !bytes.Contains(spec.Stdin, []byte("review")) || !bytes.Contains(spec.Stdin, []byte("diff")) {
+		t.Fatalf("stdin did not include prompt and diff: %q", string(spec.Stdin))
 	}
 }
 
@@ -247,7 +260,7 @@ func TestAgyBuildCmdCoder(t *testing.T) {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
 	want := []string{
-		"agy", "--print", "make it work",
+		"agy", "--print",
 		"--model", "gemini-3.5-flash",
 		"--print-timeout", "15s",
 		"--dangerously-skip-permissions",
@@ -255,6 +268,9 @@ func TestAgyBuildCmdCoder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "make it work\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -267,9 +283,12 @@ func TestAgyBuildCmdAdversary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "review", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "review\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -282,9 +301,12 @@ func TestAgyBuildCmdSupervisor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "write a brief", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "write a brief\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -297,9 +319,12 @@ func TestAgyBuildCmdReporter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "report remaining work", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "report remaining work\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -312,9 +337,12 @@ func TestAgyBuildCmdScout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "scout the repo", "--model", "gemini-3.5-flash-low", "--sandbox"}
+	want := []string{"agy", "--print", "--model", "gemini-3.5-flash-low", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "scout the repo\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 
@@ -569,11 +597,14 @@ func TestGoslingBuildCmdCoder(t *testing.T) {
 	want := []string{
 		"gosling", "run", "--no-session", "--quiet", "--output-format", "json",
 		"--model", "gemini-2.5-flash",
-		"--text", "do something",
+		"--instructions", "-",
 		"--foo", "bar",
 	}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
+	}
+	if string(spec.Stdin) != "do something\n" {
+		t.Fatalf("stdin = %q", string(spec.Stdin))
 	}
 }
 

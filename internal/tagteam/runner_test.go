@@ -400,6 +400,41 @@ func TestMergeCommandEnvOverlayDoesNotOverrideShell(t *testing.T) {
 	}
 }
 
+func TestMergeCommandEnvForRoleRestrictsReadOnlySecrets(t *testing.T) {
+	t.Setenv("TAGTEAM_SECRET_TOKEN", "secret")
+	t.Setenv("PATH", "/safe/path")
+
+	restricted := envMap(mergeCommandEnvForRole(RoleAdversary, map[string]string{
+		"TAGTEAM_OVERLAY_KEY": "overlay",
+	}, []string{"TAGTEAM_EXTRA_KEY=extra"}))
+	if _, ok := restricted["TAGTEAM_SECRET_TOKEN"]; ok {
+		t.Fatalf("restricted role inherited TAGTEAM_SECRET_TOKEN")
+	}
+	if restricted["TAGTEAM_OVERLAY_KEY"] != "overlay" {
+		t.Fatalf("overlay missing from restricted env: %#v", restricted)
+	}
+	if restricted["TAGTEAM_EXTRA_KEY"] != "extra" {
+		t.Fatalf("extra env missing from restricted env: %#v", restricted)
+	}
+	if restricted["PATH"] != "/safe/path" {
+		t.Fatalf("PATH = %q", restricted["PATH"])
+	}
+
+	coder := envMap(mergeCommandEnvForRole(RoleCoder, nil, nil))
+	if coder["TAGTEAM_SECRET_TOKEN"] != "secret" {
+		t.Fatalf("coder role should inherit parent env")
+	}
+}
+
+func envMap(env []string) map[string]string {
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, _ := strings.Cut(item, "=")
+		values[key] = value
+	}
+	return values
+}
+
 func TestExecutionPlanStatusTransitions(t *testing.T) {
 	workPlan := WorkPlan{
 		Summary: "two packages",
@@ -512,7 +547,7 @@ func TestRunAdversaryDoesNotRetryInvocationFailures(t *testing.T) {
 		Adversary: RoleTarget{Adapter: "missing"},
 		Timeout:   time.Second,
 	}
-	_, _, _, err := app.runAdversary(context.Background(), opts, 1, opts.Workdir, filepath.Join(opts.Workdir, "schema.json"), "prompt", "HEAD", "diff", filepath.Join(opts.Workdir, "diff.patch"), "", RelayContext{}, "")
+	_, _, _, err := app.runAdversary(context.Background(), opts, 1, opts.Workdir, filepath.Join(opts.Workdir, "schema.json"), "prompt", "HEAD", "diff", filepath.Join(opts.Workdir, "diff.patch"), "", "", nil, RelayContext{}, "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -879,6 +914,60 @@ func TestRunAdapter_DirectAdapterRejectsOversizeBeforeWritingTranscript(t *testi
 	}
 }
 
+func TestRunAdapter_RoleInvocationBudgetBlocksNextCall(t *testing.T) {
+	app := NewApp(DefaultConfig())
+	tmp := t.TempDir()
+	budget := &InvocationBudget{Max: 1}
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) {
+			return &CommandSpec{Argv: []string{"fake"}, Dir: tmp}, nil
+		},
+		direct: func(role Role, req Request) (Result, error) {
+			return Result{Text: "ok"}, nil
+		},
+	}
+	req := Request{Context: context.Background(), Prompt: "prompt", RunDir: tmp, Budget: budget}
+	if _, err := app.runAdapter(context.Background(), adapter, RoleReporter, req, false); err != nil {
+		t.Fatalf("first runAdapter() error = %v", err)
+	}
+	_, err := app.runAdapter(context.Background(), adapter, RoleReporter, req, false)
+	if err == nil || !strings.Contains(err.Error(), "max_role_invocations=1") {
+		t.Fatalf("expected invocation budget error, got %v", err)
+	}
+	if budget.Used != 1 {
+		t.Fatalf("budget used = %d", budget.Used)
+	}
+}
+
+func TestBuildReviewBundleWritesExpectedFiles(t *testing.T) {
+	runDir := t.TempDir()
+	diffPath := filepath.Join(runDir, "diff-round-1.patch")
+	filesPath := filepath.Join(runDir, "diff-round-1.files.json")
+	mustWriteFile(t, diffPath, "diff --git a/README.md b/README.md\n")
+	mustWriteFile(t, filesPath, "{}\n")
+	bundle, err := buildReviewBundle(runDir, RunOptions{
+		Prompt:    "review this",
+		Mode:      ModeRelay,
+		Coder:     RoleTarget{Adapter: "codex", Model: "gpt"},
+		Adversary: RoleTarget{Adapter: "claude", Model: "sonnet"},
+		Scout:     RoleTarget{Adapter: "agy", Model: "flash"},
+	}, "supervisor", 1, "abc123", DiffArtifact{PatchPath: diffPath, FilesPath: filesPath}, "tests passed", filepath.Join(runDir, "coder-round-1.md"), RelayContext{}, nil)
+	if err != nil {
+		t.Fatalf("buildReviewBundle() error = %v", err)
+	}
+	for _, path := range []string{bundle.PromptPath, bundle.ConfigSummaryPath, bundle.TestOutputPath, filepath.Join(filepath.Dir(bundle.PromptPath), "bundle.json")} {
+		if !fileExists(path) {
+			t.Fatalf("expected bundle file %s", path)
+		}
+	}
+	if bundle.DiffPath != diffPath || bundle.FilesPath != filesPath {
+		t.Fatalf("bundle diff/files paths = %#v", bundle)
+	}
+	if bundle.CoderOutputPath == "" {
+		t.Fatalf("expected coder output path in bundle: %#v", bundle)
+	}
+}
+
 func TestRunAdapter_RedactsOverlaySecretInValidationArtifact(t *testing.T) {
 	app := NewApp(DefaultConfig())
 	tmp := t.TempDir()
@@ -1089,6 +1178,57 @@ func TestReview_PreflightsReviewerRunnable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "claude not runnable") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestReview_PersistsFinalOnReviewerFailure(t *testing.T) {
+	installFakeBinaries(t, map[string]string{"claude": fakeClaudeInvokeFailScript})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Review(context.Background(), RunOptions{
+		Workdir:   repo,
+		Mode:      ModeAdversarial,
+		Coder:     RoleTarget{Adapter: "codex"},
+		Adversary: RoleTarget{Adapter: "claude"},
+		Timeout:   time.Second,
+	}, "review this diff")
+	if err == nil {
+		t.Fatal("expected reviewer failure")
+	}
+	if final.RunDir == "" {
+		t.Fatal("expected failed review to return run dir")
+	}
+	var persisted FinalRun
+	readJSONFile(t, filepath.Join(final.RunDir, "final.json"), &persisted)
+	if persisted.ExitCode != ExitAdapterFailure {
+		t.Fatalf("persisted exit = %d, want %d", persisted.ExitCode, ExitAdapterFailure)
+	}
+	if persisted.Verdict != "error" {
+		t.Fatalf("persisted verdict = %q", persisted.Verdict)
+	}
+	if persisted.LatestDiffPath == "" {
+		t.Fatalf("expected diff path in persisted failure")
+	}
+	if status := persisted.RoleStatuses["adversary"]; status.Status != "failed" {
+		t.Fatalf("adversary status = %#v", status)
+	}
+	var latest LatestRun
+	readJSONFile(t, filepath.Join(repo, ".tagteam", "latest.json"), &latest)
+	if latest.RunID != final.RunID || latest.FinalPath != filepath.Join(final.RunDir, "final.json") {
+		t.Fatalf("latest = %#v final=%#v", latest, final)
 	}
 }
 
@@ -1572,15 +1712,17 @@ if [ "$1" = "--version" ]; then
   echo "1.0.0"
   exit 0
 fi
+stdin=$(cat)
 if [ -n "$CLAUDE_ARGS_LOG" ]; then
-  printf '%s\n---\n' "$*" >> "$CLAUDE_ARGS_LOG"
+  printf '%s\n%s\n---\n' "$*" "$stdin" >> "$CLAUDE_ARGS_LOG"
 fi
-case "$*" in
+match="$* $stdin"
+case "$match" in
   *"bounded host-controlled orchestration workflow"*)
     mode="supervisor"
-    case "$*" in *"Current mode: relay"*) mode="relay" ;; esac
+    case "$match" in *"Current mode: relay"*) mode="relay" ;; esac
     source="supervisor"
-    case "$*" in *"implementation worker/coder"*) source="worker" ;; esac
+    case "$match" in *"implementation worker/coder"*) source="worker" ;; esac
     rec="keep"
     target="$mode"
     reason="current mode is appropriate"
@@ -1626,13 +1768,23 @@ else
 fi
 `
 
+const fakeClaudeInvokeFailScript = `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "1.0.0"
+  exit 0
+fi
+echo "reviewer exploded" >&2
+exit 7
+`
+
 const fakeAgyScript = `#!/bin/sh
 if [ "$1" = "--help" ] || [ "$1" = "--version" ]; then
   echo "agy fake"
   exit 0
 fi
+stdin=$(cat)
 if [ -n "$AGY_ARGS_LOG" ]; then
-  printf '%s\n---\n' "$*" >> "$AGY_ARGS_LOG"
+  printf '%s\n%s\n---\n' "$*" "$stdin" >> "$AGY_ARGS_LOG"
 fi
 printf '%s' '{"relevant_files":["README.md"],"likely_entry_points":["README"],"existing_patterns":["plain text"],"risks":["none"],"suggested_tests":["go test ./..."]}'
 `
@@ -1771,6 +1923,7 @@ func TestRunLoop_RelaySimplifiesToSupervisorBeforeScout(t *testing.T) {
 		ScoutFailurePolicy: "continue",
 		Rounds:             1,
 		Timeout:            10 * time.Second,
+		EnvOverlay:         map[string]string{"TAGTEAM_TEST_ORCH_ADVISORY": "simplify"},
 	})
 	if err == nil {
 		t.Fatal("expected blocking review error from fake supervisor")
@@ -1820,6 +1973,7 @@ func TestRunLoop_SupervisorEscalatesToRelayWhenBothAgentsAgree(t *testing.T) {
 		ScoutFailurePolicy: "continue",
 		Rounds:             1,
 		Timeout:            10 * time.Second,
+		EnvOverlay:         map[string]string{"TAGTEAM_TEST_ORCH_ADVISORY": "escalate"},
 	})
 	if err == nil {
 		t.Fatal("expected blocking review error from fake supervisor")
@@ -1869,6 +2023,7 @@ func TestRunLoop_AdvisoryFailureFallsBackToOriginalMode(t *testing.T) {
 		ScoutFailurePolicy: "continue",
 		Rounds:             1,
 		Timeout:            10 * time.Second,
+		EnvOverlay:         map[string]string{"TAGTEAM_TEST_ORCH_ADVISORY": "invalid"},
 	})
 	if err == nil {
 		t.Fatal("expected blocking review error from fake supervisor")
@@ -2023,6 +2178,12 @@ func TestRunLoop_RelayModeScoutInvocationFailureContinue(t *testing.T) {
 	}
 	if !fileExists(filepath.Join(final.RunDir, "supervisor-review-round-1.json")) {
 		t.Fatal("expected supervisor review to run after scout failure")
+	}
+	if !final.Degraded || final.DegradedReason == "" {
+		t.Fatalf("expected final degradation metadata, final=%#v", final)
+	}
+	if len(final.RoleLosses) == 0 {
+		t.Fatalf("expected role loss metadata, final=%#v", final)
 	}
 	var status ScoutExecutionArtifact
 	readJSONFile(t, filepath.Join(final.RunDir, "scout-execution-round-1.json"), &status)

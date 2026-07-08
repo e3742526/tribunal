@@ -31,7 +31,9 @@ func DefaultConfig() Config {
 			ScoutMode:               "recon",
 			PostScoutMode:           "polish",
 			ScoutFailurePolicy:      "continue",
+			LossPolicy:              RoleLossPolicies{Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
 			ScoutRetrieval:          &scoutRetrieval,
+			ScoutContextPolicy:      "warn",
 			SupervisorSlicing:       &supervisorSlicing,
 			MaxPackages:             5,
 			AutoNextPackage:         &autoNextPackage,
@@ -40,6 +42,7 @@ func DefaultConfig() Config {
 			MaxFindings:             50,
 			MaxOutputBytes:          2 * 1024 * 1024,
 			MaxWallTime:             "0s",
+			MaxRoleInvocations:      0,
 			Rounds:                  2,
 			GitSafety:               "clean",
 		},
@@ -64,7 +67,9 @@ func DefaultConfig() Config {
 				ScoutMode:          "recon",
 				PostScoutMode:      "polish",
 				ScoutFailurePolicy: "continue",
+				LossPolicy:         RoleLossPolicies{Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
 				ScoutRetrieval:     &scoutRetrieval,
+				ScoutContextPolicy: "warn",
 				Rounds:             2,
 			},
 		},
@@ -305,10 +310,18 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Defaults.GitSafety = ""
 	src.Defaults.MaxOutputBytes = 0
 	src.Defaults.MaxWallTime = ""
+	src.Defaults.MaxRoleInvocations = 0
+	src.Defaults.LossPolicy = RoleLossPolicies{}
+	src.Defaults.Fallbacks = RoleFallbacks{}
+	src.Defaults.ScoutContextPolicy = ""
 	for name, profile := range src.Profiles {
 		profile.Test = ""
 		profile.MaxOutputBytes = 0
 		profile.MaxWallTime = ""
+		profile.MaxRoleInvocations = 0
+		profile.LossPolicy = RoleLossPolicies{}
+		profile.Fallbacks = RoleFallbacks{}
+		profile.ScoutContextPolicy = ""
 		src.Profiles[name] = profile
 	}
 	src.Adapters.Codex.ExtraArgs = nil
@@ -360,8 +373,13 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.ScoutFailurePolicy != "" {
 		dst.Defaults.ScoutFailurePolicy = src.Defaults.ScoutFailurePolicy
 	}
+	mergeRoleLossPolicies(&dst.Defaults.LossPolicy, src.Defaults.LossPolicy)
+	mergeRoleFallbacks(&dst.Defaults.Fallbacks, src.Defaults.Fallbacks)
 	if src.Defaults.ScoutRetrieval != nil {
 		dst.Defaults.ScoutRetrieval = src.Defaults.ScoutRetrieval
+	}
+	if src.Defaults.ScoutContextPolicy != "" {
+		dst.Defaults.ScoutContextPolicy = src.Defaults.ScoutContextPolicy
 	}
 	if src.Defaults.SupervisorSlicing != nil {
 		dst.Defaults.SupervisorSlicing = src.Defaults.SupervisorSlicing
@@ -389,6 +407,9 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if src.Defaults.MaxWallTime != "" {
 		dst.Defaults.MaxWallTime = src.Defaults.MaxWallTime
+	}
+	if src.Defaults.MaxRoleInvocations != 0 {
+		dst.Defaults.MaxRoleInvocations = src.Defaults.MaxRoleInvocations
 	}
 	if src.Defaults.Rounds != 0 {
 		dst.Defaults.Rounds = src.Defaults.Rounds
@@ -432,8 +453,13 @@ func mergeConfig(dst *Config, src Config) {
 			if profile.ScoutFailurePolicy != "" {
 				current.ScoutFailurePolicy = profile.ScoutFailurePolicy
 			}
+			mergeRoleLossPolicies(&current.LossPolicy, profile.LossPolicy)
+			mergeRoleFallbacks(&current.Fallbacks, profile.Fallbacks)
 			if profile.ScoutRetrieval != nil {
 				current.ScoutRetrieval = profile.ScoutRetrieval
+			}
+			if profile.ScoutContextPolicy != "" {
+				current.ScoutContextPolicy = profile.ScoutContextPolicy
 			}
 			if profile.SupervisorSlicing != nil {
 				current.SupervisorSlicing = profile.SupervisorSlicing
@@ -461,6 +487,9 @@ func mergeConfig(dst *Config, src Config) {
 			}
 			if profile.MaxWallTime != "" {
 				current.MaxWallTime = profile.MaxWallTime
+			}
+			if profile.MaxRoleInvocations != 0 {
+				current.MaxRoleInvocations = profile.MaxRoleInvocations
 			}
 			if profile.Rounds != 0 {
 				current.Rounds = profile.Rounds
@@ -539,6 +568,30 @@ func mergeContextBudget(dstMax, dstReserved **int, srcMax, srcReserved *int) {
 	}
 }
 
+func mergeRoleLossPolicies(dst *RoleLossPolicies, src RoleLossPolicies) {
+	if src.Reviewer != "" {
+		dst.Reviewer = src.Reviewer
+	}
+	if src.Supervisor != "" {
+		dst.Supervisor = src.Supervisor
+	}
+	if src.Scout != "" {
+		dst.Scout = src.Scout
+	}
+}
+
+func mergeRoleFallbacks(dst *RoleFallbacks, src RoleFallbacks) {
+	if len(src.Reviewer) > 0 {
+		dst.Reviewer = append([]string{}, src.Reviewer...)
+	}
+	if len(src.Supervisor) > 0 {
+		dst.Supervisor = append([]string{}, src.Supervisor...)
+	}
+	if len(src.Scout) > 0 {
+		dst.Scout = append([]string{}, src.Scout...)
+	}
+}
+
 func cloneIntPtr(src *int) *int {
 	if src == nil {
 		return nil
@@ -557,7 +610,11 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_SCOUT_MODE",
 		"TAGTEAM_POST_SCOUT_MODE",
 		"TAGTEAM_SCOUT_FAILURE_POLICY",
+		"TAGTEAM_SCOUT_LOSS_POLICY",
+		"TAGTEAM_REVIEWER_LOSS_POLICY",
+		"TAGTEAM_SUPERVISOR_LOSS_POLICY",
 		"TAGTEAM_SCOUT_RETRIEVAL",
+		"TAGTEAM_SCOUT_CONTEXT_POLICY",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_SUPERVISOR_SLICING",
 		"TAGTEAM_MAX_PACKAGES",
@@ -568,6 +625,7 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_MAX_FINDINGS",
 		"TAGTEAM_MAX_OUTPUT_BYTES",
 		"TAGTEAM_MAX_WALL_TIME",
+		"TAGTEAM_MAX_ROLE_INVOCATIONS",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
 		"TAGTEAM_GIT_SAFETY",
@@ -621,10 +679,22 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_FAILURE_POLICY"); ok {
 		cfg.Defaults.ScoutFailurePolicy = value
 	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_LOSS_POLICY"); ok {
+		cfg.Defaults.LossPolicy.Scout = LossPolicy(value)
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_REVIEWER_LOSS_POLICY"); ok {
+		cfg.Defaults.LossPolicy.Reviewer = LossPolicy(value)
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SUPERVISOR_LOSS_POLICY"); ok {
+		cfg.Defaults.LossPolicy.Supervisor = LossPolicy(value)
+	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_RETRIEVAL"); ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			cfg.Defaults.ScoutRetrieval = &parsed
 		}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_CONTEXT_POLICY"); ok {
+		cfg.Defaults.ScoutContextPolicy = value
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SUPERVISOR"); ok {
 		cfg.Defaults.Supervisor = value
@@ -669,6 +739,11 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_WALL_TIME"); ok {
 		cfg.Defaults.MaxWallTime = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MAX_ROLE_INVOCATIONS"); ok {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			cfg.Defaults.MaxRoleInvocations = parsed
+		}
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_MODE"); ok {
 		cfg.Defaults.Mode = value
@@ -806,10 +881,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	scoutMode := cfg.Defaults.ScoutMode
 	postScoutMode := cfg.Defaults.PostScoutMode
 	scoutFailurePolicy := cfg.Defaults.ScoutFailurePolicy
+	lossPolicy := cfg.Defaults.LossPolicy
+	fallbacks := cfg.Defaults.Fallbacks
 	scoutRetrieval := true
 	if cfg.Defaults.ScoutRetrieval != nil {
 		scoutRetrieval = *cfg.Defaults.ScoutRetrieval
 	}
+	scoutContextPolicy := cfg.Defaults.ScoutContextPolicy
 	supervisorSlicing := true
 	if cfg.Defaults.SupervisorSlicing != nil {
 		supervisorSlicing = *cfg.Defaults.SupervisorSlicing
@@ -830,6 +908,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	maxFindings := cfg.Defaults.MaxFindings
 	maxOutputBytes := cfg.Defaults.MaxOutputBytes
+	maxRoleInvocations := cfg.Defaults.MaxRoleInvocations
 	var maxWallTime time.Duration
 	if strings.TrimSpace(cfg.Defaults.MaxWallTime) != "" {
 		parsed, err := time.ParseDuration(cfg.Defaults.MaxWallTime)
@@ -881,8 +960,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if profile.ScoutFailurePolicy != "" {
 			scoutFailurePolicy = profile.ScoutFailurePolicy
 		}
+		mergeRoleLossPolicies(&lossPolicy, profile.LossPolicy)
+		mergeRoleFallbacks(&fallbacks, profile.Fallbacks)
 		if profile.ScoutRetrieval != nil {
 			scoutRetrieval = *profile.ScoutRetrieval
+		}
+		if profile.ScoutContextPolicy != "" {
+			scoutContextPolicy = profile.ScoutContextPolicy
 		}
 		if profile.SupervisorSlicing != nil {
 			supervisorSlicing = *profile.SupervisorSlicing
@@ -907,6 +991,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		if profile.MaxOutputBytes != 0 {
 			maxOutputBytes = profile.MaxOutputBytes
+		}
+		if profile.MaxRoleInvocations != 0 {
+			maxRoleInvocations = profile.MaxRoleInvocations
 		}
 		if strings.TrimSpace(profile.MaxWallTime) != "" {
 			parsed, err := time.ParseDuration(profile.MaxWallTime)
@@ -1112,9 +1199,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if changed["strict-scout"] {
 		scoutFailurePolicy = "fail"
+		lossPolicy.Scout = LossPolicyBlock
 	}
 	if changed["no-scout-retrieval"] {
 		scoutRetrieval = false
+	}
+	if changed["scout-context-policy"] {
+		scoutContextPolicy = flags.ScoutContextPolicy
 	}
 	if changed["slice"] {
 		supervisorSlicing = flags.Slice
@@ -1149,6 +1240,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["max-wall-time"] {
 		maxWallTime = flags.MaxWallTime
 	}
+	if changed["max-role-invocations"] {
+		maxRoleInvocations = flags.MaxRoleInvocations
+	}
 
 	if changed["rounds"] {
 		rounds = flags.Rounds
@@ -1177,6 +1271,30 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if scoutFailurePolicy != "continue" && scoutFailurePolicy != "fail" {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid scout_failure_policy %q", scoutFailurePolicy)}
 	}
+	// Preserve the legacy scout_failure_policy knob by translating it to the
+	// generic per-role loss policy unless a dedicated scout policy was set.
+	if lossPolicy.Scout == "" {
+		if scoutFailurePolicy == "fail" {
+			lossPolicy.Scout = LossPolicyBlock
+		} else {
+			lossPolicy.Scout = LossPolicyDegrade
+		}
+	}
+	if lossPolicy.Reviewer == "" {
+		lossPolicy.Reviewer = LossPolicyBlock
+	}
+	if lossPolicy.Supervisor == "" {
+		lossPolicy.Supervisor = LossPolicyBlock
+	}
+	if err := validateRoleLossPolicies(lossPolicy); err != nil {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+	}
+	if scoutContextPolicy == "" {
+		scoutContextPolicy = "warn"
+	}
+	if scoutContextPolicy != "warn" && scoutContextPolicy != "skip" && scoutContextPolicy != "block" {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid scout_context_policy %q", scoutContextPolicy)}
+	}
 	if mode == ModeRelay {
 		if err := validateScoutMode("scout-mode", scoutMode); err != nil {
 			return RunOptions{}, err
@@ -1200,6 +1318,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if maxOutputBytes <= 0 {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-output-bytes must be > 0")}
+	}
+	if maxRoleInvocations < 0 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("max-role-invocations must be >= 0")}
 	}
 
 	editorLabel, reviewerLabel := roleLabels(mode)
@@ -1272,7 +1393,10 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		ScoutMode:                 scoutMode,
 		PostScoutMode:             postScoutMode,
 		ScoutFailurePolicy:        scoutFailurePolicy,
+		LossPolicy:                lossPolicy,
+		Fallbacks:                 normalizeRoleFallbacks(fallbacks, editorTarget, reviewerTarget, scoutTarget),
 		ScoutRetrieval:            scoutRetrieval,
+		ScoutContextPolicy:        scoutContextPolicy,
 		TrustRepoConfig:           flags.TrustRepoConfig && changed["trust-repo-config"],
 		SupervisorCanEdit:         flags.SupervisorCanEdit,
 		SupervisorCanEditExplicit: changed["supervisor-can-edit"],
@@ -1286,6 +1410,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		MaxFindings:               maxFindings,
 		MaxOutputBytes:            maxOutputBytes,
 		MaxWallTime:               maxWallTime,
+		MaxRoleInvocations:        maxRoleInvocations,
 		Rounds:                    rounds,
 		TestCmd:                   testCmd,
 		NoTest:                    flags.NoTest,
@@ -1352,6 +1477,68 @@ func validateScoutMode(label, value string) error {
 	default:
 		return &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid %s %q (want recon, lint, polish, tests, or risk)", label, value)}
 	}
+}
+
+func validateRoleLossPolicies(p RoleLossPolicies) error {
+	for _, item := range []struct {
+		name  string
+		value LossPolicy
+	}{
+		{"loss_policy.reviewer", p.Reviewer},
+		{"loss_policy.supervisor", p.Supervisor},
+		{"loss_policy.scout", p.Scout},
+	} {
+		switch item.value {
+		case "", LossPolicyBlock, LossPolicyDegrade, LossPolicyReplaceThenBlock, LossPolicyReplaceThenDegrade:
+		default:
+			return fmt.Errorf("invalid %s %q (want block, degrade, replace_then_block, or replace_then_degrade)", item.name, item.value)
+		}
+	}
+	return nil
+}
+
+func normalizeRoleFallbacks(f RoleFallbacks, editor, reviewer, scout RoleTarget) RoleFallbacks {
+	_ = editor
+	return RoleFallbacks{
+		Reviewer:   normalizeFallbackTargets(f.Reviewer, reviewer),
+		Supervisor: normalizeFallbackTargets(f.Supervisor, reviewer),
+		Scout:      normalizeFallbackTargets(f.Scout, scout),
+	}
+}
+
+func normalizeFallbackTargets(raw []string, primary RoleTarget) []string {
+	const maxFallbackTargets = 5
+	primaryRaw := roleTargetString(primary)
+	seen := map[string]bool{}
+	if primaryRaw != "" {
+		seen[primaryRaw] = true
+	}
+	out := []string{}
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		if _, err := ParseRoleTarget(item); err != nil {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+		if len(out) == maxFallbackTargets {
+			break
+		}
+	}
+	return out
+}
+
+func roleTargetString(target RoleTarget) string {
+	if target.Adapter == "" {
+		return ""
+	}
+	if target.Model == "" {
+		return target.Adapter
+	}
+	return target.Adapter + ":" + target.Model
 }
 
 func EncodeConfig(cfg Config) ([]byte, error) {

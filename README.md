@@ -264,6 +264,9 @@ deterministic and conservative (`ceil(prompt_bytes/3)`), not provider metadata.
 Statuses are `unknown`, `ok`, `near_limit`, or `exceeds_limit`. Near-limit runs
 compact retrieval more aggressively; retrieval is disabled if it alone would
 push the scout prompt over the configured usable context.
+Use `scout_context_policy = "warn" | "skip" | "block"` or
+`--scout-context-policy` to decide whether a too-small configured scout context
+only warns, skips/degrades the scout pass, or blocks before scout invocation.
 
 Scout model failures are explicit and configurable. By default,
 `scout_failure_policy = "continue"` warns, writes
@@ -274,6 +277,12 @@ before coder edits if the scout invocation, scout JSON contract, or scout
 context-budget check fails. Retrieval unavailable/timeout/empty/degraded states
 are separate from scout model failure and continue into the scout pass where
 possible.
+
+For finer control, `loss_policy` can be configured per non-primary role:
+`block`, `degrade`, `replace_then_block`, or `replace_then_degrade`. Replacement
+is bounded to preflight fallback selection; tagteam does not loop or replay an
+already-started role invocation. Fallback chains are ordered, deduped, capped at
+five targets, and recorded in `final.json`.
 
 ### Adversarial mode (backward compatible)
 
@@ -391,15 +400,22 @@ Relevant `defaults` keys:
 - `scout_retrieval` — enable bounded local retrieval for relay pre-scout `recon` (default `true`; disable with `--no-scout-retrieval` or `TAGTEAM_SCOUT_RETRIEVAL=false`)
   Relay scouts work best with `256k+` context and ideally at least as much context as the relay coder/supervisor.
 - `scout_failure_policy` — relay scout model failure handling: `continue` (default) or `fail`; `--strict-scout` maps to `fail`, and `TAGTEAM_SCOUT_FAILURE_POLICY` can override config
+- `scout_context_policy` — relay scout configured-context behavior: `warn` (default), `skip`, or `block`; `--scout-context-policy` overrides it
 - `supervisor_slicing` — split supervisor-mode work into bounded packages before implementation
 - `max_packages` — maximum package count for supervisor slicing
 - `package` — selected package ID to execute from the work plan
 - `auto_next_package` — continue into additional packages while the normal round cap allows it
 - `respect_repo_instructions` — load explicit repo instruction files and append them to role prompts
 - `rounds` — hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents
+- `max_role_invocations` — optional hard cap on adapter calls in one run; `--max-role-invocations` overrides it
 - `test`, `git_safety`
 
-Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`, `scout_failure_policy`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`,
+`scout_failure_policy`, `scout_context_policy`, `loss_policy`, `fallbacks`,
+`post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and
+`test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an
+adversarial-mode profile, so profiles written before `mode` existed keep
+working unchanged:
 
 ```toml
 [defaults]
@@ -409,6 +425,14 @@ supervisor = "claude:opus"
 supervisor_slicing = true
 max_packages = 5
 rounds = 2
+
+[profiles.relay.loss_policy]
+scout = "replace_then_degrade"
+supervisor = "block"
+
+[profiles.relay.fallbacks]
+scout = ["openai-compatible:gpt-oss-120b"]
+supervisor = ["claude:sonnet", "codex:gpt-5.4"]
 
 [profiles.fast]
 coder = "codex:gpt-5-codex-mini"
@@ -468,16 +492,23 @@ Typical contents include:
 - `diff-round-N.numstat`
 - `diff-round-N.files.json`
 - `diff-round-N.sha256`
+- `bundle-<role>-round-N/` (host-owned review/supervisor input bundle)
 - `test-round-N.txt`
 - `post-scout-execution-round-N.json` (relay post-scout host-owned success/failure status)
 - `post-scout-round-N.json` (relay mode)
 - `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode) / `supervisor-review-round-N.json` (relay mode)
 - `worker-final-report.md` / `coder-final-report.md` and `supervisor-final-report.md` / `adversary-final-report.md` when the round limit is exhausted
 - `final.json`
+- `state.json`
 
 Diff artifacts are captured through a temporary Git index, not the real staging
 area. The canonical patch includes tracked changes, deletions, renames, binary
 patches, and untracked files, while always excluding `.tagteam/`.
+
+`final.json` and `state.json` include machine-readable status fields such as
+`status`, `degraded`, `degraded_reason`, `blocking_reason`, `role_statuses`,
+`role_losses`, `budgets`, and `exit_code`. Text output prints degraded/blocking
+state when present so summaries do not silently disagree with artifacts.
 
 Diagnostic output, delivery records, copied prompts, and raw/validation-error
 artifacts redact values from sensitive shell environment keys and the scoped
