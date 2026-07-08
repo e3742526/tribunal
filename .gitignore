@@ -1,0 +1,5 @@
+.DS_Store
+.tagteam/
+dist/
+tagteam
+coverage.out
