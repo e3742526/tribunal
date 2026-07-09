@@ -543,6 +543,9 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if prompt == "" {
 		if latestPrompt, _ := readLatestPrompt(opts.Workdir); latestPrompt != "" {
 			prompt = latestPrompt
@@ -643,6 +646,7 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	final.Review = review
 	final.Costs = map[string]float64{reviewerLabel: cost}
 	final.FinishedAt = time.Now().UTC()
+	runCompleted = true
 	if opts.FailOnReview && review.HasBlockingFindings() {
 		final.ExitCode = ExitBlockingFindings
 	}
@@ -949,6 +953,9 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1061,6 +1068,7 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 		final.Summary = strings.TrimSpace(final.Summary + "\n\nReview was not run in solo mode.")
 	}
 	final.FinishedAt = time.Now().UTC()
+	runCompleted = true
 	final.ExitCode = a.computeExitCode(final)
 	applyInvocationBudget(&final, budget)
 	finalizeRunState(&final)
@@ -1185,6 +1193,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1916,6 +1927,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 
 	final.ChangedFiles = latestDiffArtifact.ChangedFiles()
 	final.FinishedAt = time.Now().UTC()
+	runCompleted = true
 	final.ExitCode = a.computeExitCode(final)
 	if final.ExitCode == ExitSuccess && final.Review != nil && final.Review.OnlyMinorOrNit() && len(final.Review.Findings) > 0 {
 		final.DegradedReason = "review_passed_with_nonblocking_findings"

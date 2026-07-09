@@ -82,6 +82,7 @@ tagteam --mode adversarial -mc codex:gpt-5-codex -ma claude:opus "refactor billi
 	root.AddCommand(newStatusCommand(flags))
 	root.AddCommand(newPlanCommand(flags))
 	root.AddCommand(newTranscriptCommand(flags))
+	root.AddCommand(newTUICommand(flags))
 	root.AddCommand(newInitCommand(flags))
 	root.AddCommand(newDoctorCommand(flags))
 	return root
