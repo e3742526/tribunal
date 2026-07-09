@@ -213,8 +213,117 @@ func TestCommandPaletteSelectionCompletesCommand(t *testing.T) {
 	m.commandMode = true
 	m.handleCommandKey(nil, keyEvent{Kind: keyDown})
 	m.handleCommandKey(nil, keyEvent{Kind: keyTab})
-	if m.commandBuffer != "refresh" {
-		t.Fatalf("command completion = %q, want refresh", m.commandBuffer)
+	if m.commandBuffer != "model " {
+		t.Fatalf("command completion = %q, want model picker", m.commandBuffer)
+	}
+}
+
+func TestCommandPaletteCompletesModelArgumentAndAppliesSelection(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.commandMode = true
+	m.commandBuffer = "model "
+	matches := m.matchingSlashCommands()
+	if len(matches) < 2 {
+		t.Fatalf("model suggestions = %#v", matches)
+	}
+	m.commandSelection = 1
+	want := strings.TrimPrefix(matches[1].Name, "/model ")
+	m.handleCommandKey(nil, keyEvent{Kind: keyTab})
+	if m.commandBuffer != strings.TrimPrefix(matches[1].Name, "/") {
+		t.Fatalf("completed command = %q", m.commandBuffer)
+	}
+	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
+	if m.compose.EditorTarget != want {
+		t.Fatalf("editor target = %q, want %q", m.compose.EditorTarget, want)
+	}
+}
+
+func TestCommandPaletteEnterOpensAndAcceptsArgumentPicker(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.commandMode = true
+	m.commandBuffer = "model"
+	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
+	if !m.commandMode || m.commandBuffer != "model " {
+		t.Fatalf("model command did not open argument picker: mode=%t buffer=%q", m.commandMode, m.commandBuffer)
+	}
+	m.commandSelection = 1
+	matches := m.matchingSlashCommands()
+	want := strings.TrimPrefix(matches[1].Name, "/model ")
+	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
+	if m.commandMode || m.compose.EditorTarget != want {
+		t.Fatalf("selection not applied: mode=%t target=%q want=%q", m.commandMode, m.compose.EditorTarget, want)
+	}
+}
+
+func TestCommandPaletteOffersProfileValues(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.commandBuffer = "profile rel"
+	matches := m.matchingSlashCommands()
+	if len(matches) != 1 || matches[0].Name != "/profile relay" {
+		t.Fatalf("profile suggestions = %#v", matches)
+	}
+}
+
+func TestCommandPaletteFiltersCommandsByMode(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	for _, command := range m.matchingSlashCommands() {
+		if strings.HasPrefix(command.Name, "/scout") || strings.HasPrefix(command.Name, "/reviewer") {
+			t.Fatalf("supervisor palette exposed irrelevant command %q", command.Name)
+		}
+	}
+	if err := m.setMode("relay"); err != nil {
+		t.Fatal(err)
+	}
+	foundScout := false
+	for _, command := range m.matchingSlashCommands() {
+		foundScout = foundScout || strings.HasPrefix(command.Name, "/scout ")
+	}
+	if !foundScout {
+		t.Fatal("relay palette did not expose scout selection")
+	}
+}
+
+func TestEffortCommandsPropagateToRunConfig(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.compose.Prompt = "ship it"
+	m.applyCommand(nil, "/codex-effort xhigh")
+	m.applyCommand(nil, "/claude-effort medium")
+	_, cfg, err := m.buildRunOptions()
+	if err != nil {
+		t.Fatalf("buildRunOptions() error = %v", err)
+	}
+	if cfg.Adapters.Codex.ReasoningEffort != "xhigh" || cfg.Adapters.Claude.Effort != "medium" {
+		t.Fatalf("efforts = codex:%q claude:%q", cfg.Adapters.Codex.ReasoningEffort, cfg.Adapters.Claude.Effort)
+	}
+}
+
+func TestBareModelCommandDoesNotClearSelection(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	want := m.compose.EditorTarget
+	m.applyCommand(nil, "/model")
+	if m.compose.EditorTarget != want {
+		t.Fatalf("bare /model changed target from %q to %q", want, m.compose.EditorTarget)
+	}
+	if !strings.Contains(m.statusMessage, "Space to choose") {
+		t.Fatalf("status = %q", m.statusMessage)
 	}
 }
 
@@ -279,7 +388,11 @@ func TestDisplayedSlashCommandsAreRecognized(t *testing.T) {
 		"/slice on",
 		"/allow-dirty on",
 		"/repair-json on",
+		"/codex-effort high",
+		"/claude-effort high",
 		"/prompt ship it",
+		"/focus compose",
+		"/help",
 		"/toggle plan",
 		"/toggle findings",
 		"/toggle artifacts",

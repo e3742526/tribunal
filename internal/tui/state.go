@@ -48,6 +48,8 @@ const (
 	fieldEditor
 	fieldReviewer
 	fieldScout
+	fieldCodexEffort
+	fieldClaudeEffort
 	fieldScoutMode
 	fieldPostScoutMode
 	fieldStrictScout
@@ -74,6 +76,8 @@ type composeState struct {
 	EditorTarget       string
 	ReviewerTarget     string
 	ScoutTarget        string
+	CodexEffort        string
+	ClaudeEffort       string
 	ScoutMode          string
 	PostScoutMode      string
 	StrictScout        bool
@@ -405,7 +409,7 @@ func (m *model) handleKey(ctx context.Context, event keyEvent) loopAction {
 		case 't', 'T':
 			m.showTestOutput = !m.showTestOutput
 		case '?':
-			m.statusMessage = "slash: /run /profile /mode /model /supervisor /scout /rounds /test /watch /settings"
+			m.statusMessage = "/ contextual commands  s settings  u runs  g launch"
 		default:
 			m.handleFocusedKey(ctx, event)
 		}
@@ -562,6 +566,15 @@ func (m *model) handleCommandKey(ctx context.Context, event keyEvent) loopAction
 		m.completeSelectedCommand()
 	case keyEnter:
 		command := strings.TrimSpace(m.commandBuffer)
+		if selected, ok := m.selectedSlashCommand(); ok && shouldAcceptSlashSelection(m.commandBuffer, selected) {
+			completion, needsArgument := slashCommandCompletion(selected.Name)
+			if needsArgument {
+				m.commandBuffer = completion
+				m.commandSelection = 0
+				return actionContinue
+			}
+			command = completion
+		}
 		m.commandMode = false
 		m.commandBuffer = ""
 		if command != "" {
@@ -579,14 +592,209 @@ func (m *model) handleCommandKey(ctx context.Context, event keyEvent) loopAction
 }
 
 func (m *model) matchingSlashCommands() []slashCommand {
-	query := strings.ToLower(strings.TrimSpace(m.commandBuffer))
+	raw := strings.TrimLeft(m.commandBuffer, " ")
+	name, argument := splitCommand(raw)
+	if strings.Contains(raw, " ") {
+		if suggestions, ok := m.slashArgumentSuggestions(name); ok {
+			query := strings.ToLower(strings.TrimSpace(argument))
+			matches := make([]slashCommand, 0, len(suggestions))
+			for _, suggestion := range suggestions {
+				if query == "" || strings.Contains(strings.ToLower(suggestion.Name+" "+suggestion.Description), query) {
+					matches = append(matches, suggestion)
+				}
+			}
+			return matches
+		}
+	}
+
+	query := strings.ToLower(strings.TrimSpace(raw))
 	matches := make([]slashCommand, 0, len(slashCommands()))
 	for _, command := range slashCommands() {
+		commandName, _ := splitCommand(strings.TrimPrefix(command.Name, "/"))
+		if !m.slashCommandAvailable(commandName) {
+			continue
+		}
 		if query == "" || strings.Contains(strings.ToLower(command.Name), query) {
 			matches = append(matches, command)
 		}
 	}
 	return matches
+}
+
+func (m *model) slashCommandAvailable(name string) bool {
+	switch name {
+	case "worker", "coder":
+		// Kept as accepted aliases, but /model is the single primary picker.
+		return false
+	case "supervisor":
+		return m.compose.Mode == tagteam.ModeSupervisor || m.compose.Mode == tagteam.ModeRelay
+	case "reviewer":
+		return m.compose.Mode == tagteam.ModeAdversarial
+	case "scout", "scout-mode", "post-scout-mode", "strict-scout", "scout-retrieval", "scout-context-policy":
+		return m.compose.Mode == tagteam.ModeRelay
+	case "slice":
+		return m.compose.Mode == tagteam.ModeSupervisor
+	case "repair-json":
+		return m.compose.Mode != tagteam.ModeSolo
+	default:
+		return true
+	}
+}
+
+func (m *model) slashArgumentSuggestions(name string) ([]slashCommand, bool) {
+	choice := func(value, description string) slashCommand {
+		return slashCommand{Name: "/" + name + " " + value, Description: description}
+	}
+	current := func(value, selected, description string) slashCommand {
+		if value == selected {
+			description = "current · " + description
+		}
+		return choice(value, description)
+	}
+
+	switch name {
+	case "mode":
+		values := []tagteam.Mode{tagteam.ModeSupervisor, tagteam.ModeRelay, tagteam.ModeSolo, tagteam.ModeAdversarial}
+		out := make([]slashCommand, 0, len(values))
+		for _, value := range values {
+			out = append(out, current(string(value), string(m.compose.Mode), modeDescription(value)))
+		}
+		return out, true
+	case "profile":
+		values := m.profileChoiceValues()
+		out := make([]slashCommand, 0, len(values))
+		selected := profileLabel(m.compose.Profile)
+		for _, value := range values {
+			description := "use config defaults"
+			if value != "off" {
+				profile := m.cfg.Profiles[value]
+				description = "named profile"
+				if profile.Mode != "" {
+					description = profile.Mode + " mode"
+				}
+			}
+			out = append(out, current(value, selected, description))
+		}
+		return out, true
+	case "model", "worker", "coder":
+		return m.targetSuggestions(name, m.compose.EditorTarget, "primary model", targetEditor), true
+	case "supervisor", "reviewer":
+		return m.targetSuggestions(name, m.compose.ReviewerTarget, "review model", targetReviewer), true
+	case "scout":
+		return m.targetSuggestions(name, m.compose.ScoutTarget, "scout model", targetScout), true
+	case "codex-effort":
+		return valueSuggestions(name, []string{"none", "minimal", "low", "medium", "high", "xhigh"}, m.compose.CodexEffort), true
+	case "claude-effort":
+		return valueSuggestions(name, []string{"low", "medium", "high", "xhigh", "max"}, m.compose.ClaudeEffort), true
+	case "scout-mode":
+		return valueSuggestions(name, []string{"recon", "lint", "polish", "tests", "risk"}, m.compose.ScoutMode), true
+	case "post-scout-mode":
+		return valueSuggestions(name, []string{"recon", "lint", "polish", "tests", "risk"}, m.compose.PostScoutMode), true
+	case "scout-context-policy":
+		return valueSuggestions(name, []string{"warn", "skip", "block"}, m.compose.ScoutContextPolicy), true
+	case "strict-scout":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.StrictScout)), true
+	case "scout-retrieval":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.ScoutRetrieval)), true
+	case "no-test":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.NoTest)), true
+	case "slice":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.Slice)), true
+	case "allow-dirty":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.AllowDirty)), true
+	case "repair-json":
+		return valueSuggestions(name, []string{"on", "off"}, onOff(m.compose.RepairJSONWorker)), true
+	case "rounds":
+		values := []string{"1", "2", "3", "4", "6", "8"}
+		return valueSuggestions(name, values, strconv.Itoa(m.compose.Rounds)), true
+	case "focus":
+		return valueSuggestions(name, []string{"compose", "detail", "runs"}, ""), true
+	case "toggle":
+		return valueSuggestions(name, []string{"plan", "findings", "artifacts", "test"}, ""), true
+	case "watch":
+		out := []slashCommand{choice("latest", "latest saved run"), choice("active", "currently running task")}
+		for _, run := range m.runs {
+			out = append(out, choice(run.RunID, shortMode(string(run.Mode))+" · "+statusBadge(run.Status)))
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+type targetKind int
+
+const (
+	targetEditor targetKind = iota
+	targetReviewer
+	targetScout
+)
+
+func (m *model) targetSuggestions(command, selected, description string, kind targetKind) []slashCommand {
+	values := m.targetChoiceValues(selected, kind)
+	out := make([]slashCommand, 0, len(values))
+	for _, value := range values {
+		adapter := strings.SplitN(value, ":", 2)[0]
+		label := description + " · " + adapter
+		if value == selected {
+			label = "current · " + label
+		}
+		out = append(out, slashCommand{Name: "/" + command + " " + value, Description: label})
+	}
+	return out
+}
+
+func (m *model) targetChoiceValues(selected string, kind targetKind) []string {
+	values := append([]string{}, m.targetChoices...)
+	if selected != "" && !contains(values, selected) {
+		values = append([]string{selected}, values...)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		adapter := strings.SplitN(value, ":", 2)[0]
+		if targetAllowedInPicker(adapter, kind) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func targetAllowedInPicker(adapter string, kind targetKind) bool {
+	switch kind {
+	case targetEditor:
+		return adapter != "openai-compatible" && adapter != "oai"
+	case targetReviewer, targetScout:
+		return adapter != "gosling"
+	default:
+		return true
+	}
+}
+
+func valueSuggestions(command string, values []string, selected string) []slashCommand {
+	out := make([]slashCommand, 0, len(values))
+	for _, value := range values {
+		description := "select"
+		if value == selected {
+			description = "current"
+		}
+		out = append(out, slashCommand{Name: "/" + command + " " + value, Description: description})
+	}
+	return out
+}
+
+func modeDescription(mode tagteam.Mode) string {
+	switch mode {
+	case tagteam.ModeSupervisor:
+		return "worker + supervisor"
+	case tagteam.ModeRelay:
+		return "scout + coder + supervisor"
+	case tagteam.ModeSolo:
+		return "one implementation model"
+	case tagteam.ModeAdversarial:
+		return "coder + reviewer"
+	default:
+		return ""
+	}
 }
 
 func (m *model) moveCommandSelection(delta int) {
@@ -599,19 +807,44 @@ func (m *model) moveCommandSelection(delta int) {
 }
 
 func (m *model) completeSelectedCommand() {
-	matches := m.matchingSlashCommands()
-	if len(matches) == 0 {
+	selected, ok := m.selectedSlashCommand()
+	if !ok {
 		return
 	}
-	if m.commandSelection < 0 || m.commandSelection >= len(matches) {
-		m.commandSelection = 0
-	}
-	name := strings.TrimPrefix(matches[m.commandSelection].Name, "/")
-	if marker := strings.Index(name, "<"); marker >= 0 {
-		name = strings.TrimSpace(name[:marker]) + " "
-	}
-	m.commandBuffer = name
+	m.commandBuffer, _ = slashCommandCompletion(selected.Name)
 	m.commandSelection = 0
+}
+
+func (m *model) selectedSlashCommand() (slashCommand, bool) {
+	matches := m.matchingSlashCommands()
+	if len(matches) == 0 {
+		return slashCommand{}, false
+	}
+	selection := m.commandSelection
+	if selection < 0 || selection >= len(matches) {
+		selection = 0
+	}
+	return matches[selection], true
+}
+
+func shouldAcceptSlashSelection(buffer string, selected slashCommand) bool {
+	raw := strings.TrimSpace(buffer)
+	if raw == "" || strings.Contains(buffer, " ") {
+		return true
+	}
+	return !strings.EqualFold(raw, strings.TrimPrefix(selected.Name, "/"))
+}
+
+func slashCommandCompletion(raw string) (string, bool) {
+	name := strings.TrimPrefix(raw, "/")
+	if marker := strings.Index(name, "<"); marker >= 0 {
+		return strings.TrimSpace(name[:marker]) + " ", true
+	}
+	parts := strings.Fields(name)
+	if len(parts) > 1 && strings.Contains(parts[len(parts)-1], "|") {
+		return strings.Join(parts[:len(parts)-1], " ") + " ", true
+	}
+	return name, false
 }
 
 func (m *model) requireRelayCommand(name string) error {
@@ -648,13 +881,14 @@ func (m *model) handleEditorKey(event keyEvent) loopAction {
 }
 
 func (m *model) visibleFields() []composeField {
-	fields := []composeField{fieldLaunch, fieldPrompt, fieldProfile, fieldMode, fieldEditor}
+	fields := []composeField{fieldProfile, fieldMode, fieldEditor}
 	if m.compose.Mode != tagteam.ModeSolo {
 		fields = append(fields, fieldReviewer)
 	}
 	if m.compose.Mode == tagteam.ModeRelay {
 		fields = append(fields, fieldScout, fieldScoutMode, fieldPostScoutMode, fieldStrictScout, fieldScoutRetrieval, fieldScoutContextPolicy)
 	}
+	fields = append(fields, fieldCodexEffort, fieldClaudeEffort)
 	fields = append(fields, fieldRounds, fieldTest, fieldNoTest)
 	if m.compose.Mode == tagteam.ModeSupervisor {
 		fields = append(fields, fieldSlice)
@@ -723,11 +957,15 @@ func (m *model) adjustField(field composeField, delta int) {
 			m.statusMessage = err.Error()
 		}
 	case fieldEditor:
-		m.compose.EditorTarget = cycleString(m.targetChoices, m.compose.EditorTarget, delta)
+		m.compose.EditorTarget = cycleString(m.targetChoiceValues(m.compose.EditorTarget, targetEditor), m.compose.EditorTarget, delta)
 	case fieldReviewer:
-		m.compose.ReviewerTarget = cycleString(m.targetChoices, m.compose.ReviewerTarget, delta)
+		m.compose.ReviewerTarget = cycleString(m.targetChoiceValues(m.compose.ReviewerTarget, targetReviewer), m.compose.ReviewerTarget, delta)
 	case fieldScout:
-		m.compose.ScoutTarget = cycleString(m.targetChoices, m.compose.ScoutTarget, delta)
+		m.compose.ScoutTarget = cycleString(m.targetChoiceValues(m.compose.ScoutTarget, targetScout), m.compose.ScoutTarget, delta)
+	case fieldCodexEffort:
+		m.compose.CodexEffort = cycleString([]string{"none", "minimal", "low", "medium", "high", "xhigh"}, m.compose.CodexEffort, delta)
+	case fieldClaudeEffort:
+		m.compose.ClaudeEffort = cycleString([]string{"low", "medium", "high", "xhigh", "max"}, m.compose.ClaudeEffort, delta)
 	case fieldScoutMode:
 		m.compose.ScoutMode = cycleString([]string{"recon", "lint", "polish", "tests", "risk"}, m.compose.ScoutMode, delta)
 	case fieldPostScoutMode:
@@ -777,6 +1015,8 @@ func (m *model) setComposeFromResolved(profile string, opts tagteam.RunOptions) 
 		EditorTarget:       roleTargetString(opts.Coder),
 		ReviewerTarget:     roleTargetString(opts.Adversary),
 		ScoutTarget:        roleTargetString(opts.Scout),
+		CodexEffort:        m.cfg.Adapters.Codex.ReasoningEffort,
+		ClaudeEffort:       m.cfg.Adapters.Claude.Effort,
 		ScoutMode:          opts.ScoutMode,
 		PostScoutMode:      opts.PostScoutMode,
 		StrictScout:        opts.ScoutFailurePolicy == "fail",
@@ -833,7 +1073,7 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 	name, rest := splitCommand(command)
 	switch name {
 	case "help":
-		m.statusMessage = "commands: /run /profile /profiles /mode /model /supervisor /scout /rounds /test /watch /settings"
+		m.statusMessage = "type / then search; model, profile, mode, effort, run, watch, and settings are available"
 	case "refresh":
 		m.refresh()
 		m.statusMessage = "refreshed runs and snapshots"
@@ -846,10 +1086,18 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 			m.statusMessage = err.Error()
 		}
 	case "mode":
+		if strings.TrimSpace(rest) == "" {
+			m.statusMessage = "mode requires a value; type /mode then Space to choose"
+			return
+		}
 		if err := m.setMode(rest); err != nil {
 			m.statusMessage = err.Error()
 		}
 	case "profile":
+		if strings.TrimSpace(rest) == "" {
+			m.statusMessage = "profile requires a name; type /profile then Space to choose"
+			return
+		}
 		if err := m.applyProfile(rest); err != nil {
 			m.statusMessage = err.Error()
 			return
@@ -860,37 +1108,81 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 		m.settingsOpen = true
 		m.focus = focusCompose
 	case "editor", "model":
-		m.compose.EditorTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("model", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.EditorTarget = value
 	case "worker":
 		if err := m.requireModeCommand(name, tagteam.ModeSolo, tagteam.ModeSupervisor, tagteam.ModeRelay); err != nil {
 			m.statusMessage = err.Error()
 			return
 		}
-		m.compose.EditorTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("worker", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.EditorTarget = value
 	case "coder":
 		if err := m.requireModeCommand(name, tagteam.ModeRelay, tagteam.ModeAdversarial); err != nil {
 			m.statusMessage = err.Error()
 			return
 		}
-		m.compose.EditorTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("coder", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.EditorTarget = value
 	case "supervisor":
 		if err := m.requireModeCommand(name, tagteam.ModeSupervisor, tagteam.ModeRelay); err != nil {
 			m.statusMessage = err.Error()
 			return
 		}
-		m.compose.ReviewerTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("supervisor", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.ReviewerTarget = value
 	case "reviewer", "adversary":
 		if err := m.requireModeCommand(name, tagteam.ModeAdversarial); err != nil {
 			m.statusMessage = err.Error()
 			return
 		}
-		m.compose.ReviewerTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("reviewer", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.ReviewerTarget = value
 	case "scout":
 		if err := m.requireRelayCommand(name); err != nil {
 			m.statusMessage = err.Error()
 			return
 		}
-		m.compose.ScoutTarget = strings.TrimSpace(rest)
+		value, err := validateTargetWord("scout", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.ScoutTarget = value
+	case "codex-effort":
+		value := strings.TrimSpace(rest)
+		if err := requireInSet("codex-effort", value, []string{"none", "minimal", "low", "medium", "high", "xhigh"}); err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.CodexEffort = value
+	case "claude-effort":
+		value := strings.TrimSpace(rest)
+		if err := requireInSet("claude-effort", value, []string{"low", "medium", "high", "xhigh", "max"}); err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.ClaudeEffort = value
 	case "scout-mode":
 		if err := m.requireRelayCommand(name); err != nil {
 			m.statusMessage = err.Error()
@@ -1206,6 +1498,8 @@ func (m *model) buildRunOptions() (tagteam.RunOptions, tagteam.Config, error) {
 	if err != nil {
 		return tagteam.RunOptions{}, tagteam.Config{}, err
 	}
+	cfg.Adapters.Codex.ReasoningEffort = m.compose.CodexEffort
+	cfg.Adapters.Claude.Effort = m.compose.ClaudeEffort
 	runOpts, err := tagteam.ResolveOptions(cfg, sources, flags, changed, m.compose.Prompt)
 	if err != nil {
 		return tagteam.RunOptions{}, tagteam.Config{}, err
@@ -1354,10 +1648,7 @@ func (m *model) detailLines() []string {
 func (m *model) settingsLines() []string {
 	fields := m.visibleFields()
 	lines := make([]string, 0, len(fields)+4)
-	lines = append(lines, "Left/right changes values. Enter edits text fields. Esc closes.")
-	if len(m.profileChoices) > 0 {
-		lines = append(lines, "Profiles: off, "+strings.Join(m.profileChoices, ", "))
-	}
+	lines = append(lines, "Left/right chooses. Enter edits exact text values. Esc closes.")
 	for index, field := range fields {
 		prefix := "  "
 		if m.settingsOpen && m.selectedField == index {
@@ -1374,28 +1665,23 @@ func (m *model) settingsLines() []string {
 
 func (m *model) composerLines(width int) []string {
 	lines := []string{}
-	modeLine := fmt.Sprintf("draft %s  target=%s", m.compose.Mode, m.primaryTarget())
-	if m.compose.Mode != tagteam.ModeSolo {
-		modeLine += "  review=" + dashIfEmpty(m.compose.ReviewerTarget)
-	}
-	if m.compose.Mode == tagteam.ModeRelay {
-		modeLine += "  scout=" + dashIfEmpty(m.compose.ScoutTarget)
-	}
-	lines = append(lines, modeLine)
-
 	switch {
 	case m.commandMode:
-		lines = append(lines, "/"+m.commandBuffer+"_")
+		prompt := strings.TrimSpace(m.compose.Prompt)
+		if prompt == "" {
+			prompt = "Describe the task..."
+		}
+		lines = append(lines, "> "+padOrTrim(prompt, maxInt(20, width-4)))
 	case m.editor.Active && m.editor.Field == fieldPrompt:
 		lines = append(lines, "> "+m.editor.Buffer+"_")
 	default:
 		prompt := strings.TrimSpace(m.compose.Prompt)
 		if prompt == "" {
-			prompt = "Describe the task. Press Enter to edit, / for commands, s for settings."
+			prompt = "Describe the task..."
 		}
 		lines = append(lines, "> "+padOrTrim(prompt, maxInt(20, width-4)))
 	}
-	lines = append(lines, fmt.Sprintf("profile=%s  rounds=%d  tests=%s  dirty=%s  launch=g", dashIfEmpty(profileLabel(m.compose.Profile)), m.compose.Rounds, onOff(!m.compose.NoTest), onOff(m.compose.AllowDirty)))
+	lines = append(lines, fmt.Sprintf("mode=%s  profile=%s  rounds=%d  tests=%s  dirty=%s", m.compose.Mode, profileLabel(m.compose.Profile), m.compose.Rounds, onOff(!m.compose.NoTest), onOff(m.compose.AllowDirty)))
 	footer := "Enter edit  / commands  s settings  u runs"
 	if m.currentSnapshot != nil {
 		footer += "  p/f/a/t detail"
@@ -1432,6 +1718,10 @@ func (m *model) composeFieldValue(field composeField) string {
 		return dashIfEmpty(m.compose.ReviewerTarget)
 	case fieldScout:
 		return dashIfEmpty(m.compose.ScoutTarget)
+	case fieldCodexEffort:
+		return dashIfEmpty(m.compose.CodexEffort)
+	case fieldClaudeEffort:
+		return dashIfEmpty(m.compose.ClaudeEffort)
 	case fieldScoutMode:
 		return m.compose.ScoutMode
 	case fieldPostScoutMode:
@@ -1559,6 +1849,10 @@ func composeFieldLabel(mode tagteam.Mode, field composeField) string {
 		}
 	case fieldScout:
 		return "scout"
+	case fieldCodexEffort:
+		return "codex effort"
+	case fieldClaudeEffort:
+		return "claude effort"
 	case fieldScoutMode:
 		return "scout mode"
 	case fieldPostScoutMode:
@@ -1728,6 +2022,17 @@ func requireInSet(label, value string, allowed []string) error {
 		}
 	}
 	return fmt.Errorf("%s must be one of %s", label, strings.Join(allowed, ", "))
+}
+
+func validateTargetWord(label, raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("%s requires adapter[:model]; type /%s then Space to choose", label, label)
+	}
+	if _, err := tagteam.ParseRoleTarget(value); err != nil {
+		return "", fmt.Errorf("invalid %s target: %w", label, err)
+	}
+	return value, nil
 }
 
 func trimLastRune(s string) string {

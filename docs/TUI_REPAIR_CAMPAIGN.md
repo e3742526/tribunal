@@ -44,3 +44,12 @@ seam.
 - Automated coverage still does not run the full-screen TUI in a real terminal.
 - Terminal display-cell width for wide Unicode glyphs is not modeled; rendering
   is bounded by rune count.
+
+## Follow-up UX Evaluation
+
+The 2026-07-09 follow-up compared the live TTY against the sparse interaction
+patterns in Codex, Claude Code, and Antigravity. It added contextual argument
+pickers for models, profiles, modes, effort, and enumerated settings; filtered
+irrelevant role commands by mode; made Enter accept the highlighted choice;
+exposed Codex and Claude effort in Settings; removed repeated dashboard hints;
+and compacted filtered overlays to their content.

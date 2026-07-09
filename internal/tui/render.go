@@ -45,18 +45,10 @@ func renderDashboard(model *model) string {
 func renderTopCard(model *model) []string {
 	dir := filepath.Base(model.workdir)
 	versionLine := fmt.Sprintf("> tagteam  %s", dir)
-	modeLine := fmt.Sprintf("mode %s", model.compose.Mode)
-	targetLine := fmt.Sprintf("model %s", dashIfEmpty(model.primaryTarget()))
-	if model.compose.Mode != tagteam.ModeSolo {
-		targetLine += " | review " + dashIfEmpty(model.compose.ReviewerTarget)
-	}
 	pathLine := shortenPath(model.workdir, model.width)
-	lines := []string{
-		versionLine,
-		modeLine,
-		targetLine,
-		pathLine,
-	}
+	lines := []string{versionLine}
+	lines = append(lines, roleSummaryLines(model, model.width)...)
+	lines = append(lines, pathLine)
 	if model.currentSnapshot != nil {
 		lines = append(lines, fmt.Sprintf("watching %s [%s]", shortRunLabel(model.currentSnapshot.RunID), statusBadge(model.currentSnapshot.Status)))
 	} else if len(model.runs) > 0 {
@@ -64,6 +56,52 @@ func renderTopCard(model *model) []string {
 	}
 	lines = append(lines, "")
 	return lines
+}
+
+func roleSummaryLines(model *model, width int) []string {
+	line := roleSummaryLine(model)
+	if len([]rune(line)) <= width {
+		return []string{line}
+	}
+	switch model.compose.Mode {
+	case tagteam.ModeSupervisor:
+		return []string{
+			"supervisor  worker " + dashIfEmpty(model.compose.EditorTarget),
+			"            supervisor " + dashIfEmpty(model.compose.ReviewerTarget),
+		}
+	case tagteam.ModeRelay:
+		secondary := "       supervisor " + dashIfEmpty(model.compose.ReviewerTarget) + " | scout " + dashIfEmpty(model.compose.ScoutTarget)
+		if len([]rune(secondary)) <= width {
+			return []string{"relay  coder " + dashIfEmpty(model.compose.EditorTarget), secondary}
+		}
+		return []string{
+			"relay  coder " + dashIfEmpty(model.compose.EditorTarget),
+			"       supervisor " + dashIfEmpty(model.compose.ReviewerTarget),
+			"       scout " + dashIfEmpty(model.compose.ScoutTarget),
+		}
+	case tagteam.ModeAdversarial:
+		return []string{
+			"adversarial  coder " + dashIfEmpty(model.compose.EditorTarget),
+			"             reviewer " + dashIfEmpty(model.compose.ReviewerTarget),
+		}
+	default:
+		return []string{line}
+	}
+}
+
+func roleSummaryLine(model *model) string {
+	switch model.compose.Mode {
+	case tagteam.ModeSolo:
+		return "solo  model " + dashIfEmpty(model.compose.EditorTarget)
+	case tagteam.ModeSupervisor:
+		return "supervisor  worker " + dashIfEmpty(model.compose.EditorTarget) + " | supervisor " + dashIfEmpty(model.compose.ReviewerTarget)
+	case tagteam.ModeRelay:
+		return "relay  coder " + dashIfEmpty(model.compose.EditorTarget) + " | supervisor " + dashIfEmpty(model.compose.ReviewerTarget) + " | scout " + dashIfEmpty(model.compose.ScoutTarget)
+	case tagteam.ModeAdversarial:
+		return "adversarial  coder " + dashIfEmpty(model.compose.EditorTarget) + " | reviewer " + dashIfEmpty(model.compose.ReviewerTarget)
+	default:
+		return string(model.compose.Mode)
+	}
 }
 
 func renderMainLines(model *model) []string {
@@ -76,14 +114,9 @@ func renderMainLines(model *model) []string {
 func renderEmptySessionLines(model *model) []string {
 	lines := []string{
 		"",
-		"",
 		"Ready for a new task.",
 		"",
-		"Type in the composer below to start a run.",
-		"",
-		"/ for commands",
-		"s for settings",
-		"u for recent runs",
+		"Enter a task below. Use / only when you need commands.",
 	}
 	if len(model.runs) > 0 {
 		lines = append(lines, "")
@@ -108,7 +141,7 @@ func renderOverlayLines(model *model, maxHeight int) []string {
 	contentHeight := maxInt(1, maxHeight-4)
 	switch {
 	case model.commandMode:
-		content := renderSlashCommandLines(model, contentHeight)
+		content := renderSlashCommandLines(model, contentHeight, width-2)
 		lines := []string{""}
 		lines = append(lines, box("Commands", width, len(content)+2, content)...)
 		lines = append(lines, "")
@@ -116,17 +149,14 @@ func renderOverlayLines(model *model, maxHeight int) []string {
 	case model.settingsOpen:
 		settings := model.settingsLines()
 		selectedLine := model.selectedField + 1
-		if len(model.profileChoices) > 0 {
-			selectedLine++
-		}
-		content := viewport(settings, viewportStart(len(settings), selectedLine, contentHeight), contentHeight)
+		content := trimBlankTail(viewport(settings, viewportStart(len(settings), selectedLine, contentHeight), contentHeight))
 		lines := []string{""}
 		lines = append(lines, box("Settings", minInt(width, 96), len(content)+2, content)...)
 		lines = append(lines, "")
 		return lines
 	case model.runsOpen:
 		runs := renderRunPickerLines(model)
-		content := viewport(runs, viewportStart(len(runs), model.selectedRun, contentHeight), contentHeight)
+		content := trimBlankTail(viewport(runs, viewportStart(len(runs), model.selectedRun, contentHeight), contentHeight))
 		lines := []string{""}
 		lines = append(lines, box("Runs", minInt(width, 72), len(content)+2, content)...)
 		lines = append(lines, "")
@@ -134,6 +164,13 @@ func renderOverlayLines(model *model, maxHeight int) []string {
 	default:
 		return nil
 	}
+}
+
+func trimBlankTail(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 func renderComposerSection(model *model) []string {
@@ -145,7 +182,7 @@ func renderComposerSection(model *model) []string {
 	return out
 }
 
-func renderSlashCommandLines(model *model, height int) []string {
+func renderSlashCommandLines(model *model, height, width int) []string {
 	if height <= 0 {
 		return nil
 	}
@@ -154,41 +191,45 @@ func renderSlashCommandLines(model *model, height int) []string {
 	if selection < 0 || selection >= len(matches) {
 		selection = 0
 	}
-	lines := []string{"/" + model.commandBuffer}
+	lines := []string{"/" + model.commandBuffer + "_"}
 	listHeight := maxInt(1, height-2)
 	start := viewportStart(len(matches), selection, listHeight)
+	nameWidth := 18
+	for _, command := range matches {
+		nameWidth = maxInt(nameWidth, len([]rune(command.Name))+1)
+	}
+	nameWidth = minInt(nameWidth, maxInt(18, width-28))
 	for index, command := range matches[start:minInt(len(matches), start+listHeight)] {
 		prefix := "  "
 		if start+index == selection {
 			prefix = "> "
 		}
-		lines = append(lines, prefix+padOrTrim(command.Name, 18)+" "+command.Description)
+		lines = append(lines, prefix+padOrTrim(command.Name, nameWidth)+" "+command.Description)
 	}
 	if len(matches) == 0 {
 		lines = append(lines, "  no matching commands")
 	}
 	lines = append(lines, "↑/↓ select  tab complete  enter submit  esc cancel")
-	return viewport(lines, 0, height)
+	if len(lines) > height {
+		return lines[:height]
+	}
+	return lines
 }
 
 func slashCommands() []slashCommand {
 	return []slashCommand{
 		{Name: "/run", Description: "Launch the current draft"},
-		{Name: "/refresh", Description: "Reload runs and snapshots from disk"},
-		{Name: "/runs", Description: "Browse recent runs"},
-		{Name: "/watch latest", Description: "Open the latest saved run"},
-		{Name: "/watch active", Description: "Open the active run"},
-		{Name: "/watch <run-id>", Description: "Open a specific saved run"},
-		{Name: "/settings", Description: "Open the settings panel"},
-		{Name: "/profiles", Description: "List available named profiles"},
+		{Name: "/model <target>", Description: "Choose the primary model for this mode"},
 		{Name: "/profile <name>", Description: "Apply a named profile or /profile off"},
 		{Name: "/mode <mode>", Description: "Switch between supervisor, relay, solo, adversarial"},
-		{Name: "/model <target>", Description: "Set the primary editor/worker target"},
 		{Name: "/worker <target>", Description: "Set the worker target for solo/supervisor/relay"},
 		{Name: "/coder <target>", Description: "Set the coder target for relay/adversarial"},
 		{Name: "/supervisor <target>", Description: "Set the supervisor target"},
 		{Name: "/reviewer <target>", Description: "Set the adversarial reviewer target"},
 		{Name: "/scout <target>", Description: "Set the relay scout target"},
+		{Name: "/codex-effort <level>", Description: "Set Codex reasoning effort"},
+		{Name: "/claude-effort <level>", Description: "Set Claude effort"},
+		{Name: "/settings", Description: "Open all run settings"},
 		{Name: "/scout-mode <mode>", Description: "Set relay pre-scout mode: recon/lint/polish/tests/risk"},
 		{Name: "/post-scout-mode <mode>", Description: "Set relay post-scout mode"},
 		{Name: "/strict-scout on|off", Description: "Fail relay when scout execution fails"},
@@ -201,10 +242,16 @@ func slashCommands() []slashCommand {
 		{Name: "/allow-dirty on|off", Description: "Allow launching with a dirty worktree"},
 		{Name: "/repair-json on|off", Description: "Enable worker JSON repair fallback"},
 		{Name: "/prompt <text>", Description: "Set the draft prompt directly"},
+		{Name: "/profiles", Description: "List available named profiles"},
+		{Name: "/runs", Description: "Browse recent runs"},
+		{Name: "/watch <run>", Description: "Open active, latest, or a saved run"},
+		{Name: "/refresh", Description: "Reload runs and snapshots from disk"},
+		{Name: "/focus <area>", Description: "Focus runs, compose, or detail"},
 		{Name: "/toggle plan", Description: "Show or hide plan details"},
 		{Name: "/toggle findings", Description: "Show or hide findings"},
 		{Name: "/toggle artifacts", Description: "Show or hide artifacts"},
 		{Name: "/toggle test", Description: "Show or hide test output"},
+		{Name: "/help", Description: "Show command help"},
 	}
 }
 
@@ -340,11 +387,7 @@ func padOrTrim(s string, width int, fill ...rune) string {
 }
 
 func composerPaneHeight(totalHeight int) int {
-	height := 5
-	if totalHeight < 24 {
-		height = 4
-	}
-	return height
+	return 4
 }
 
 func shortRunLabel(runID string) string {

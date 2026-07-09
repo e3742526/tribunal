@@ -626,7 +626,7 @@ Diff artifacts are captured through a temporary Git index, not the real staging 
 > [!CAUTION]
 > Diagnostic output, delivery records, copied prompts, and raw/validation-error artifacts redact values from sensitive shell environment keys and the scoped `.env` overlay. Prompts, diffs, and model outputs are still persisted for inspectability, so do not paste secrets into task prompts or source files.
 
-## TUI (not yet human tested)
+## TUI
 
 ```bash
 tagteam tui [RUN_ID]
@@ -637,7 +637,7 @@ tagteam tui [RUN_ID]
 The dashboard has three main surfaces:
 
 - a compose surface for prompt entry and run launch
-- an on-demand settings panel for mode, targets, profiles, rounds, tests, and core toggles
+- an on-demand settings panel for mode, role-aware targets, profiles, provider effort, rounds, tests, and core toggles
 - a scrollable run-detail view showing status, roles, plan items, findings, changed files, and artifact paths
 
 It polls the run directory once a second while a run is active and can also launch a new run directly through the same config/runner path as the normal CLI.
@@ -648,7 +648,8 @@ Core keyboard affordances:
 
 - `j` / `k` or arrows move selection and scroll
 - `g` launches the composed run
-- `/` opens slash commands such as `/run`, `/profile relay`, `/mode relay`, `/model claude:claude-sonnet-5`, `/supervisor codex:gpt-5.6-sol`, `/watch latest`, `/scout-retrieval off`
+- `/` opens a mode-aware command palette; typing `/model `, `/profile `, `/mode `, `/codex-effort `, or `/claude-effort ` shows valid values, and arrows plus Enter apply the highlighted choice
+- direct commands remain available, including `/supervisor codex:gpt-5.6-sol`, `/scout agy:Gemini 3.5 Flash (Medium)`, `/rounds 3`, `/watch latest`, and `/scout-retrieval off`
 - `s` opens settings
 - `u` opens recent runs
 - `r` refreshes

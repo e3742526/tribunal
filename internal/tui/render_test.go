@@ -77,9 +77,8 @@ func TestRenderDashboardIncludesCorePanels(t *testing.T) {
 	out := renderDashboard(fixtureModel())
 	for _, want := range []string{
 		"tagteam  repo",
-		"mode supervisor",
+		"supervisor  worker agy:Gemini 3.5 Flash (High)",
 		"watching run-2 [run]",
-		"draft supervisor  target=agy:Gemini 3.5 Flash (High)",
 		"> add OAuth login",
 		"Run: run-2",
 		"Mode: supervisor",
@@ -105,7 +104,7 @@ func TestRenderDashboardNoSelectedRunShowsComposeHint(t *testing.T) {
 	out := renderDashboard(m)
 	for _, want := range []string{
 		"Ready for a new task.",
-		"Type in the composer below to start a run.",
+		"Enter a task below. Use / only when you need commands.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
@@ -119,9 +118,11 @@ func TestRenderDashboardSettingsOverlay(t *testing.T) {
 	out := renderDashboard(m)
 	for _, want := range []string{
 		"Settings",
-		"Profiles: off",
+		"profile: off",
 		"mode: supervisor",
 		"worker: agy:Gemini 3.5 Flash (High)",
+		"codex effort:",
+		"claude effort:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
@@ -138,10 +139,23 @@ func TestRenderDashboardCommandOverlay(t *testing.T) {
 		"Commands",
 		"/profile <name>",
 		"/model",
-		"Set the primary editor/worker target",
+		"Choose the primary model for this mode",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderDashboardModelPickerShowsExactTargets(t *testing.T) {
+	m := fixtureModel()
+	m.commandMode = true
+	m.commandBuffer = "model "
+	m.targetChoices = []string{"claude:claude-sonnet-5", "codex:gpt-5.6-terra"}
+	out := renderDashboard(m)
+	for _, want := range []string{"/model claude:claude-sonnet-5", "/model codex:gpt-5.6-terra", "current"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("model picker missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -192,6 +206,21 @@ func TestRenderDashboardTrimsLongDetailLines(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
 		if width := len([]rune(line)); width > m.width {
 			t.Fatalf("rendered line has width %d, want <= %d: %q", width, m.width, line)
+		}
+	}
+}
+
+func TestRenderDashboardNarrowRelayHeaderKeepsEveryRoleVisible(t *testing.T) {
+	m := fixtureModel()
+	m.width = 80
+	m.compose.Mode = tagteam.ModeRelay
+	m.compose.EditorTarget = "claude:claude-sonnet-5"
+	m.compose.ReviewerTarget = "codex:gpt-5.6-sol"
+	m.compose.ScoutTarget = "agy:Gemini 3.5 Flash (Medium)"
+	out := renderDashboard(m)
+	for _, want := range []string{m.compose.EditorTarget, m.compose.ReviewerTarget, m.compose.ScoutTarget} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("narrow relay header missing %q:\n%s", want, out)
 		}
 	}
 }
