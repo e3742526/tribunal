@@ -139,7 +139,6 @@ func TestBuildRunSnapshot_PreservesStateStatusWhenOlderFinalOmitsIt(t *testing.T
 		t.Fatalf("verdict = %q, want final.json verdict", snapshot.Verdict)
 	}
 }
-
 func TestBuildRunSnapshot_IncludesPlanSummaryWhenPresent(t *testing.T) {
 	workdir, runDir, runID := newRunDirForSnapshotTest(t)
 	now := time.Now().UTC()
