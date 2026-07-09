@@ -43,3 +43,39 @@ func TestNewRootCommandHelpIncludesModeModelAndFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionCommandAndFlag(t *testing.T) {
+	t.Run("version subcommand", func(t *testing.T) {
+		cmd := NewRootCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"version"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute version command: %v", err)
+		}
+
+		got := strings.TrimSpace(out.String())
+		if got != Version {
+			t.Errorf("version command output got %q, want %q", got, Version)
+		}
+	})
+
+	t.Run("--version flag", func(t *testing.T) {
+		cmd := NewRootCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"--version"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute version flag: %v", err)
+		}
+
+		got := strings.TrimSpace(out.String())
+		if !strings.Contains(got, Version) {
+			t.Errorf("version flag output got %q, should contain %q", got, Version)
+		}
+	})
+}

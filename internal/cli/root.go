@@ -16,6 +16,8 @@ import (
 	"github.com/cephalopod-ai/tagteam/internal/tagteam"
 )
 
+var Version = "dev"
+
 type flagState struct {
 	tagteam.FlagInputs
 }
@@ -23,8 +25,9 @@ type flagState struct {
 func NewRootCommand() *cobra.Command {
 	flags := &flagState{}
 	root := &cobra.Command{
-		Use:   "tagteam [flags] <prompt>",
-		Short: "Run supervisor/worker, relay, or coder/adversary agent loops over a repository",
+		Use:     "tagteam [flags] <prompt>",
+		Version: Version,
+		Short:   "Run supervisor/worker, relay, or coder/adversary agent loops over a repository",
 		Long: `tagteam runs a repository-local loop of explicit coding roles. Instead of hiding the edit/review cycle inside a vendor UI, the CLI keeps the supervisor, worker, coder, adversary, and scout roles visible, saves the artifacts for each run, and makes the handoff between brief, implementation, and review inspectable from the terminal.
 
 Modes
@@ -87,7 +90,18 @@ tagteam --mode adversarial -mc codex:gpt-5-codex -ma claude:opus "refactor billi
 	root.AddCommand(newTUICommand(flags))
 	root.AddCommand(newInitCommand(flags))
 	root.AddCommand(newDoctorCommand(flags))
+	root.AddCommand(newVersionCommand())
 	return root
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version number of tagteam",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), Version)
+		},
+	}
 }
 
 func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
