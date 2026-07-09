@@ -95,6 +95,12 @@ type composeState struct {
 	RepairJSONSet      bool
 }
 
+type roleAssignments struct {
+	Editor   string
+	Reviewer string
+	Scout    string
+}
+
 type runListItem struct {
 	RunID     string
 	RunDir    string
@@ -117,6 +123,7 @@ type model struct {
 	cfg              tagteam.Config
 	configSources    []string
 	compose          composeState
+	teamAssignments  map[tagteam.Mode]roleAssignments
 	targetChoices    []string
 	profileChoices   []string
 	runs             []runListItem
@@ -128,11 +135,13 @@ type model struct {
 	currentTestTail  []string
 	focus            focusArea
 	selectedField    int
+	selectedTeam     int
 	scroll           int
 	showPlan         bool
 	showFindings     bool
 	showArtifacts    bool
 	showTestOutput   bool
+	teamOpen         bool
 	settingsOpen     bool
 	runsOpen         bool
 	commandMode      bool
@@ -157,17 +166,18 @@ func newModel(opts RunOptions) (*model, error) {
 		}
 	}
 	m := &model{
-		opts:           opts,
-		workdir:        opts.Workdir,
-		base:           baseFlags{Flags: opts.Flags, Changed: opts.Changed, TrustRepoConfig: opts.TrustRepoConfig},
-		focus:          focusCompose,
-		showPlan:       true,
-		showFindings:   true,
-		showArtifacts:  true,
-		showTestOutput: true,
-		runResultCh:    make(chan runResult, 1),
-		width:          120,
-		height:         36,
+		opts:            opts,
+		workdir:         opts.Workdir,
+		base:            baseFlags{Flags: opts.Flags, Changed: opts.Changed, TrustRepoConfig: opts.TrustRepoConfig},
+		focus:           focusCompose,
+		teamAssignments: make(map[tagteam.Mode]roleAssignments),
+		showPlan:        true,
+		showFindings:    true,
+		showArtifacts:   true,
+		showTestOutput:  true,
+		runResultCh:     make(chan runResult, 1),
+		width:           120,
+		height:          36,
 	}
 	if err := m.loadConfigDefaults(); err != nil {
 		return nil, err
@@ -200,6 +210,7 @@ func (m *model) loadConfigDefaults() error {
 	m.cfg = cfg
 	m.configSources = sources
 	m.setComposeFromResolved(flags.Profile, opts)
+	m.resetTeamAssignments()
 	if m.compose.Rounds <= 0 {
 		m.compose.Rounds = 2
 	}
@@ -312,6 +323,13 @@ func (m *model) clampSelection() {
 	if m.selectedField < 0 {
 		m.selectedField = 0
 	}
+	teamFields := m.teamFields()
+	if m.selectedTeam >= len(teamFields) {
+		m.selectedTeam = len(teamFields) - 1
+	}
+	if m.selectedTeam < 0 {
+		m.selectedTeam = 0
+	}
 	if m.selectedRun >= len(m.runs) {
 		m.selectedRun = len(m.runs) - 1
 	}
@@ -370,6 +388,9 @@ func (m *model) handleKey(ctx context.Context, event keyEvent) loopAction {
 
 	switch event.Kind {
 	case keyEsc:
+		if m.teamOpen {
+			m.teamOpen = false
+		}
 		if m.settingsOpen {
 			m.settingsOpen = false
 		}
@@ -389,6 +410,13 @@ func (m *model) handleKey(ctx context.Context, event keyEvent) loopAction {
 		case 's', 'S':
 			m.settingsOpen = !m.settingsOpen
 			if m.settingsOpen {
+				m.teamOpen = false
+				m.focus = focusCompose
+			}
+		case 'm', 'M':
+			m.teamOpen = !m.teamOpen
+			if m.teamOpen {
+				m.settingsOpen = false
 				m.focus = focusCompose
 			}
 		case 'u', 'U':
@@ -396,7 +424,7 @@ func (m *model) handleKey(ctx context.Context, event keyEvent) loopAction {
 		case 'g', 'G':
 			m.launchRun(ctx)
 		case 'e', 'E':
-			if !m.settingsOpen {
+			if !m.teamOpen && !m.settingsOpen {
 				m.focus = focusCompose
 				m.startEditor(fieldPrompt)
 			}
@@ -409,7 +437,7 @@ func (m *model) handleKey(ctx context.Context, event keyEvent) loopAction {
 		case 't', 'T':
 			m.showTestOutput = !m.showTestOutput
 		case '?':
-			m.statusMessage = "/ contextual commands  s settings  u runs  g launch"
+			m.statusMessage = "m team  / contextual commands  s run settings  u runs  g launch"
 		default:
 			m.handleFocusedKey(ctx, event)
 		}
@@ -443,6 +471,10 @@ func (m *model) handleRunsOverlayKey(event keyEvent) loopAction {
 }
 
 func (m *model) handleFocusedKey(ctx context.Context, event keyEvent) {
+	if m.teamOpen {
+		m.handleTeamKey(event)
+		return
+	}
 	if m.settingsOpen {
 		m.handleSettingsKey(ctx, event)
 		return
@@ -454,6 +486,39 @@ func (m *model) handleFocusedKey(ctx context.Context, event keyEvent) {
 		m.handleComposeKey(ctx, event)
 	case focusDetail:
 		m.handleDetailKey(event)
+	}
+}
+
+func (m *model) handleTeamKey(event keyEvent) {
+	fields := m.teamFields()
+	if len(fields) == 0 {
+		return
+	}
+	selected := fields[m.selectedTeam]
+	switch event.Kind {
+	case keyEsc:
+		m.teamOpen = false
+	case keyUp:
+		if m.selectedTeam > 0 {
+			m.selectedTeam--
+		}
+	case keyDown:
+		if m.selectedTeam+1 < len(fields) {
+			m.selectedTeam++
+		}
+	case keyLeft:
+		m.adjustField(selected, -1)
+		m.clampSelection()
+	case keyRight:
+		m.adjustField(selected, 1)
+		m.clampSelection()
+	case keyEnter:
+		if isEditableField(selected) {
+			m.startEditor(selected)
+			return
+		}
+		m.adjustField(selected, 1)
+		m.clampSelection()
 	}
 }
 
@@ -595,8 +660,14 @@ func (m *model) matchingSlashCommands() []slashCommand {
 	raw := strings.TrimLeft(m.commandBuffer, " ")
 	name, argument := splitCommand(raw)
 	if strings.Contains(raw, " ") {
-		if suggestions, ok := m.slashArgumentSuggestions(name); ok {
+		if suggestions, ok := m.slashArgumentSuggestions(name, argument, strings.HasSuffix(raw, " ")); ok {
 			query := strings.ToLower(strings.TrimSpace(argument))
+			if name == "model" {
+				parts := strings.Fields(argument)
+				if len(parts) > 0 && m.teamRole(parts[0]) != nil && (len(parts) > 1 || strings.HasSuffix(raw, " ")) {
+					query = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(argument, parts[0])))
+				}
+			}
 			matches := make([]slashCommand, 0, len(suggestions))
 			for _, suggestion := range suggestions {
 				if query == "" || strings.Contains(strings.ToLower(suggestion.Name+" "+suggestion.Description), query) {
@@ -641,7 +712,7 @@ func (m *model) slashCommandAvailable(name string) bool {
 	}
 }
 
-func (m *model) slashArgumentSuggestions(name string) ([]slashCommand, bool) {
+func (m *model) slashArgumentSuggestions(name, argument string, trailingSpace bool) ([]slashCommand, bool) {
 	choice := func(value, description string) slashCommand {
 		return slashCommand{Name: "/" + name + " " + value, Description: description}
 	}
@@ -676,7 +747,20 @@ func (m *model) slashArgumentSuggestions(name string) ([]slashCommand, bool) {
 			out = append(out, current(value, selected, description))
 		}
 		return out, true
-	case "model", "worker", "coder":
+	case "model":
+		parts := strings.Fields(argument)
+		if len(parts) == 0 {
+			return m.modelRoleSuggestions(), true
+		}
+		if role := m.teamRole(parts[0]); role != nil {
+			if len(parts) == 1 && !trailingSpace {
+				return m.modelRoleSuggestions(), true
+			}
+			return m.targetSuggestions("model "+role.Name, m.composeFieldValue(role.Field), role.Purpose, role.Kind), true
+		}
+		// Preserve direct /model <target> for scripts and muscle memory.
+		return m.targetSuggestions(name, m.compose.EditorTarget, "primary model", targetEditor), true
+	case "worker", "coder":
 		return m.targetSuggestions(name, m.compose.EditorTarget, "primary model", targetEditor), true
 	case "supervisor", "reviewer":
 		return m.targetSuggestions(name, m.compose.ReviewerTarget, "review model", targetReviewer), true
@@ -719,6 +803,83 @@ func (m *model) slashArgumentSuggestions(name string) ([]slashCommand, bool) {
 		return out, true
 	default:
 		return nil, false
+	}
+}
+
+type teamRole struct {
+	Name    string
+	Field   composeField
+	Purpose string
+	Kind    targetKind
+}
+
+func (m *model) teamRoles() []teamRole {
+	switch m.compose.Mode {
+	case tagteam.ModeSolo:
+		return []teamRole{{Name: "model", Field: fieldEditor, Purpose: "writes code", Kind: targetEditor}}
+	case tagteam.ModeSupervisor:
+		return []teamRole{
+			{Name: "worker", Field: fieldEditor, Purpose: "writes code", Kind: targetEditor},
+			{Name: "supervisor", Field: fieldReviewer, Purpose: "plans + reviews · read-only", Kind: targetReviewer},
+		}
+	case tagteam.ModeRelay:
+		return []teamRole{
+			{Name: "coder", Field: fieldEditor, Purpose: "writes code", Kind: targetEditor},
+			{Name: "supervisor", Field: fieldReviewer, Purpose: "plans + reviews · read-only", Kind: targetReviewer},
+			{Name: "scout", Field: fieldScout, Purpose: "recon + advisory · read-only", Kind: targetScout},
+		}
+	case tagteam.ModeAdversarial:
+		return []teamRole{
+			{Name: "coder", Field: fieldEditor, Purpose: "writes code", Kind: targetEditor},
+			{Name: "reviewer", Field: fieldReviewer, Purpose: "reviews + gates · read-only", Kind: targetReviewer},
+		}
+	default:
+		return nil
+	}
+}
+
+func (m *model) teamRole(name string) *teamRole {
+	if strings.EqualFold(strings.TrimSpace(name), "adversary") {
+		name = "reviewer"
+	}
+	for _, role := range m.teamRoles() {
+		if role.Name == strings.ToLower(strings.TrimSpace(name)) {
+			matched := role
+			return &matched
+		}
+	}
+	return nil
+}
+
+func isTeamRoleName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "model", "worker", "coder", "supervisor", "reviewer", "adversary", "scout":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *model) modelRoleSuggestions() []slashCommand {
+	roles := m.teamRoles()
+	out := make([]slashCommand, 0, len(roles))
+	for _, role := range roles {
+		out = append(out, slashCommand{
+			Name:        "/model " + role.Name + " <target>",
+			Description: role.Purpose + " · current " + m.composeFieldValue(role.Field),
+		})
+	}
+	return out
+}
+
+func (m *model) setRoleTarget(role teamRole, value string) {
+	switch role.Field {
+	case fieldEditor:
+		m.compose.EditorTarget = value
+	case fieldReviewer:
+		m.compose.ReviewerTarget = value
+	case fieldScout:
+		m.compose.ScoutTarget = value
 	}
 }
 
@@ -881,20 +1042,24 @@ func (m *model) handleEditorKey(event keyEvent) loopAction {
 }
 
 func (m *model) visibleFields() []composeField {
-	fields := []composeField{fieldProfile, fieldMode, fieldEditor}
-	if m.compose.Mode != tagteam.ModeSolo {
-		fields = append(fields, fieldReviewer)
-	}
+	fields := []composeField{}
 	if m.compose.Mode == tagteam.ModeRelay {
-		fields = append(fields, fieldScout, fieldScoutMode, fieldPostScoutMode, fieldStrictScout, fieldScoutRetrieval, fieldScoutContextPolicy)
+		fields = append(fields, fieldScoutMode, fieldPostScoutMode, fieldStrictScout, fieldScoutRetrieval, fieldScoutContextPolicy)
 	}
-	fields = append(fields, fieldCodexEffort, fieldClaudeEffort)
 	fields = append(fields, fieldRounds, fieldTest, fieldNoTest)
 	if m.compose.Mode == tagteam.ModeSupervisor {
 		fields = append(fields, fieldSlice)
 	}
 	fields = append(fields, fieldAllowDirty, fieldRepairJSON)
 	return fields
+}
+
+func (m *model) teamFields() []composeField {
+	fields := []composeField{fieldProfile, fieldMode}
+	for _, role := range m.teamRoles() {
+		fields = append(fields, role.Field)
+	}
+	return append(fields, fieldCodexEffort, fieldClaudeEffort)
 }
 
 func (m *model) startEditor(field composeField) {
@@ -1054,6 +1219,7 @@ func (m *model) applyProfile(raw string) error {
 	m.profileChoices = collectProfileChoices(cfg)
 	m.targetChoices = collectTargetChoices(cfg)
 	m.setComposeFromResolved(flags.Profile, opts)
+	m.resetTeamAssignments()
 	m.compose.Prompt = prompt
 	m.clampSelection()
 	if flags.Profile == "" {
@@ -1104,10 +1270,37 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 		}
 	case "profiles":
 		m.statusMessage = "profiles: " + strings.Join(m.profileChoiceValues(), ", ")
+	case "team":
+		m.teamOpen = true
+		m.settingsOpen = false
+		m.focus = focusCompose
 	case "settings":
 		m.settingsOpen = true
+		m.teamOpen = false
 		m.focus = focusCompose
-	case "editor", "model":
+	case "model":
+		roleName, target := splitCommand(rest)
+		if role := m.teamRole(roleName); role != nil {
+			value, err := validateTargetWord("model "+role.Name, target)
+			if err != nil {
+				m.statusMessage = err.Error()
+				return
+			}
+			m.setRoleTarget(*role, value)
+			m.statusMessage = role.Name + " model set to " + value
+			return
+		}
+		if isTeamRoleName(roleName) {
+			m.statusMessage = fmt.Sprintf("role %s is not part of %s mode; type /model then Space to see active roles", roleName, m.compose.Mode)
+			return
+		}
+		value, err := validateTargetWord("model", rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.EditorTarget = value
+	case "editor":
 		value, err := validateTargetWord("model", rest)
 		if err != nil {
 			m.statusMessage = err.Error()
@@ -1355,16 +1548,28 @@ func (m *model) setMode(raw string) error {
 		return err
 	}
 	previous := m.compose.Mode
-	m.compose.Mode = mode
-	if err := m.fillMissingModeTargets(mode); err != nil {
-		m.compose.Mode = previous
+	if mode == previous {
+		return nil
+	}
+	m.teamAssignments[previous] = m.currentRoleAssignments()
+	if saved, ok := m.teamAssignments[mode]; ok {
+		m.compose.Mode = mode
+		m.applyRoleAssignments(saved)
+		m.clampSelection()
+		return nil
+	}
+	assignments, err := m.defaultModeTargets(mode)
+	if err != nil {
 		return err
 	}
+	m.compose.Mode = mode
+	m.applyRoleAssignments(assignments)
+	m.teamAssignments[mode] = assignments
 	m.clampSelection()
 	return nil
 }
 
-func (m *model) fillMissingModeTargets(mode tagteam.Mode) error {
+func (m *model) defaultModeTargets(mode tagteam.Mode) (roleAssignments, error) {
 	flags := m.base.Flags
 	flags.Workdir = m.workdir
 	flags.Profile = m.compose.Profile
@@ -1377,18 +1582,36 @@ func (m *model) fillMissingModeTargets(mode tagteam.Mode) error {
 	changed["mode"] = true
 	defaults, err := tagteam.ResolveOptions(m.cfg, m.configSources, flags, changed, "")
 	if err != nil {
-		return err
+		return roleAssignments{}, err
 	}
-	if m.compose.EditorTarget == "" {
-		m.compose.EditorTarget = roleTargetString(defaults.Coder)
+	assignments := roleAssignments{Editor: roleTargetString(defaults.Coder)}
+	if mode != tagteam.ModeSolo {
+		assignments.Reviewer = roleTargetString(defaults.Adversary)
 	}
-	if mode != tagteam.ModeSolo && m.compose.ReviewerTarget == "" {
-		m.compose.ReviewerTarget = roleTargetString(defaults.Adversary)
+	if mode == tagteam.ModeRelay {
+		assignments.Scout = roleTargetString(defaults.Scout)
 	}
-	if mode == tagteam.ModeRelay && m.compose.ScoutTarget == "" {
-		m.compose.ScoutTarget = roleTargetString(defaults.Scout)
+	return assignments, nil
+}
+
+func (m *model) currentRoleAssignments() roleAssignments {
+	return roleAssignments{
+		Editor:   m.compose.EditorTarget,
+		Reviewer: m.compose.ReviewerTarget,
+		Scout:    m.compose.ScoutTarget,
 	}
-	return nil
+}
+
+func (m *model) applyRoleAssignments(assignments roleAssignments) {
+	m.compose.EditorTarget = assignments.Editor
+	m.compose.ReviewerTarget = assignments.Reviewer
+	m.compose.ScoutTarget = assignments.Scout
+}
+
+func (m *model) resetTeamAssignments() {
+	m.teamAssignments = map[tagteam.Mode]roleAssignments{
+		m.compose.Mode: m.currentRoleAssignments(),
+	}
 }
 
 func (m *model) launchRun(ctx context.Context) {
@@ -1648,7 +1871,7 @@ func (m *model) detailLines() []string {
 func (m *model) settingsLines() []string {
 	fields := m.visibleFields()
 	lines := make([]string, 0, len(fields)+4)
-	lines = append(lines, "Left/right chooses. Enter edits exact text values. Esc closes.")
+	lines = append(lines, "Execution policy only. Left/right chooses. Enter edits. Esc closes.")
 	for index, field := range fields {
 		prefix := "  "
 		if m.settingsOpen && m.selectedField == index {
@@ -1659,6 +1882,32 @@ func (m *model) settingsLines() []string {
 			continue
 		}
 		lines = append(lines, prefix+composeFieldLabel(m.compose.Mode, field)+": "+m.composeFieldValue(field))
+	}
+	return lines
+}
+
+func (m *model) teamLines() []string {
+	fields := m.teamFields()
+	lines := make([]string, 0, len(fields)+2)
+	lines = append(lines, "Build the team: choose a workflow, then assign each role. Esc closes.")
+	roleByField := make(map[composeField]teamRole, len(m.teamRoles()))
+	for _, role := range m.teamRoles() {
+		roleByField[role.Field] = role
+	}
+	for index, field := range fields {
+		prefix := "  "
+		if m.teamOpen && m.selectedTeam == index {
+			prefix = "> "
+		}
+		label := composeFieldLabel(m.compose.Mode, field)
+		if role, ok := roleByField[field]; ok {
+			label = role.Name + " [" + role.Purpose + "]"
+		}
+		value := m.composeFieldValue(field)
+		if m.editor.Active && m.editor.Field == field {
+			value = m.editor.Buffer + " _"
+		}
+		lines = append(lines, prefix+label+": "+value)
 	}
 	return lines
 }
@@ -1682,7 +1931,7 @@ func (m *model) composerLines(width int) []string {
 		lines = append(lines, "> "+padOrTrim(prompt, maxInt(20, width-4)))
 	}
 	lines = append(lines, fmt.Sprintf("mode=%s  profile=%s  rounds=%d  tests=%s  dirty=%s", m.compose.Mode, profileLabel(m.compose.Profile), m.compose.Rounds, onOff(!m.compose.NoTest), onOff(m.compose.AllowDirty)))
-	footer := "Enter edit  / commands  s settings  u runs"
+	footer := "Enter edit  m team  / commands  s settings  u runs"
 	if m.currentSnapshot != nil {
 		footer += "  p/f/a/t detail"
 	}

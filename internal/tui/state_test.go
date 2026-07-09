@@ -211,7 +211,7 @@ func TestCommandPaletteSelectionCompletesCommand(t *testing.T) {
 		t.Fatalf("newModel() error = %v", err)
 	}
 	m.commandMode = true
-	m.handleCommandKey(nil, keyEvent{Kind: keyDown})
+	m.commandBuffer = "model"
 	m.handleCommandKey(nil, keyEvent{Kind: keyTab})
 	if m.commandBuffer != "model " {
 		t.Fatalf("command completion = %q, want model picker", m.commandBuffer)
@@ -224,17 +224,23 @@ func TestCommandPaletteCompletesModelArgumentAndAppliesSelection(t *testing.T) {
 		t.Fatalf("newModel() error = %v", err)
 	}
 	m.commandMode = true
+	m.targetChoices = []string{"claude:claude-sonnet-5", "codex:gpt-5.6-terra"}
 	m.commandBuffer = "model "
 	matches := m.matchingSlashCommands()
 	if len(matches) < 2 {
-		t.Fatalf("model suggestions = %#v", matches)
+		t.Fatalf("model role suggestions = %#v", matches)
+	}
+	m.commandSelection = 0
+	m.handleCommandKey(nil, keyEvent{Kind: keyTab})
+	if m.commandBuffer != "model worker " {
+		t.Fatalf("role completion = %q", m.commandBuffer)
+	}
+	matches = m.matchingSlashCommands()
+	if len(matches) != 2 {
+		t.Fatalf("worker target suggestions = %#v", matches)
 	}
 	m.commandSelection = 1
-	want := strings.TrimPrefix(matches[1].Name, "/model ")
-	m.handleCommandKey(nil, keyEvent{Kind: keyTab})
-	if m.commandBuffer != strings.TrimPrefix(matches[1].Name, "/") {
-		t.Fatalf("completed command = %q", m.commandBuffer)
-	}
+	want := "codex:gpt-5.6-terra"
 	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
 	if m.compose.EditorTarget != want {
 		t.Fatalf("editor target = %q, want %q", m.compose.EditorTarget, want)
@@ -252,12 +258,87 @@ func TestCommandPaletteEnterOpensAndAcceptsArgumentPicker(t *testing.T) {
 	if !m.commandMode || m.commandBuffer != "model " {
 		t.Fatalf("model command did not open argument picker: mode=%t buffer=%q", m.commandMode, m.commandBuffer)
 	}
-	m.commandSelection = 1
-	matches := m.matchingSlashCommands()
-	want := strings.TrimPrefix(matches[1].Name, "/model ")
+	m.commandSelection = 0
+	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
+	if !m.commandMode || m.commandBuffer != "model worker " {
+		t.Fatalf("role selection did not open target picker: mode=%t buffer=%q", m.commandMode, m.commandBuffer)
+	}
+	want := m.compose.EditorTarget
 	m.handleCommandKey(nil, keyEvent{Kind: keyEnter})
 	if m.commandMode || m.compose.EditorTarget != want {
-		t.Fatalf("selection not applied: mode=%t target=%q want=%q", m.commandMode, m.compose.EditorTarget, want)
+		t.Fatalf("target selection not applied: mode=%t target=%q want=%q", m.commandMode, m.compose.EditorTarget, want)
+	}
+}
+
+func TestRoleFirstModelCommandAssignsSelectedRole(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	worker := m.compose.EditorTarget
+	m.applyCommand(nil, "/model supervisor codex:gpt-5.6-sol")
+	if m.compose.ReviewerTarget != "codex:gpt-5.6-sol" {
+		t.Fatalf("supervisor target = %q", m.compose.ReviewerTarget)
+	}
+	if m.compose.EditorTarget != worker {
+		t.Fatalf("supervisor assignment changed worker from %q to %q", worker, m.compose.EditorTarget)
+	}
+
+	m.applyCommand(nil, "/mode relay")
+	m.applyCommand(nil, "/model scout agy:Gemini 3.5 Flash (Medium)")
+	if m.compose.ScoutTarget != "agy:Gemini 3.5 Flash (Medium)" {
+		t.Fatalf("scout target = %q", m.compose.ScoutTarget)
+	}
+}
+
+func TestTeamShortcutSeparatesCompositionFromRunSettings(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.handleKey(nil, keyEvent{Kind: keyRune, Rune: 'm'})
+	if !m.teamOpen || m.settingsOpen {
+		t.Fatalf("team shortcut state = team:%t settings:%t", m.teamOpen, m.settingsOpen)
+	}
+	for _, field := range m.teamFields() {
+		if field == fieldRounds || field == fieldTest || field == fieldAllowDirty {
+			t.Fatalf("team fields include execution setting %v", field)
+		}
+	}
+	for _, field := range m.visibleFields() {
+		if field == fieldEditor || field == fieldReviewer || field == fieldScout {
+			t.Fatalf("settings fields include team role %v", field)
+		}
+	}
+}
+
+func TestModeSwitchLoadsDefaultsAndRestoresEachModesTeam(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.compose.EditorTarget = "claude:custom-worker"
+	m.compose.ReviewerTarget = "codex:custom-supervisor"
+
+	if err := m.setMode("adversarial"); err != nil {
+		t.Fatal(err)
+	}
+	if m.compose.EditorTarget != "codex:gpt-5.6-terra" || m.compose.ReviewerTarget != "claude:claude-opus-4-8" {
+		t.Fatalf("adversarial defaults = coder:%q reviewer:%q", m.compose.EditorTarget, m.compose.ReviewerTarget)
+	}
+	m.compose.EditorTarget = "codex:custom-coder"
+
+	if err := m.setMode("supervisor"); err != nil {
+		t.Fatal(err)
+	}
+	if m.compose.EditorTarget != "claude:custom-worker" || m.compose.ReviewerTarget != "codex:custom-supervisor" {
+		t.Fatalf("restored supervisor team = worker:%q supervisor:%q", m.compose.EditorTarget, m.compose.ReviewerTarget)
+	}
+	if err := m.setMode("adversarial"); err != nil {
+		t.Fatal(err)
+	}
+	if m.compose.EditorTarget != "codex:custom-coder" {
+		t.Fatalf("restored adversarial coder = %q", m.compose.EditorTarget)
 	}
 }
 
@@ -336,6 +417,10 @@ func TestRoleSpecificCommandsRejectWrongMode(t *testing.T) {
 	if !strings.Contains(m.statusMessage, "only available") {
 		t.Fatalf("coder in supervisor mode = %q, want clear mode error", m.statusMessage)
 	}
+	m.applyCommand(nil, "/model reviewer claude:opus")
+	if !strings.Contains(m.statusMessage, "not part of supervisor mode") {
+		t.Fatalf("role-first reviewer in supervisor mode = %q, want clear mode error", m.statusMessage)
+	}
 
 	m.applyCommand(nil, "/mode relay")
 	m.applyCommand(nil, "/reviewer claude:opus")
@@ -367,6 +452,7 @@ func TestDisplayedSlashCommandsAreRecognized(t *testing.T) {
 		"/watch latest",
 		"/watch active",
 		"/watch run-123",
+		"/team",
 		"/settings",
 		"/profiles",
 		"/profile off",

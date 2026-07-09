@@ -123,8 +123,14 @@ func Run(ctx context.Context, opts RunOptions, out *os.File, in *os.File) error 
 
 func renderFrame(out *os.File, model *model) {
 	model.updateTerminalSize(out)
-	_, _ = out.WriteString("\x1b[H\x1b[2J")
-	_, _ = out.WriteString(normalizeTerminalNewlines(renderDashboard(model)))
+	_, _ = out.WriteString(terminalFrame(model))
+}
+
+func terminalFrame(model *model) string {
+	// A newline after a full-width bottom row scrolls some terminals and drops
+	// the first dashboard line. The next frame clears the screen, so omit it.
+	dashboard := strings.TrimSuffix(renderDashboard(model), "\n")
+	return "\x1b[H\x1b[2J" + normalizeTerminalNewlines(dashboard)
 }
 
 func readInputChunks(in *os.File, inputCh chan<- []byte, errCh chan<- error) {

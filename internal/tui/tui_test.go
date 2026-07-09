@@ -98,6 +98,17 @@ func TestRunNonTTYNoRunsRendersComposeAndReturns(t *testing.T) {
 	}
 }
 
+func TestTerminalFrameOmitsBottomRowNewline(t *testing.T) {
+	m := fixtureModel()
+	frame := terminalFrame(m)
+	if !strings.HasPrefix(frame, "\x1b[H\x1b[2J") {
+		t.Fatalf("terminal frame missing clear sequence: %q", frame[:minInt(len(frame), 16)])
+	}
+	if strings.HasSuffix(frame, "\n") || strings.HasSuffix(frame, "\r") {
+		t.Fatal("terminal frame ends with a newline that can scroll the bottom row")
+	}
+}
+
 func TestRunMissingRunDirReturnsError(t *testing.T) {
 	workdir := t.TempDir()
 	inRead, inWrite, err := os.Pipe()

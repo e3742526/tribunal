@@ -146,6 +146,14 @@ func renderOverlayLines(model *model, maxHeight int) []string {
 		lines = append(lines, box("Commands", width, len(content)+2, content)...)
 		lines = append(lines, "")
 		return lines
+	case model.teamOpen:
+		team := model.teamLines()
+		selectedLine := model.selectedTeam + 1
+		content := trimBlankTail(viewport(team, viewportStart(len(team), selectedLine, contentHeight), contentHeight))
+		lines := []string{""}
+		lines = append(lines, box("Team · "+string(model.compose.Mode), minInt(width, 96), len(content)+2, content)...)
+		lines = append(lines, "")
+		return lines
 	case model.settingsOpen:
 		settings := model.settingsLines()
 		selectedLine := model.selectedField + 1
@@ -219,7 +227,8 @@ func renderSlashCommandLines(model *model, height, width int) []string {
 func slashCommands() []slashCommand {
 	return []slashCommand{
 		{Name: "/run", Description: "Launch the current draft"},
-		{Name: "/model <target>", Description: "Choose the primary model for this mode"},
+		{Name: "/team", Description: "Choose orchestration mode and assign role models"},
+		{Name: "/model <role> <target>", Description: "Choose a role, then assign its model"},
 		{Name: "/profile <name>", Description: "Apply a named profile or /profile off"},
 		{Name: "/mode <mode>", Description: "Switch between supervisor, relay, solo, adversarial"},
 		{Name: "/worker <target>", Description: "Set the worker target for solo/supervisor/relay"},
@@ -229,7 +238,7 @@ func slashCommands() []slashCommand {
 		{Name: "/scout <target>", Description: "Set the relay scout target"},
 		{Name: "/codex-effort <level>", Description: "Set Codex reasoning effort"},
 		{Name: "/claude-effort <level>", Description: "Set Claude effort"},
-		{Name: "/settings", Description: "Open all run settings"},
+		{Name: "/settings", Description: "Open execution policy settings"},
 		{Name: "/scout-mode <mode>", Description: "Set relay pre-scout mode: recon/lint/polish/tests/risk"},
 		{Name: "/post-scout-mode <mode>", Description: "Set relay post-scout mode"},
 		{Name: "/strict-scout on|off", Description: "Fail relay when scout execution fails"},

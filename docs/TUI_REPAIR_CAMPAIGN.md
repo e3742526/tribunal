@@ -53,3 +53,8 @@ pickers for models, profiles, modes, effort, and enumerated settings; filtered
 irrelevant role commands by mode; made Enter accept the highlighted choice;
 exposed Codex and Claude effort in Settings; removed repeated dashboard hints;
 and compacted filtered overlays to their content.
+
+A subsequent multi-agent UX pass separated team composition from execution
+policy. The `m` / `/team` surface now shows each active role, its authority, and
+its assigned model, while `/model` uses a role-first picker before showing
+compatible targets. The `s` / `/settings` surface is reserved for run policy.

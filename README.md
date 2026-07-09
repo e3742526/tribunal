@@ -637,7 +637,8 @@ tagteam tui [RUN_ID]
 The dashboard has three main surfaces:
 
 - a compose surface for prompt entry and run launch
-- an on-demand settings panel for mode, role-aware targets, profiles, provider effort, rounds, tests, and core toggles
+- an on-demand Team builder for orchestration mode, profiles, provider effort, and role-aware model assignments
+- an execution Settings panel for rounds, tests, scout policy, slicing, worktree safety, and JSON repair
 - a scrollable run-detail view showing status, roles, plan items, findings, changed files, and artifact paths
 
 It polls the run directory once a second while a run is active and can also launch a new run directly through the same config/runner path as the normal CLI.
@@ -648,9 +649,11 @@ Core keyboard affordances:
 
 - `j` / `k` or arrows move selection and scroll
 - `g` launches the composed run
-- `/` opens a mode-aware command palette; typing `/model `, `/profile `, `/mode `, `/codex-effort `, or `/claude-effort ` shows valid values, and arrows plus Enter apply the highlighted choice
+- `m` opens the Team builder, where each role states whether it writes code or acts read-only
+- `/` opens a mode-aware command palette; `/model ` first selects a role and then its model, while `/profile `, `/mode `, `/codex-effort `, and `/claude-effort ` show valid values
+- `/team` opens the same Team builder; direct role-first commands such as `/model supervisor codex:gpt-5.6-sol` are also accepted
 - direct commands remain available, including `/supervisor codex:gpt-5.6-sol`, `/scout agy:Gemini 3.5 Flash (Medium)`, `/rounds 3`, `/watch latest`, and `/scout-retrieval off`
-- `s` opens settings
+- `s` opens execution Settings
 - `u` opens recent runs
 - `r` refreshes
 - `p`, `f`, `a`, and `t` toggle detail sections

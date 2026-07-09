@@ -86,7 +86,7 @@ func TestRenderDashboardIncludesCorePanels(t *testing.T) {
 		"Plan (running, 2 items):",
 		"Review summary: Fix the failing edge case.",
 		"Changed files (2):",
-		"Enter edit  / commands",
+		"Enter edit  m team  / commands",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
@@ -118,14 +118,31 @@ func TestRenderDashboardSettingsOverlay(t *testing.T) {
 	out := renderDashboard(m)
 	for _, want := range []string{
 		"Settings",
-		"profile: off",
-		"mode: supervisor",
-		"worker: agy:Gemini 3.5 Flash (High)",
+		"Execution policy only.",
+		"rounds: 2",
+		"test:",
+		"allow-dirty:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderDashboardTeamOverlayExplainsRoleAuthority(t *testing.T) {
+	m := fixtureModel()
+	m.teamOpen = true
+	out := renderDashboard(m)
+	for _, want := range []string{
+		"Team · supervisor",
+		"Build the team:",
+		"worker [writes code]: agy:Gemini 3.5 Flash (High)",
+		"supervisor [plans + reviews · read-only]: claude:opus",
 		"codex effort:",
 		"claude effort:",
 	} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
+			t.Fatalf("team overlay missing %q\nfull output:\n%s", want, out)
 		}
 	}
 }
@@ -137,9 +154,10 @@ func TestRenderDashboardCommandOverlay(t *testing.T) {
 	out := renderDashboard(m)
 	for _, want := range []string{
 		"Commands",
+		"/team",
 		"/profile <name>",
-		"/model",
-		"Choose the primary model for this mode",
+		"/model <role> <target>",
+		"Choose a role, then assign its model",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
@@ -147,15 +165,23 @@ func TestRenderDashboardCommandOverlay(t *testing.T) {
 	}
 }
 
-func TestRenderDashboardModelPickerShowsExactTargets(t *testing.T) {
+func TestRenderDashboardModelPickerShowsRolesBeforeTargets(t *testing.T) {
 	m := fixtureModel()
 	m.commandMode = true
 	m.commandBuffer = "model "
 	m.targetChoices = []string{"claude:claude-sonnet-5", "codex:gpt-5.6-terra"}
 	out := renderDashboard(m)
-	for _, want := range []string{"/model claude:claude-sonnet-5", "/model codex:gpt-5.6-terra", "current"} {
+	for _, want := range []string{"/model worker <target>", "/model supervisor <target>", "writes code", "read-only"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("model picker missing %q:\n%s", want, out)
+			t.Fatalf("model role picker missing %q:\n%s", want, out)
+		}
+	}
+
+	m.commandBuffer = "model worker "
+	out = renderDashboard(m)
+	for _, want := range []string{"/model worker claude:claude-sonnet-5", "/model worker codex:gpt-5.6-terra"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("model target picker missing %q:\n%s", want, out)
 		}
 	}
 }
