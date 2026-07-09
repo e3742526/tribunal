@@ -28,6 +28,21 @@ func Run(ctx context.Context, workdir, runDir string, out *os.File, in *os.File)
 		}
 	}
 
+	// One long-lived reader goroutine feeds every tick's key-wait from a
+	// shared channel for the life of Run. A fresh reader per tick would leave
+	// each timed-out tick's goroutine blocked on the next keypress forever
+	// (os.File reads cannot be canceled from another goroutine) -- and worse,
+	// a keypress landing on an abandoned prior-tick goroutine's private
+	// channel would never reach the tick actually waiting for it, making the
+	// keypress appear to do nothing.
+	var keyCh chan byte
+	var errCh chan error
+	if isTTY {
+		keyCh = make(chan byte, 16)
+		errCh = make(chan error, 1)
+		go readKeys(in, keyCh, errCh)
+	}
+
 	for {
 		snapshot, err := tagteam.BuildRunSnapshot(workdir, runDir)
 		if err != nil {
@@ -46,7 +61,7 @@ func Run(ctx context.Context, workdir, runDir string, out *os.File, in *os.File)
 			return nil
 		}
 
-		key, timedOut, err := waitForKey(ctx, in, isTTY)
+		key, timedOut, err := waitForKey(ctx, keyCh, errCh, isTTY)
 		if err != nil {
 			return nil
 		}
@@ -80,13 +95,26 @@ func clearScreen(out *os.File) {
 	_, _ = out.WriteString("\x1b[H\x1b[2J")
 }
 
-// waitForKey waits up to one poll interval for a single keypress. On a
-// non-TTY stdin (CI, piped input) there is no interactive key to read, so it
-// just sleeps out the tick. Each tick that times out on a TTY leaves its read
-// goroutine blocked on the next keypress rather than canceled -- os.File
-// reads cannot be interrupted from another goroutine, so the leaked reads are
-// left to resolve (and be discarded) whenever the user does press a key.
-func waitForKey(ctx context.Context, in *os.File, isTTY bool) (key byte, timedOut bool, err error) {
+// readKeys reads single bytes from in until it errors (EOF, closed fd, etc.),
+// pushing each byte onto keyCh. It runs for the lifetime of one Run call.
+func readKeys(in *os.File, keyCh chan<- byte, errCh chan<- error) {
+	buf := make([]byte, 1)
+	for {
+		n, err := in.Read(buf)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if n > 0 {
+			keyCh <- buf[0]
+		}
+	}
+}
+
+// waitForKey waits up to one poll interval for a single keypress from the
+// shared reader channels. On a non-TTY stdin (CI, piped input) there is no
+// interactive key to read, so it just sleeps out the tick.
+func waitForKey(ctx context.Context, keyCh <-chan byte, errCh <-chan error, isTTY bool) (key byte, timedOut bool, err error) {
 	if !isTTY {
 		select {
 		case <-ctx.Done():
@@ -95,20 +123,6 @@ func waitForKey(ctx context.Context, in *os.File, isTTY bool) (key byte, timedOu
 			return 0, true, nil
 		}
 	}
-
-	keyCh := make(chan byte, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 1)
-		n, readErr := in.Read(buf)
-		if readErr != nil {
-			errCh <- readErr
-			return
-		}
-		if n > 0 {
-			keyCh <- buf[0]
-		}
-	}()
 
 	select {
 	case <-ctx.Done():

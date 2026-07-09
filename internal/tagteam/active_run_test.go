@@ -154,6 +154,50 @@ func TestRunSolo_SuccessfulRunRemovesActivePointer(t *testing.T) {
 	}
 }
 
+// TestRunSolo_MidRunFailureSnapshotReportsFailedNotRunning is an end-to-end
+// regression test: runSolo has no recovery defer to rewrite state.json on a
+// mid-run adapter failure (unlike runLoop/Review), so BuildRunSnapshot must
+// still surface the failure via active.json rather than showing the dead run
+// as still "running" forever.
+func TestRunSolo_MidRunFailureSnapshotReportsFailedNotRunning(t *testing.T) {
+	installFakeBinaries(t, map[string]string{"claude": fakeClaudeInvokeFailScript})
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	app := NewApp(DefaultConfig())
+	final, err := app.Run(context.Background(), RunOptions{
+		Prompt:  "add a feature",
+		Workdir: repo,
+		Mode:    ModeSolo,
+		Coder:   RoleTarget{Adapter: "claude"},
+		Rounds:  1,
+		Timeout: 10 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected the solo coder adapter to fail")
+	}
+	if final.RunDir == "" {
+		t.Fatal("expected a run dir for the failed solo run")
+	}
+
+	snapshot, err := BuildRunSnapshot(repo, final.RunDir)
+	if err != nil {
+		t.Fatalf("BuildRunSnapshot() error = %v", err)
+	}
+	if snapshot.Status == "running" {
+		t.Fatal("snapshot must not report a dead solo run as still running")
+	}
+	if snapshot.Status != "failed" {
+		t.Fatalf("status = %q, want failed", snapshot.Status)
+	}
+}
+
 func TestRunLoop_FailureAfterRunDirCreationDoesNotLeaveActiveRunning(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")

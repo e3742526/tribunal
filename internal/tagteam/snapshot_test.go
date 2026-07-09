@@ -190,6 +190,32 @@ func TestBuildRunSnapshot_ExposesDegradedAndBlockingReasonConsistently(t *testin
 	}
 }
 
+// TestBuildRunSnapshot_ActiveJSONFailedOverridesStaleRunningState is a
+// regression test for a bug where BuildRunSnapshot let a stale state.json
+// "running" status clobber a correctly-marked "failed" active.json. This is
+// exactly what happens for runSolo, which (unlike runLoop/Review) has no
+// recovery defer to rewrite state.json on a mid-run error: only active.json
+// gets updated when the run aborts.
+func TestBuildRunSnapshot_ActiveJSONFailedOverridesStaleRunningState(t *testing.T) {
+	workdir, runDir, runID := newRunDirForSnapshotTest(t)
+	// state.json is left at its initial "running" value, as it would be if
+	// the process errored out before ever rewriting it.
+	state := RunState{RunID: runID, Mode: ModeSolo, Status: "running", Phase: "solo"}
+	if err := writeJSONWithNewline(filepath.Join(runDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	activateRun(workdir, runID, runDir, ModeSolo)
+	deactivateRun(workdir, runID, false)
+
+	snapshot, err := BuildRunSnapshot(workdir, runDir)
+	if err != nil {
+		t.Fatalf("BuildRunSnapshot() error = %v", err)
+	}
+	if snapshot.Status != "failed" {
+		t.Fatalf("status = %q, want failed (active.json must win over stale state.json)", snapshot.Status)
+	}
+}
+
 func TestBuildRunSnapshot_MatchesCompletedSoloRun(t *testing.T) {
 	installFakeClaudeBinary(t)
 

@@ -29,19 +29,9 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 		RunDir:        runDir,
 	}
 
-	if active, err := readActiveRun(workdir); err == nil && active.RunID == snapshot.RunID {
-		snapshot.Mode = active.Mode
-		snapshot.Status = active.Status
-		snapshot.UpdatedAt = active.UpdatedAt
-	}
-
 	if state, err := readRunState(runDir); err == nil {
-		if snapshot.Mode == "" {
-			snapshot.Mode = state.Mode
-		}
-		if state.Status != "" {
-			snapshot.Status = state.Status
-		}
+		snapshot.Mode = state.Mode
+		snapshot.Status = state.Status
 		snapshot.Phase = state.Phase
 		snapshot.Degraded = state.Degraded
 		snapshot.DegradedReason = state.DegradedReason
@@ -51,8 +41,22 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 		snapshot.LatestDiffPath = state.LatestDiffPath
 		snapshot.LatestReviewPath = state.LatestReviewPath
 		snapshot.ExitCode = state.ExitCode
-		if state.UpdatedAt.After(snapshot.UpdatedAt) {
-			snapshot.UpdatedAt = state.UpdatedAt
+		snapshot.UpdatedAt = state.UpdatedAt
+	}
+
+	// active.json is kept current by the same run-lifecycle defer on every
+	// entrypoint, including ones (like solo runs) that do not rewrite
+	// state.json on every error path -- so once it names this run, its
+	// Status/Mode are a fresher signal than a possibly-stale state.json and
+	// must win over it. final.json below is the authoritative terminal
+	// record and wins over both once it exists.
+	if active, err := readActiveRun(workdir); err == nil && active.RunID == snapshot.RunID {
+		if active.Mode != "" {
+			snapshot.Mode = active.Mode
+		}
+		snapshot.Status = active.Status
+		if active.UpdatedAt.After(snapshot.UpdatedAt) {
+			snapshot.UpdatedAt = active.UpdatedAt
 		}
 	}
 

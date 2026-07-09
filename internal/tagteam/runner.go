@@ -646,7 +646,6 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	final.Review = review
 	final.Costs = map[string]float64{reviewerLabel: cost}
 	final.FinishedAt = time.Now().UTC()
-	runCompleted = true
 	if opts.FailOnReview && review.HasBlockingFindings() {
 		final.ExitCode = ExitBlockingFindings
 	}
@@ -661,6 +660,11 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// runCompleted is set only once every artifact this function is
+	// responsible for persisting has actually been written -- a persistFinal
+	// failure above must leave the active-run pointer marked failed (not
+	// cleared), since latest.json/final.json may not reflect this run either.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("review found blocking issues")}
 	}
@@ -1068,7 +1072,6 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 		final.Summary = strings.TrimSpace(final.Summary + "\n\nReview was not run in solo mode.")
 	}
 	final.FinishedAt = time.Now().UTC()
-	runCompleted = true
 	final.ExitCode = a.computeExitCode(final)
 	applyInvocationBudget(&final, budget)
 	finalizeRunState(&final)
@@ -1077,6 +1080,9 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// See the equivalent comment in Review: only mark the active-run pointer
+	// completed once persistFinal has actually succeeded.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("run completed with exit code %d", final.ExitCode)}
 	}
@@ -1927,7 +1933,6 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 
 	final.ChangedFiles = latestDiffArtifact.ChangedFiles()
 	final.FinishedAt = time.Now().UTC()
-	runCompleted = true
 	final.ExitCode = a.computeExitCode(final)
 	if final.ExitCode == ExitSuccess && final.Review != nil && final.Review.OnlyMinorOrNit() && len(final.Review.Findings) > 0 {
 		final.DegradedReason = "review_passed_with_nonblocking_findings"
@@ -1956,6 +1961,10 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// See the equivalent comment in Review: only mark the active-run pointer
+	// completed once every artifact this function persists (execution plan,
+	// then final.json/latest.json) has actually been written.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("run completed with exit code %d", final.ExitCode)}
 	}
