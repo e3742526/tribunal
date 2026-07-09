@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/cephalopod-ai/tagteam/internal/tagteam"
 )
@@ -133,23 +132,6 @@ func TestWaitForKeyCompletedInteractiveWaitsForExplicitQuit(t *testing.T) {
 	}
 	if got != 'q' {
 		t.Fatalf("waitForKey key = %q, want q", got)
-	}
-}
-
-func TestFormatForTerminalWrapsLongIndentedLines(t *testing.T) {
-	input := "  [R1-F1] needs_arbitration Rewrites the CLI help text and several flag descriptions.\n"
-	got := formatForTerminal(input, 40)
-	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected wrapped output to span multiple lines, got:\n%s", got)
-	}
-	for _, line := range lines {
-		if utf8.RuneCountInString(line) > 40 {
-			t.Fatalf("wrapped line exceeds width: %q", line)
-		}
-	}
-	if !strings.HasPrefix(lines[1], "    ") {
-		t.Fatalf("expected continuation indentation, got %q", lines[1])
 	}
 }
 

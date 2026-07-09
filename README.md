@@ -22,7 +22,7 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 ## Contents
 
 - [Highlights](#highlights)
-- [What's New In v0.2.0](#whats-new-in-v020)
+- [What's New In v0.1.4](#whats-new-in-v014)
 - [Modes](#modes)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [Status](#status)
@@ -50,9 +50,9 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 >
 > **Why it's simple:** if you're a serious coder who wants fine-grained control over every agent, `tagteam` is probably too simple for you — and that's fine.
 
-## What's New In v0.2.0
+## What's New In v0.1.4
 
-- **New read-only TUI.** `tagteam tui [RUN_ID]` gives a live terminal view of a run's status, plan, findings, changed files, and artifact paths without invoking agents or mutating the run.
+- **TUI scaffold/start.** `tagteam tui [RUN_ID]` is an early scaffold for a future live terminal view. It is not currently reliable or functional enough to depend on for normal use.
 - **Better live-state observability.** In-progress runs now publish `.tagteam/active.json`, richer `state.json` updates, and a shared run snapshot surface that powers both the TUI and status-style views.
 - **Opt-in JSON repair for malformed contract output.** `--repair-json-with-worker` and `json_repair = "worker"` explicitly allow the selected worker to act as a read-only parser workaround for invalid JSON artifacts; repaired runs are marked degraded with `json_repair_used`.
 - **More resilient Claude-heavy setups.** The built-in `claude-failover` profile adds target-specific fallbacks from Claude supervisor/reviewer roles to Codex models when those invocations fail.
@@ -94,7 +94,7 @@ Full documentation — architecture, more diagrams, and the test ledger — is i
 
 ## Status
 
-This repository now reflects the `v0.2.0` CLI surface: the core run loop, adapter abstraction, persisted run artifacts, live status/TUI plumbing, and the main command set are all implemented. Remaining rough edges are mostly adapter-behavior issues and post-release ergonomics rather than missing core workflow support.
+This repository now reflects most of the `v0.1.4` CLI surface: the core run loop, adapter abstraction, persisted run artifacts, live status plumbing, and the main command set are implemented. The `tui` command exists as an early scaffold only and should not be treated as functional production behavior yet. Remaining rough edges are mostly adapter-behavior issues, TUI incompleteness, and post-release ergonomics rather than missing core workflow support.
 
 Recent additions in this repo:
 
@@ -194,7 +194,7 @@ Binary releases are published for:
 > [!NOTE]
 > Windows is not validated. The test suite relies on POSIX shell adapters, so `tagteam` is only exercised and released on macOS and Linux. It may well build and run on Windows — if you get it working and verify it, open an issue or PR and I'm more than happy to add Windows back to CI and releases.
 
-Create a release by pushing a tag such as `v0.2.0`; GitHub Actions runs Go checks on macOS and Linux, then GoReleaser attaches archives plus `checksums.txt` to the release.
+Create a release by pushing a tag such as `v0.1.4`; GitHub Actions runs Go checks on macOS and Linux, then GoReleaser attaches archives plus `checksums.txt` to the release.
 
 Build from source:
 
@@ -612,13 +612,16 @@ Diff artifacts are captured through a temporary Git index, not the real staging 
 tagteam tui [RUN_ID]
 ```
 
-`tagteam tui` is a read-only terminal view of a run: a header (run id, mode, status, phase, verdict, exit code), role statuses, the plan checklist (when `plan.json` exists), a findings count, changed files, and the latest diff/review/test artifact paths. It polls the run directory once a second while the run is `running`. In an interactive terminal it keeps the final view open until you quit; in non-interactive output it returns immediately once the run reaches a terminal state.
+> [!WARNING]
+> `tagteam tui` is currently scaffold-stage only. The command surface exists, but the interactive experience is not yet reliable enough to call functional. Treat it as a development stub, not a supported workflow.
 
-With no `RUN_ID` it prefers the active run (`.tagteam/active.json`, if `status` is `running`) and otherwise falls back to the most recent completed run (`.tagteam/latest.json`), the same run `tagteam status` would show.
+The intended shape of `tagteam tui` is a read-only terminal view of a run: a header (run id, mode, status, phase, verdict, exit code), role statuses, the plan checklist (when `plan.json` exists), a findings count, changed files, and the latest diff/review/test artifact paths. It is meant to poll the run directory once a second while the run is `running`, keep the final view open in an interactive terminal until you quit, and return immediately in non-interactive output once the run reaches a terminal state.
 
-Keyboard: `q` quit, `r` refresh, `p` toggle the plan panel, `f` toggle the findings panel, `d` toggle the changed-files/artifact-paths panel.
+When it is eventually stabilized, no `RUN_ID` will prefer the active run (`.tagteam/active.json`, if `status` is `running`) and otherwise fall back to the most recent completed run (`.tagteam/latest.json`), the same run `tagteam status` would show.
 
-`tui` only reads `active.json`, `state.json`, `final.json`, and `plan.json` from the run directory (the same sources `RunSnapshot` assembles for `tagteam status --json`). It never invokes an adapter, writes to a run directory, or edits a plan — it does not control agents, and it is not a replacement for `status`, `plan`, or `transcript`, which remain the source of truth for their respective one-shot views.
+The current scaffold includes planned keyboard affordances: `q` quit, `r` refresh, `p` toggle the plan panel, `f` toggle the findings panel, `d` toggle the changed-files/artifact-paths panel.
+
+Its intended data path is read-only: `active.json`, `state.json`, `final.json`, and `plan.json` from the run directory (the same sources `RunSnapshot` assembles for `tagteam status --json`). Even once completed, it should never invoke an adapter, write to a run directory, or edit a plan; `status`, `plan`, and `transcript` remain the source of truth for their respective one-shot views.
 
 ## Development
 

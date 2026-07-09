@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -62,7 +61,11 @@ func Run(ctx context.Context, workdir, runDir string, out *os.File, in *os.File)
 		}
 		var rendered bytes.Buffer
 		Render(&rendered, snapshot, planPtr, toggles)
-		_, _ = out.WriteString(prepareTerminalOutput(rendered.String(), terminalWidth(out), interactive))
+		output := rendered.String()
+		if interactive {
+			output = normalizeTerminalNewlines(output)
+		}
+		_, _ = out.WriteString(output)
 
 		running := snapshot.Status == "running"
 		if !interactive && !running {
@@ -89,17 +92,6 @@ func Run(ctx context.Context, workdir, runDir string, out *os.File, in *os.File)
 			toggles.ShowArtifacts = !toggles.ShowArtifacts
 		}
 	}
-}
-
-func terminalWidth(out *os.File) int {
-	if out == nil {
-		return 0
-	}
-	width, _, err := term.GetSize(int(out.Fd()))
-	if err != nil || width < 20 {
-		return 0
-	}
-	return width
 }
 
 func readPlan(runDir string) (tagteam.ExecutionPlan, bool) {
@@ -164,102 +156,6 @@ func waitForKey(ctx context.Context, keyCh <-chan byte, errCh <-chan error, isTT
 	case <-time.After(pollInterval):
 		return 0, true, nil
 	}
-}
-
-func prepareTerminalOutput(text string, width int, interactive bool) string {
-	text = formatForTerminal(text, width)
-	if interactive {
-		text = normalizeTerminalNewlines(text)
-	}
-	return text
-}
-
-func formatForTerminal(text string, width int) string {
-	if width <= 0 || text == "" {
-		return text
-	}
-	lines := strings.Split(text, "\n")
-	var out []string
-	for _, line := range lines {
-		out = append(out, wrapLine(line, width)...)
-	}
-	return strings.Join(out, "\n")
-}
-
-func wrapLine(line string, width int) []string {
-	if width <= 0 || utf8.RuneCountInString(line) <= width {
-		return []string{line}
-	}
-	indent := leadingWhitespace(line)
-	continuation := indent + "  "
-	words := strings.Fields(line)
-	if len(words) == 0 {
-		return []string{line}
-	}
-
-	var lines []string
-	current := indent
-	wordsOnLine := 0
-	for _, word := range words {
-		for len(word) > 0 {
-			candidate := word
-			if wordsOnLine > 0 {
-				candidate = current + " " + word
-			} else {
-				candidate = current + word
-			}
-			if utf8.RuneCountInString(candidate) <= width {
-				current = candidate
-				wordsOnLine++
-				break
-			}
-
-			if wordsOnLine > 0 {
-				lines = append(lines, current)
-				current = continuation
-				wordsOnLine = 0
-				continue
-			}
-
-			available := width - utf8.RuneCountInString(current)
-			if available <= 0 {
-				lines = append(lines, current)
-				current = continuation
-				continue
-			}
-			part, rest := splitRunes(word, available)
-			lines = append(lines, current+part)
-			current = continuation
-			word = rest
-		}
-	}
-	lines = append(lines, current)
-	return lines
-}
-
-func leadingWhitespace(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r != ' ' && r != '\t' {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-func splitRunes(s string, limit int) (head, tail string) {
-	if limit <= 0 || s == "" {
-		return "", s
-	}
-	count := 0
-	for i := range s {
-		if count == limit {
-			return s[:i], s[i:]
-		}
-		count++
-	}
-	return s, ""
 }
 
 func normalizeTerminalNewlines(s string) string {
