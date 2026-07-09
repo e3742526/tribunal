@@ -22,6 +22,7 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 ## Contents
 
 - [Highlights](#highlights)
+- [What's New In v0.2.0](#whats-new-in-v020)
 - [Modes](#modes)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [Status](#status)
@@ -48,6 +49,14 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 > **Why it exists:** a quick way to combine agent CLIs without configuring each one from scratch, that still fits enough situations to be worth reaching for by default.
 >
 > **Why it's simple:** if you're a serious coder who wants fine-grained control over every agent, `tagteam` is probably too simple for you — and that's fine.
+
+## What's New In v0.2.0
+
+- **New read-only TUI.** `tagteam tui [RUN_ID]` gives a live terminal view of a run's status, plan, findings, changed files, and artifact paths without invoking agents or mutating the run.
+- **Better live-state observability.** In-progress runs now publish `.tagteam/active.json`, richer `state.json` updates, and a shared run snapshot surface that powers both the TUI and status-style views.
+- **Opt-in JSON repair for malformed contract output.** `--repair-json-with-worker` and `json_repair = "worker"` explicitly allow the selected worker to act as a read-only parser workaround for invalid JSON artifacts; repaired runs are marked degraded with `json_repair_used`.
+- **More resilient Claude-heavy setups.** The built-in `claude-failover` profile adds target-specific fallbacks from Claude supervisor/reviewer roles to Codex models when those invocations fail.
+- **Documentation and release hardening.** The user manual, architecture docs, diagrams, and test ledger now describe the current command surface and run-state model.
 
 ## Modes
 
@@ -85,7 +94,7 @@ Full documentation — architecture, more diagrams, and the test ledger — is i
 
 ## Status
 
-This repository is an early implementation of the v2 design. The core run loop, adapter abstraction, persisted run artifacts, and main command surface are in place. Some hardening and release work is still pending.
+This repository now reflects the `v0.2.0` CLI surface: the core run loop, adapter abstraction, persisted run artifacts, live status/TUI plumbing, and the main command set are all implemented. Remaining rough edges are mostly adapter-behavior issues and post-release ergonomics rather than missing core workflow support.
 
 Recent additions in this repo:
 
@@ -94,8 +103,10 @@ Recent additions in this repo:
 - solo mode is available with `--solo <adapter[:model]>`
 - adversarial coder/adversary mode remains available for backward compatibility
 - saved run artifacts include briefs, diffs, reviews, tests, and final summaries
+- active runs publish `.tagteam/active.json` so live views can discover in-flight work
 - command surface now includes `review`, `fix`, `status`, `plan`, `transcript`, `tui`, `doctor`, and `init`
 - config layering supports repo config, user config, env overrides, flags, and named profiles
+- explicit JSON repair is available through `--repair-json-with-worker` / `json_repair = "worker"`
 - explicit repo instruction files are loaded by default and appended to role prompts
 - machine-readable output and dry-run support make the CLI easier to script and debug
 
@@ -183,7 +194,7 @@ Binary releases are published for:
 > [!NOTE]
 > Windows is not validated. The test suite relies on POSIX shell adapters, so `tagteam` is only exercised and released on macOS and Linux. It may well build and run on Windows — if you get it working and verify it, open an issue or PR and I'm more than happy to add Windows back to CI and releases.
 
-Create a release by pushing a tag such as `v0.1.0`; GitHub Actions runs Go checks on macOS and Linux, then GoReleaser attaches archives plus `checksums.txt` to the release.
+Create a release by pushing a tag such as `v0.2.0`; GitHub Actions runs Go checks on macOS and Linux, then GoReleaser attaches archives plus `checksums.txt` to the release.
 
 Build from source:
 

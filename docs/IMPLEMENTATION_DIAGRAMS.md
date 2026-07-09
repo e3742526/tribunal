@@ -8,20 +8,47 @@ evidence note listing the source files the diagram was derived from.
 ```mermaid
 flowchart TD
     main["main.go"] --> cli["internal/cli (commands, flags)"]
+    cli --> tui["internal/tui (read-only terminal view)"]
     cli --> app["internal/tagteam App (runner.go)"]
     app --> config["config.go (layered resolution)"]
     app --> adapters["adapters.go (codex/claude/agy/gosling/openai)"]
+    app --> active["active_run.go (.tagteam/active.json)"]
+    app --> snapshot["snapshot.go (RunSnapshot assembly)"]
     app --> runstate["run_state.go (reasons, status, budgets)"]
     app --> orch["orchestration.go (host decision)"]
     app --> scout["retrieval.go / context_budget.go / scout_status.go"]
     app --> prompts["prompts.go / schema.go"]
     app --> redact["redact.go (persist-time redaction)"]
-    app --> artifacts[".tagteam/runs/&lt;run-id&gt;/ (final.json, state.json, diffs, reviews)"]
+    snapshot --> tui
+    active --> snapshot
+    app --> artifacts[".tagteam/runs/&lt;run-id&gt;/ (final.json, state.json, plan.json, diffs, reviews)"]
+    artifacts --> snapshot
 ```
 
 **Evidence:** `main.go`, `internal/cli/root.go`, `internal/tagteam/runner.go`,
-`config.go`, `adapters.go`, `run_state.go`, `orchestration.go`, `retrieval.go`,
-`context_budget.go`, `scout_status.go`, `prompts.go`, `schema.go`, `redact.go`.
+`internal/cli/tui.go`, `active_run.go`, `snapshot.go`, `config.go`,
+`adapters.go`, `run_state.go`, `orchestration.go`, `retrieval.go`,
+`context_budget.go`, `scout_status.go`, `prompts.go`, `schema.go`, `redact.go`,
+`internal/tui/*.go`.
+
+## Live status / TUI data flow
+
+```mermaid
+flowchart LR
+    runner["runner.go"] --> active[".tagteam/active.json"]
+    runner --> state["run state.json"]
+    runner --> final["run final.json"]
+    runner --> plan["run plan.json"]
+    active --> snap["BuildRunSnapshot"]
+    state --> snap
+    final --> snap
+    plan --> snap
+    snap --> status["status-style readers"]
+    snap --> tui["tagteam tui"]
+```
+
+**Evidence:** `internal/tagteam/runner.go`, `active_run.go`, `snapshot.go`,
+`types.go`, `internal/cli/tui.go`, `internal/tui/tui.go`.
 
 ## Reviewed-mode run loop
 
@@ -47,7 +74,7 @@ flowchart TD
     final --> done([exit code + reason])
 ```
 
-**Evidence:** `internal/tagteam/runner.go` (`Run`, `runLoop`,
+**Evidence:** `internal/tagteam/runner.go` (`Run`, `Review`, `runLoop`,
 `collectRoundLimitReports`), `run_state.go` (`finalizeRunState`,
 `classifyRoleFailure`, `reasonForExit`), `orchestration.go`.
 
