@@ -543,6 +543,9 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if prompt == "" {
 		if latestPrompt, _ := readLatestPrompt(opts.Workdir); latestPrompt != "" {
 			prompt = latestPrompt
@@ -657,6 +660,11 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// runCompleted is set only once every artifact this function is
+	// responsible for persisting has actually been written -- a persistFinal
+	// failure above must leave the active-run pointer marked failed (not
+	// cleared), since latest.json/final.json may not reflect this run either.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("review found blocking issues")}
 	}
@@ -949,6 +957,9 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1069,6 +1080,9 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// See the equivalent comment in Review: only mark the active-run pointer
+	// completed once persistFinal has actually succeeded.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("run completed with exit code %d", final.ExitCode)}
 	}
@@ -1185,6 +1199,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	activateRun(opts.Workdir, runID, runDir, opts.Mode)
+	runCompleted := false
+	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1944,6 +1961,10 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err := a.persistFinal(opts.Workdir, final); err != nil {
 		return final, err
 	}
+	// See the equivalent comment in Review: only mark the active-run pointer
+	// completed once every artifact this function persists (execution plan,
+	// then final.json/latest.json) has actually been written.
+	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("run completed with exit code %d", final.ExitCode)}
 	}

@@ -926,6 +926,35 @@ type RunState struct {
 	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
+// RunSnapshot is a compact, read-only view of a run assembled from whichever
+// of active.json/state.json/final.json/plan.json exist on disk. It is the
+// common status surface consumed by `tagteam status --json` and the TUI, so
+// neither has to reverse-engineer the full set of run artifacts.
+type RunSnapshot struct {
+	SchemaVersion    int                   `json:"schema_version"`
+	RunID            string                `json:"run_id"`
+	RunDir           string                `json:"run_dir"`
+	Mode             Mode                  `json:"mode,omitempty"`
+	Status           string                `json:"status,omitempty"`
+	Phase            string                `json:"phase,omitempty"`
+	Verdict          string                `json:"verdict,omitempty"`
+	ExitCode         int                   `json:"exit_code"`
+	Degraded         bool                  `json:"degraded"`
+	DegradedReason   string                `json:"degraded_reason,omitempty"`
+	BlockingReason   string                `json:"blocking_reason,omitempty"`
+	CurrentRound     int                   `json:"current_round,omitempty"`
+	RoundsCompleted  int                   `json:"rounds_completed,omitempty"`
+	RoundsRequested  int                   `json:"rounds_requested,omitempty"`
+	RoleStatuses     map[string]RoleStatus `json:"role_statuses,omitempty"`
+	PlanSummary      *PlanSummary          `json:"plan_summary,omitempty"`
+	LatestDiffPath   string                `json:"latest_diff_path,omitempty"`
+	LatestReviewPath string                `json:"latest_review_path,omitempty"`
+	LatestTestPath   string                `json:"latest_test_path,omitempty"`
+	ChangedFiles     []string              `json:"changed_files,omitempty"`
+	FindingsCount    int                   `json:"findings_count"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+}
+
 func (f FinalRun) MarshalJSON() ([]byte, error) {
 	type alias FinalRun
 	return json.Marshal(alias(f))

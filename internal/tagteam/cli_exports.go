@@ -12,6 +12,10 @@ func ReadPlanForCLI(runDir string) (ExecutionPlan, error) {
 	return readExecutionPlan(runDir)
 }
 
+func ReadActiveRunForCLI(workdir string) (ActiveRun, error) {
+	return readActiveRun(workdir)
+}
+
 func UserConfigPathForCLI() (string, error) {
 	return userConfigPath()
 }

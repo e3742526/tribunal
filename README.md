@@ -32,6 +32,7 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Run artifacts](#run-artifacts)
+- [TUI](#tui)
 - [Development](#development)
 - [Scope](#scope)
 - [License](#license)
@@ -93,7 +94,7 @@ Recent additions in this repo:
 - solo mode is available with `--solo <adapter[:model]>`
 - adversarial coder/adversary mode remains available for backward compatibility
 - saved run artifacts include briefs, diffs, reviews, tests, and final summaries
-- command surface now includes `review`, `fix`, `status`, `transcript`, `doctor`, and `init`
+- command surface now includes `review`, `fix`, `status`, `plan`, `transcript`, `tui`, `doctor`, and `init`
 - config layering supports repo config, user config, env overrides, flags, and named profiles
 - explicit repo instruction files are loaded by default and appended to role prompts
 - machine-readable output and dry-run support make the CLI easier to script and debug
@@ -107,6 +108,7 @@ tagteam fix
 tagteam status
 tagteam plan [RUN_ID]
 tagteam transcript [RUN_ID]
+tagteam tui [RUN_ID]
 tagteam doctor
 tagteam init
 ```
@@ -510,6 +512,24 @@ Each run writes artifacts under:
 .tagteam/runs/<run-id>/
 ```
 
+While a run is in progress, `.tagteam/active.json` points at it:
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "...",
+  "run_dir": ".tagteam/runs/...",
+  "state_path": ".tagteam/runs/.../state.json",
+  "final_path": ".tagteam/runs/.../final.json",
+  "mode": "supervisor",
+  "status": "running",
+  "started_at": "...",
+  "updated_at": "..."
+}
+```
+
+`active.json` exists only while the run is running. Once the run finishes it is either removed (the common case) or, if the process aborted through an error path after the run directory was created, left behind with `status: "failed"` so the run directory can still be inspected. `.tagteam/latest.json` is unaffected by this and keeps its existing meaning: the most recent run that reached `final.json`.
+
 <details>
 <summary><strong>Typical contents</strong></summary>
 
@@ -573,12 +593,26 @@ Diff artifacts are captured through a temporary Git index, not the real staging 
 > [!CAUTION]
 > Diagnostic output, delivery records, copied prompts, and raw/validation-error artifacts redact values from sensitive shell environment keys and the scoped `.env` overlay. Prompts, diffs, and model outputs are still persisted for inspectability, so do not paste secrets into task prompts or source files.
 
+## TUI
+
+```bash
+tagteam tui [RUN_ID]
+```
+
+`tagteam tui` is a read-only terminal view of a run: a header (run id, mode, status, phase, verdict, exit code), role statuses, the plan checklist (when `plan.json` exists), a findings count, changed files, and the latest diff/review/test artifact paths. It polls the run directory once a second while the run is `running`, and exits immediately once the run reaches a terminal state.
+
+With no `RUN_ID` it prefers the active run (`.tagteam/active.json`, if `status` is `running`) and otherwise falls back to the most recent completed run (`.tagteam/latest.json`), the same run `tagteam status` would show.
+
+Keyboard: `q` quit, `r` refresh, `p` toggle the plan panel, `f` toggle the findings panel, `d` toggle the changed-files/artifact-paths panel.
+
+`tui` only reads `active.json`, `state.json`, `final.json`, and `plan.json` from the run directory (the same sources `RunSnapshot` assembles for `tagteam status --json`). It never invokes an adapter, writes to a run directory, or edits a plan — it does not control agents, and it is not a replacement for `status`, `plan`, or `transcript`, which remain the source of truth for their respective one-shot views.
+
 ## Development
 
 Format and test:
 
 ```bash
-gofmt -w main.go internal/cli/root.go internal/tagteam/*.go
+gofmt -w main.go internal/cli/*.go internal/tagteam/*.go internal/tui/*.go
 go test ./...
 go vet ./...
 ```
