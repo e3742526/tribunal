@@ -153,4 +153,18 @@ func TestFormatForTerminalWrapsLongIndentedLines(t *testing.T) {
 	}
 }
 
+func TestNormalizeTerminalNewlinesUsesCRLF(t *testing.T) {
+	input := "one\ntwo\r\nthree\rfour"
+	got := normalizeTerminalNewlines(input)
+	if strings.Contains(got, "\n") && strings.Contains(got, "\r\n") {
+		withoutCRLF := strings.ReplaceAll(got, "\r\n", "")
+		if strings.Contains(withoutCRLF, "\n") {
+			t.Fatalf("expected only CRLF newlines, got %q", got)
+		}
+	}
+	if want := "one\r\ntwo\r\nthree\r\nfour"; got != want {
+		t.Fatalf("normalizeTerminalNewlines() = %q, want %q", got, want)
+	}
+}
+
 var _ tagteam.RunSnapshot // keeps the tagteam import honest if fixtures above change

@@ -62,7 +62,7 @@ func Run(ctx context.Context, workdir, runDir string, out *os.File, in *os.File)
 		}
 		var rendered bytes.Buffer
 		Render(&rendered, snapshot, planPtr, toggles)
-		_, _ = out.WriteString(formatForTerminal(rendered.String(), terminalWidth(out)))
+		_, _ = out.WriteString(prepareTerminalOutput(rendered.String(), terminalWidth(out), interactive))
 
 		running := snapshot.Status == "running"
 		if !interactive && !running {
@@ -166,6 +166,14 @@ func waitForKey(ctx context.Context, keyCh <-chan byte, errCh <-chan error, isTT
 	}
 }
 
+func prepareTerminalOutput(text string, width int, interactive bool) string {
+	text = formatForTerminal(text, width)
+	if interactive {
+		text = normalizeTerminalNewlines(text)
+	}
+	return text
+}
+
 func formatForTerminal(text string, width int) string {
 	if width <= 0 || text == "" {
 		return text
@@ -252,4 +260,10 @@ func splitRunes(s string, limit int) (head, tail string) {
 		count++
 	}
 	return s, ""
+}
+
+func normalizeTerminalNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return strings.ReplaceAll(s, "\n", "\r\n")
 }
