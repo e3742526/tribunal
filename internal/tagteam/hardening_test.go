@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +59,36 @@ func TestQualityGateRejectsOutOfScopeAndHostPaths(t *testing.T) {
 	findings := evaluateScopeFindings([]DiffFile{{Path: "other.go"}, {Path: ".tagteam/repo.json"}}, []string{"allowed.go"})
 	if len(findings) != 2 || findings[0].Severity != "major" || findings[1].Severity != "blocker" {
 		t.Fatalf("findings = %#v", findings)
+	}
+}
+
+func TestQualityGateAllowsDirectoryPrefix(t *testing.T) {
+	findings := evaluateScopeFindings([]DiffFile{{Path: ".github/workflows/ci.yml"}}, []string{".github/workflows/"})
+	if len(findings) != 0 {
+		t.Fatalf("directory prefix produced findings: %#v", findings)
+	}
+}
+
+func TestChurnWhitespaceRatioExcludesUntrackedDenominator(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	before := strings.Repeat("before\n", 60)
+	mustWriteFile(t, filepath.Join(repo, "tracked.txt"), before)
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "baseline")
+	mustWriteFile(t, filepath.Join(repo, "tracked.txt"), strings.Repeat("after\n", 60))
+	mustWriteFile(t, filepath.Join(repo, "new.txt"), strings.Repeat("new\n", 200))
+
+	findings := evaluateChurnFindings(context.Background(), repo, "HEAD", []DiffFile{
+		{Path: "tracked.txt", Additions: 60, Deletions: 60},
+		{Path: "new.txt", Additions: 200},
+	}, ChurnThresholds{MaxFiles: 10, MaxChangedLines: 1000, MaxFixtureFiles: 10, WhitespaceRatio: 0.5, MinimumSemanticRatio: 0.5})
+	for _, finding := range findings {
+		if finding.ID == "CHURN-WHITESPACE" || finding.ID == "CHURN-DENSITY" {
+			t.Fatalf("untracked additions distorted whitespace ratio: %#v", findings)
+		}
 	}
 }
 

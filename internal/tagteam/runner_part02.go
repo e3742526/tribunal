@@ -157,7 +157,19 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 	if final.Findings, err = updateFindingsLedger(runDir, 1, nil, &gateResult); err != nil {
 		return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("update findings ledger: %w", err)}
 	}
-	review, cost, outputPath, err := a.runAdversary(ctx, opts, 1, runDir, schemaPath, prompt, baseline, diffArtifact.Patch, diffArtifact.PatchPath, "", "", nil, RelayContext{}, repoInstructions, &final)
+	testOutput := ""
+	if opts.TestCmd != "" && !opts.NoTest {
+		testPath := filepath.Join(runDir, "test-round-1.txt")
+		logProgress(opts, "review tests started command=%q", opts.TestCmd)
+		testRun, testErr := runTestCommand(ctx, opts.Workdir, opts.TestCmd, opts.Timeout, testPath, opts.DryRun, opts.EnvOverlay, opts.MaxOutputBytes, opts.TestIdentityRegex)
+		if testErr != nil {
+			return final, testErr
+		}
+		final.Tests = append(final.Tests, testRun)
+		testOutput = reviewTestEvidence(testRun)
+		logProgress(opts, "review tests completed passed=%t output=%s", testRun.Passed, testPath)
+	}
+	review, cost, outputPath, err := a.runAdversary(ctx, opts, 1, runDir, schemaPath, prompt, baseline, diffArtifact.Patch, diffArtifact.PatchPath, testOutput, "", nil, RelayContext{}, repoInstructions, &final)
 	if err != nil {
 		return final, err
 	}

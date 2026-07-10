@@ -68,8 +68,12 @@ func normalizeAllowedScope(raw []string) []string {
 		if item == "" || filepath.IsAbs(item) || strings.Contains(item, "..") || strings.ContainsAny(item, `*?[]{}`) {
 			continue
 		}
+		directoryPrefix := strings.HasSuffix(item, "/")
 		if item != "." {
 			item = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(item)), "./")
+			if directoryPrefix {
+				item += "/"
+			}
 		}
 		if !seen[item] {
 			seen[item] = true
@@ -139,9 +143,10 @@ func evaluateChurnFindings(ctx context.Context, workdir, baseline string, files 
 	if fixtureFiles > thresholds.MaxFixtureFiles {
 		findings = append(findings, GateFinding{ID: "CHURN-FIXTURES", Gate: "churn", Severity: "major", Message: fmt.Sprintf("diff changes %d fixture files; threshold is %d", fixtureFiles, thresholds.MaxFixtureFiles)})
 	}
-	if changedLines >= 100 {
-		ignoreSpace := whitespaceInsensitiveChangedLines(ctx, workdir, baseline)
-		semanticRatio := float64(ignoreSpace) / float64(changedLines)
+	trackedChangedLines := gitChangedLines(ctx, workdir, baseline, false)
+	if trackedChangedLines >= 100 {
+		ignoreSpace := gitChangedLines(ctx, workdir, baseline, true)
+		semanticRatio := float64(ignoreSpace) / float64(trackedChangedLines)
 		whitespaceRatio := 1 - semanticRatio
 		if whitespaceRatio >= thresholds.WhitespaceRatio {
 			findings = append(findings, GateFinding{ID: "CHURN-WHITESPACE", Gate: "churn", Severity: "major", Message: fmt.Sprintf("estimated whitespace-only churn is %.0f%%", whitespaceRatio*100)})
@@ -153,8 +158,13 @@ func evaluateChurnFindings(ctx context.Context, workdir, baseline string, files 
 	return findings
 }
 
-func whitespaceInsensitiveChangedLines(ctx context.Context, workdir, baseline string) int {
-	out, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "diff", "-w", "--numstat", baseline, "--", ".", ":(exclude).tagteam")
+func gitChangedLines(ctx context.Context, workdir, baseline string, ignoreWhitespace bool) int {
+	args := []string{"diff"}
+	if ignoreWhitespace {
+		args = append(args, "-w")
+	}
+	args = append(args, "--numstat", baseline, "--", ".", ":(exclude).tagteam")
+	out, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, args...)
 	if err != nil {
 		return 0
 	}

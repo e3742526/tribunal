@@ -100,13 +100,25 @@ func captureAndTestRound(ctx context.Context, opts RunOptions, baseline, runDir,
 		comparison := compareRegression(*final.BaselineTest, testRun)
 		final.Regression = &comparison
 	}
-	testOutput = testRun.Output
+	testOutput = reviewTestEvidence(testRun)
 	if testRun.Passed {
 		logProgress(opts, "round %d tests passed output=%s", round, testPath)
 	} else {
 		logProgress(opts, "round %d tests failed output=%s", round, testPath)
 	}
 	return diffArtifact, testOutput, nil
+}
+
+func reviewTestEvidence(testRun TestRun) string {
+	result := "failed"
+	if testRun.Passed {
+		result = "passed"
+	}
+	output := strings.TrimSpace(testRun.Output)
+	if output == "" {
+		output = "(no output)"
+	}
+	return fmt.Sprintf("Command: %s\nResult: %s\nOutput:\n%s", testRun.Command, result, output)
 }
 
 func (a *App) runPostScout(ctx context.Context, opts RunOptions, round int, runDir, diff, testOutput, repoInstructions string, scout Adapter, registry map[string]Adapter, relay *RelayContext, final *FinalRun) error {

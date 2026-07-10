@@ -117,6 +117,44 @@ func TestReview_PreflightsReviewerRunnable(t *testing.T) {
 	}
 }
 
+func TestReviewRunsConfiguredTestAndIncludesEvidence(t *testing.T) {
+	installFakeBinaries(t, map[string]string{"claude": fakeClaudeScript})
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "before\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "baseline")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "after\n")
+	argsLog := filepath.Join(t.TempDir(), "claude.log")
+	t.Setenv("CLAUDE_ARGS_LOG", argsLog)
+
+	final, err := NewApp(DefaultConfig()).Review(context.Background(), RunOptions{
+		Workdir:        repo,
+		Mode:           ModeSupervisor,
+		Adversary:      RoleTarget{Adapter: "claude"},
+		TestCmd:        "printf trusted-review-test",
+		Timeout:        10 * time.Second,
+		MaxOutputBytes: 2 * 1024 * 1024,
+		EnvOverlay:     map[string]string{"CLAUDE_ARGS_LOG": argsLog},
+	}, "review the diff")
+	if err == nil {
+		t.Fatal("expected fake reviewer blocking finding")
+	}
+	if len(final.Tests) != 1 || !final.Tests[0].Passed {
+		t.Fatalf("tests = %#v", final.Tests)
+	}
+	logBytes, readErr := os.ReadFile(argsLog)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "Command: printf trusted-review-test") || !strings.Contains(logText, "trusted-review-test") {
+		t.Fatalf("review prompt missing trusted test evidence:\n%s", logText)
+	}
+}
+
 func TestReview_PersistsFinalOnReviewerFailure(t *testing.T) {
 	installFakeBinaries(t, map[string]string{"claude": fakeClaudeInvokeFailScript})
 
