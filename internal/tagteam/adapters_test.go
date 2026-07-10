@@ -310,7 +310,7 @@ func TestAgyBuildCmdCoder(t *testing.T) {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
 	want := []string{
-		"agy", "--print",
+		"agy", "--print=make it work",
 		"--model", "gemini-3.5-flash",
 		"--print-timeout", "15s",
 		"--dangerously-skip-permissions",
@@ -319,8 +319,8 @@ func TestAgyBuildCmdCoder(t *testing.T) {
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
 	}
-	if string(spec.Stdin) != "make it work\n" {
-		t.Fatalf("stdin = %q", string(spec.Stdin))
+	if len(spec.Stdin) != 0 {
+		t.Fatalf("stdin = %q, want empty", string(spec.Stdin))
 	}
 }
 
@@ -333,12 +333,12 @@ func TestAgyBuildCmdAdversary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print=review", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
 	}
-	if string(spec.Stdin) != "review\n" {
-		t.Fatalf("stdin = %q", string(spec.Stdin))
+	if len(spec.Stdin) != 0 {
+		t.Fatalf("stdin = %q, want empty", string(spec.Stdin))
 	}
 }
 
@@ -351,12 +351,12 @@ func TestAgyBuildCmdSupervisor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print=write a brief", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
 	}
-	if string(spec.Stdin) != "write a brief\n" {
-		t.Fatalf("stdin = %q", string(spec.Stdin))
+	if len(spec.Stdin) != 0 {
+		t.Fatalf("stdin = %q, want empty", string(spec.Stdin))
 	}
 }
 
@@ -369,12 +369,12 @@ func TestAgyBuildCmdReporter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "--model", "gemini-3.5-flash", "--sandbox"}
+	want := []string{"agy", "--print=report remaining work", "--model", "gemini-3.5-flash", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
 	}
-	if string(spec.Stdin) != "report remaining work\n" {
-		t.Fatalf("stdin = %q", string(spec.Stdin))
+	if len(spec.Stdin) != 0 {
+		t.Fatalf("stdin = %q, want empty", string(spec.Stdin))
 	}
 }
 
@@ -387,12 +387,12 @@ func TestAgyBuildCmdScout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCmd() error = %v", err)
 	}
-	want := []string{"agy", "--print", "--model", "gemini-3.5-flash-low", "--sandbox"}
+	want := []string{"agy", "--print=scout the repo", "--model", "gemini-3.5-flash-low", "--sandbox"}
 	if !reflect.DeepEqual(spec.Argv, want) {
 		t.Fatalf("argv mismatch\nwant: %#v\ngot:  %#v", want, spec.Argv)
 	}
-	if string(spec.Stdin) != "scout the repo\n" {
-		t.Fatalf("stdin = %q", string(spec.Stdin))
+	if len(spec.Stdin) != 0 {
+		t.Fatalf("stdin = %q, want empty", string(spec.Stdin))
 	}
 }
 

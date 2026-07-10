@@ -361,7 +361,10 @@ func (a *AgyAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	if model == "" {
 		model = a.DefaultModel
 	}
-	argv := []string{"agy", "--print"}
+	// Agy 1.1+ does not read a print-mode prompt from stdin when launched by a
+	// subprocess. The prompt must be the value of --print.
+	prompt := strings.TrimSuffix(string(promptStdin(req)), "\n")
+	argv := []string{"agy", "--print=" + prompt}
 	if model != "" {
 		argv = append(argv, "--model", model)
 	}
@@ -377,7 +380,7 @@ func (a *AgyAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 		return nil, fmt.Errorf("unsupported role %q", role)
 	}
 	argv = append(argv, a.ExtraArgs...)
-	return &CommandSpec{Argv: argv, Dir: req.Workdir, Stdin: promptStdin(req), Output: req.OutputPath}, nil
+	return &CommandSpec{Argv: argv, Dir: req.Workdir, Output: req.OutputPath}, nil
 }
 
 func (a *AgyAdapter) ParseResult(role Role, raw []byte) (Result, error) {

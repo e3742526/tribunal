@@ -219,10 +219,6 @@ func (l StateLocator) migrateLegacyRuntimeState() error {
 			return fmt.Errorf("remove verified legacy state %s: %w", source, err)
 		}
 	}
-	legacyIgnore := filepath.Join(l.LegacyRoot, ".gitignore")
-	if data, err := os.ReadFile(legacyIgnore); err == nil && string(data) == "*\n!.gitignore\n" {
-		_ = os.Remove(legacyIgnore)
-	}
 	return nil
 }
 

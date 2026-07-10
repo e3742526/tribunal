@@ -121,7 +121,7 @@ func TestWorkPlanSchemaRequiresCoreFields(t *testing.T) {
 	for _, key := range schema.Required {
 		required[key] = true
 	}
-	for _, key := range []string{"schema_version", "summary", "packages", "selected_package"} {
+	for _, key := range []string{"schema_version", "summary", "packages", "selected_package", "defer"} {
 		if !required[key] {
 			t.Fatalf("work plan schema missing required key %q", key)
 		}
@@ -130,7 +130,7 @@ func TestWorkPlanSchemaRequiresCoreFields(t *testing.T) {
 	for _, key := range schema.Properties.Packages.Items.Required {
 		packageRequired[key] = true
 	}
-	for _, key := range []string{"id", "title", "goal", "acceptance", "validation"} {
+	for _, key := range []string{"id", "title", "goal", "estimated_seconds", "allowed_scope", "acceptance", "validation"} {
 		if !packageRequired[key] {
 			t.Fatalf("work plan package schema missing required key %q", key)
 		}

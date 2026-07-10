@@ -321,7 +321,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 				if fingerprint != lastFingerprint {
 					lastFingerprint = fingerprint
 					lastActivity = time.Now()
-					_, _ = writeLiveProgress(runCtx, req, role, phase, started, "running")
+					progress, err = writeLiveProgress(runCtx, req, role, phase, started, "running")
 				}
 				if !req.Quiet {
 					if err != nil {
@@ -329,9 +329,10 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 					} else {
 						logRequestProgress(
 							req,
-							"%s still running elapsed=%s files=%d +%d -%d progress=%s",
+							"%s still running elapsed=%s idle=%s files=%d +%d -%d progress=%s",
 							phase,
 							shortDuration(time.Since(started)),
+							progress.NoProgressFor,
 							progress.FilesChanged,
 							progress.Additions,
 							progress.Deletions,

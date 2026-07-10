@@ -643,7 +643,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		if snapshotErr != nil {
 			return final, &ExitError{Code: ExitAdapterFailure, Err: snapshotErr}
 		}
-		editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
+		editorRequest := Request{
 			Context:               ctx,
 			Prompt:                editorPrompt,
 			SystemPrompt:          editorSystemPrompt,
@@ -661,7 +661,8 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			Verbose:               opts.Verbose,
 			Budget:                opts.InvocationBudget,
 			RequireWorkerContract: true,
-		}, opts.DryRun)
+		}
+		editorResult, err := a.runEditorWithContractRetry(ctx, opts, editor, editorRequest, beforeEditor)
 		if err != nil {
 			setRoleStatus(&final, editorLabel, opts.Coder, "failed", classifyRoleFailure(editorLabel, err), err.Error())
 			if IsIntegrityViolation(err) {

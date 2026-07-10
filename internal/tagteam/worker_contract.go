@@ -109,7 +109,8 @@ Your final response MUST be JSON only and match this envelope exactly:
   "checks_run": ["commands you ran; agent claims only"],
   "remaining_risks": ["honest unresolved risks"]
 }
-Use empty arrays when appropriate. Do not return identity text, Markdown fences, or prose outside the JSON object.`
+Use empty arrays when appropriate. Do not return identity text, Markdown fences, or prose outside the JSON object.
+Validation commands must be non-interactive and must not modify files outside the task's allowed scope. Do not run setup or configuration commands such as pnpm approve-builds as validation.`
 }
 
 type worktreeSnapshot map[string]string

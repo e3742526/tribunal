@@ -635,6 +635,59 @@ type fakeDirectAdapter struct {
 	direct func(role Role, req Request) (Result, error)
 }
 
+func TestRunEditorWithContractRetryRetriesNoEditIdentityResponse(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "README.md"), "hello\n")
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	calls := 0
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) {
+			return &CommandSpec{Argv: []string{"fake"}, Dir: repo, Output: req.OutputPath}, nil
+		},
+		direct: func(role Role, req Request) (Result, error) {
+			calls++
+			if calls == 1 {
+				return Result{Raw: []byte("I am running on Gemini.")}, nil
+			}
+			raw := []byte(`{"schema_version":1,"status":"completed","summary":"completed without edits","files_changed":[],"checks_run":[],"remaining_risks":[]}`)
+			return Result{Raw: raw, Text: string(raw)}, nil
+		},
+	}
+	before, err := captureWorktreeSnapshot(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(t.TempDir(), "worker-round-1.md")
+	result, err := NewApp(DefaultConfig()).runEditorWithContractRetry(context.Background(), RunOptions{
+		Workdir: repo,
+		Mode:    ModeSupervisor,
+		Timeout: 10 * time.Second,
+	}, adapter, Request{
+		Context:               context.Background(),
+		Prompt:                "implement the task",
+		Workdir:               repo,
+		RunDir:                filepath.Dir(outputPath),
+		OutputPath:            outputPath,
+		Timeout:               10 * time.Second,
+		Phase:                 "worker",
+		RequireWorkerContract: true,
+	}, before)
+	if err != nil {
+		t.Fatalf("runEditorWithContractRetry() error = %v", err)
+	}
+	if calls != 2 || result.Worker == nil {
+		t.Fatalf("calls=%d result=%#v", calls, result)
+	}
+	if !fileExists(outputPath+".retry-prompt.md") || !fileExists(filepath.Join(filepath.Dir(outputPath), "worker-round-1.retry.md")) {
+		t.Fatal("expected preserved retry prompt and retry output")
+	}
+}
+
 func (f fakeDirectAdapter) ID() string { return "fake-direct" }
 func (f fakeDirectAdapter) Detect(ctx context.Context) (VersionInfo, error) {
 	return VersionInfo{Found: true, Runnable: true}, nil

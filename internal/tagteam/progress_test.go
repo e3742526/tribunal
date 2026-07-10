@@ -34,7 +34,8 @@ func TestWriteLiveProgressCapturesWorktreeDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 	runDir := filepath.Join(repo, ".tagteam", "runs", "test")
-	progress, err := writeLiveProgress(context.Background(), Request{Workdir: repo, RunDir: runDir}, RoleCoder, "round 1 worker", time.Now().Add(-time.Second), "running")
+	lastActivity := time.Now().Add(-2 * time.Minute)
+	progress, err := writeLiveProgress(context.Background(), Request{Workdir: repo, RunDir: runDir, ProgressLastActivity: &lastActivity}, RoleCoder, "round 1 worker", time.Now().Add(-time.Second), "running")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +44,9 @@ func TestWriteLiveProgressCapturesWorktreeDiff(t *testing.T) {
 	}
 	if progress.Additions != 1 || progress.Deletions != 0 {
 		t.Fatalf("numstat = +%d -%d, want +1 -0", progress.Additions, progress.Deletions)
+	}
+	if progress.NoProgressFor != "2m0s" {
+		t.Fatalf("no_progress_for = %q, want 2m0s", progress.NoProgressFor)
 	}
 	data, err := os.ReadFile(filepath.Join(runDir, liveProgressArtifact))
 	if err != nil {
@@ -81,6 +85,10 @@ func TestWorkerPromptsProtectHostArtifacts(t *testing.T) {
 		if !strings.Contains(prompt, "Never modify or delete .tagteam") {
 			t.Fatalf("worker prompt does not protect host artifacts:\n%s", prompt)
 		}
+	}
+	contractPrompt := workerContractPrompt("implement")
+	if !strings.Contains(contractPrompt, "must not modify files outside") || !strings.Contains(contractPrompt, "pnpm approve-builds") {
+		t.Fatalf("worker contract does not prohibit mutating validation commands:\n%s", contractPrompt)
 	}
 }
 

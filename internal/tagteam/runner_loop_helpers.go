@@ -4,8 +4,30 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+func (a *App) runEditorWithContractRetry(ctx context.Context, opts RunOptions, editor Adapter, req Request, before worktreeSnapshot) (Result, error) {
+	result, err := a.runAdapter(ctx, editor, RoleCoder, req, opts.DryRun)
+	if err == nil || !IsOutputContractError(err) || opts.DryRun {
+		return result, err
+	}
+	after, snapshotErr := captureWorktreeSnapshot(context.Background(), opts.Workdir)
+	if snapshotErr != nil || len(worktreeDelta(before, after)) != 0 {
+		return result, err
+	}
+
+	logProgress(opts, "%s output invalid with no edits; retrying once error=%q", roleLabelsEditor(opts.Mode), err.Error())
+	req.Prompt += "\n\nYour previous response failed the worker-result contract and made no repository changes. Execute the requested implementation now. Do not answer with model identity or capability prose. Return only the required JSON envelope after editing and validation.\n\nValidation error:\n" + err.Error()
+	if req.OutputPath != "" {
+		_ = writeRedactedBytes(req.OutputPath+".retry-prompt.md", []byte(req.Prompt), req.EnvOverlay)
+		ext := filepath.Ext(req.OutputPath)
+		req.OutputPath = strings.TrimSuffix(req.OutputPath, ext) + ".retry" + ext
+	}
+	req.Phase += " contract retry"
+	return a.runAdapter(ctx, editor, RoleCoder, req, opts.DryRun)
+}
 
 func buildRoundEditorPrompt(ctx context.Context, opts RunOptions, round int, runDir, baseline, latestDiff string, latestReview Review, initialReview *Review, relay RelayContext, selectedPackage *WorkPackage, workPlan *WorkPlan, brief string, implementSelectedPackage bool) (string, error) {
 	switch {

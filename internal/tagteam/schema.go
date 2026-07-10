@@ -90,7 +90,7 @@ const ReviewSchema = `{
 const WorkPlanSchema = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["schema_version", "summary", "packages", "selected_package"],
+  "required": ["schema_version", "summary", "packages", "selected_package", "defer"],
   "properties": {
     "schema_version": {
       "type": "integer",
