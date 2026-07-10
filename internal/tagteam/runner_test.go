@@ -1013,7 +1013,7 @@ func TestRunAdapter_WritesMissingTranscript(t *testing.T) {
 	adapter := fakeAdapter{
 		build: func(role Role, req Request) (*CommandSpec, error) {
 			return &CommandSpec{
-				Argv: []string{"sh", "-lc", "printf '{\"verdict\":\"pass\",\"summary\":\"ok\",\"findings\":[],\"test_suggestions\":[]}'"},
+				Argv: []string{"sh", "-lc", "printf '{\"schema_version\":2,\"verdict\":\"pass\",\"summary\":\"ok\",\"findings\":[],\"test_suggestions\":[],\"data_loss_checks\":{\"malformed_input_preservation\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"annotation_history_retention\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"ambiguous_identity_handling\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"read_only_non_mutation\":{\"status\":\"pass\",\"evidence\":\"read-only\"}},\"prior_finding_dispositions\":[]}'"},
 				Dir:  tmp,
 			}, nil
 		},
@@ -1938,7 +1938,7 @@ case "$match" in
     exit 0
     ;;
   *"implementation work packages"*)
-    printf '%s' '{"result":"{\"schema_version\":1,\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"estimated_seconds\":60,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"estimated_seconds\":60,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
+    printf '%s' '{"result":"{\"schema_version\":1,\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"estimated_seconds\":1,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"estimated_seconds\":1,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
     exit 0
     ;;
 esac
@@ -1949,7 +1949,7 @@ for arg in "$@"; do
   fi
 done
 if [ "$is_review" = "1" ]; then
-  printf '%s' '{"result":"{\"verdict\":\"needs_changes\",\"summary\":\"needs fixes\",\"findings\":[{\"severity\":\"major\",\"file\":\"main.go\",\"issue\":\"bug\",\"fix\":\"fix it\"}],\"test_suggestions\":[]}","session_id":"","total_cost_usd":0}'
+  printf '%s' '{"result":"{\"schema_version\":2,\"verdict\":\"needs_changes\",\"summary\":\"needs fixes\",\"findings\":[{\"severity\":\"major\",\"file\":\"main.go\",\"line\":1,\"issue\":\"bug\",\"fix\":\"fix it\"}],\"test_suggestions\":[],\"data_loss_checks\":{\"malformed_input_preservation\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"annotation_history_retention\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"ambiguous_identity_handling\":{\"status\":\"not_applicable\",\"evidence\":\"not applicable\"},\"read_only_non_mutation\":{\"status\":\"pass\",\"evidence\":\"read-only reviewer\"}},\"prior_finding_dispositions\":[]}","session_id":"","total_cost_usd":0}'
 else
   printf '%s' '{"result":"{\"schema_version\":1,\"status\":\"completed\",\"summary\":\"ok\",\"files_changed\":[],\"checks_run\":[],\"remaining_risks\":[]}","session_id":"sess1","total_cost_usd":0}'
 fi
@@ -1977,7 +1977,7 @@ if [ "$1" = "--version" ]; then
   echo "codex 1.0.0"
   exit 0
 fi
-printf '%s' '{"schema_version":1,"verdict":"pass","summary":"fallback passed","findings":[],"test_suggestions":[]}'
+printf '%s' '{"schema_version":2,"verdict":"pass","summary":"fallback passed","findings":[],"test_suggestions":[],"data_loss_checks":{"malformed_input_preservation":{"status":"not_applicable","evidence":"not applicable"},"annotation_history_retention":{"status":"not_applicable","evidence":"not applicable"},"ambiguous_identity_handling":{"status":"not_applicable","evidence":"not applicable"},"read_only_non_mutation":{"status":"pass","evidence":"read-only reviewer"}},"prior_finding_dispositions":[]}'
 `
 
 const fakeAgyScript = `#!/bin/sh

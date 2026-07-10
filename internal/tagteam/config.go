@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,24 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/google/shlex"
 )
+
+func mergeChurnThresholds(dst *ChurnThresholds, src ChurnThresholds) {
+	if src.MaxFiles > 0 {
+		dst.MaxFiles = src.MaxFiles
+	}
+	if src.MaxChangedLines > 0 {
+		dst.MaxChangedLines = src.MaxChangedLines
+	}
+	if src.MaxFixtureFiles > 0 {
+		dst.MaxFixtureFiles = src.MaxFixtureFiles
+	}
+	if src.WhitespaceRatio > 0 {
+		dst.WhitespaceRatio = src.WhitespaceRatio
+	}
+	if src.MinimumSemanticRatio > 0 {
+		dst.MinimumSemanticRatio = src.MinimumSemanticRatio
+	}
+}
 
 func DefaultConfig() Config {
 	supervisorSlicing := true
@@ -22,6 +41,7 @@ func DefaultConfig() Config {
 	scoutRetrieval := false
 	return Config{
 		Defaults: DefaultsConfig{
+			WatchdogTimeout:         "5m",
 			Mode:                    "supervisor",
 			Coder:                   defaultAdversarialCoderTarget,
 			RelayCoder:              defaultRelayCoderTarget,
@@ -46,7 +66,14 @@ func DefaultConfig() Config {
 			MaxRoleInvocations:      0,
 			JSONRepair:              "off",
 			Rounds:                  2,
-			GitSafety:               "clean",
+			Churn: ChurnThresholds{
+				MaxFiles:             25,
+				MaxChangedLines:      1000,
+				MaxFixtureFiles:      10,
+				WhitespaceRatio:      0.60,
+				MinimumSemanticRatio: 0.20,
+			},
+			GitSafety: "clean",
 		},
 		Profiles: map[string]ProfileConfig{
 			"fast": {
@@ -333,7 +360,10 @@ func mergeConfigFileWithOptions(dst *Config, path string, opts mergeConfigFileOp
 
 func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Defaults.StateRoot = ""
+	src.Defaults.WatchdogTimeout = ""
 	src.Defaults.Test = ""
+	src.Defaults.Lint = ""
+	src.Defaults.TestIdentityRegex = ""
 	src.Defaults.GitSafety = ""
 	src.Defaults.MaxOutputBytes = 0
 	src.Defaults.MaxWallTime = ""
@@ -345,7 +375,10 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Defaults.ScoutContextPolicy = ""
 	for name, profile := range src.Profiles {
 		profile.StateRoot = ""
+		profile.WatchdogTimeout = ""
 		profile.Test = ""
+		profile.Lint = ""
+		profile.TestIdentityRegex = ""
 		profile.MaxOutputBytes = 0
 		profile.MaxWallTime = ""
 		profile.MaxRoleInvocations = 0
@@ -373,6 +406,9 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.StateRoot != "" {
 		dst.Defaults.StateRoot = src.Defaults.StateRoot
+	}
+	if src.Defaults.WatchdogTimeout != "" {
+		dst.Defaults.WatchdogTimeout = src.Defaults.WatchdogTimeout
 	}
 	legacyDefaultsOnly := src.Defaults.Mode == "" &&
 		(src.Defaults.Coder != "" || src.Defaults.Adversary != "") &&
@@ -463,6 +499,13 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.Test != "" {
 		dst.Defaults.Test = src.Defaults.Test
 	}
+	if src.Defaults.Lint != "" {
+		dst.Defaults.Lint = src.Defaults.Lint
+	}
+	if src.Defaults.TestIdentityRegex != "" {
+		dst.Defaults.TestIdentityRegex = src.Defaults.TestIdentityRegex
+	}
+	mergeChurnThresholds(&dst.Defaults.Churn, src.Defaults.Churn)
 	if src.Defaults.GitSafety != "" {
 		dst.Defaults.GitSafety = src.Defaults.GitSafety
 	}
@@ -474,6 +517,9 @@ func mergeConfig(dst *Config, src Config) {
 			current := dst.Profiles[key]
 			if profile.StateRoot != "" {
 				current.StateRoot = profile.StateRoot
+			}
+			if profile.WatchdogTimeout != "" {
+				current.WatchdogTimeout = profile.WatchdogTimeout
 			}
 			if profile.Mode != "" {
 				current.Mode = profile.Mode
@@ -550,6 +596,13 @@ func mergeConfig(dst *Config, src Config) {
 			if profile.Test != "" {
 				current.Test = profile.Test
 			}
+			if profile.Lint != "" {
+				current.Lint = profile.Lint
+			}
+			if profile.TestIdentityRegex != "" {
+				current.TestIdentityRegex = profile.TestIdentityRegex
+			}
+			mergeChurnThresholds(&current.Churn, profile.Churn)
 			dst.Profiles[key] = current
 		}
 	}
@@ -707,6 +760,8 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_JSON_REPAIR",
 		"TAGTEAM_ROUNDS",
 		"TAGTEAM_TEST",
+		"TAGTEAM_LINT",
+		"TAGTEAM_TEST_IDENTITY_REGEX",
 		"TAGTEAM_GIT_SAFETY",
 		"TAGTEAM_CODEX_ARGS",
 		"TAGTEAM_CODEX_REASONING_EFFORT",
@@ -738,6 +793,9 @@ func hasTagteamEnv(overlay map[string]string) bool {
 func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_STATE_ROOT"); ok {
 		cfg.Defaults.StateRoot = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_WATCHDOG_TIMEOUT"); ok {
+		cfg.Defaults.WatchdogTimeout = value
 	}
 	legacyRoleEnvSet := false
 	coderEnvSet := false
@@ -861,6 +919,12 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_TEST"); ok {
 		cfg.Defaults.Test = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_LINT"); ok {
+		cfg.Defaults.Lint = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_TEST_IDENTITY_REGEX"); ok {
+		cfg.Defaults.TestIdentityRegex = value
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_GIT_SAFETY"); ok {
 		cfg.Defaults.GitSafety = value
@@ -999,9 +1063,16 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
 	}
 	stateRoot := cfg.Defaults.StateRoot
+	watchdogTimeout, err := time.ParseDuration(cfg.Defaults.WatchdogTimeout)
+	if err != nil {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse watchdog_timeout: %w", err)}
+	}
 	modeRaw := cfg.Defaults.Mode
 	rounds := cfg.Defaults.Rounds
 	testCmd := cfg.Defaults.Test
+	lintCmd := cfg.Defaults.Lint
+	testIdentityRegex := cfg.Defaults.TestIdentityRegex
+	churn := cfg.Defaults.Churn
 	gitSafety := cfg.Defaults.GitSafety
 	scoutMode := cfg.Defaults.ScoutMode
 	postScoutMode := cfg.Defaults.PostScoutMode
@@ -1058,6 +1129,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if profile.StateRoot != "" {
 			stateRoot = profile.StateRoot
 		}
+		if profile.WatchdogTimeout != "" {
+			parsed, parseErr := time.ParseDuration(profile.WatchdogTimeout)
+			if parseErr != nil {
+				return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse profile watchdog_timeout: %w", parseErr)}
+			}
+			watchdogTimeout = parsed
+		}
 		switch {
 		case profile.Mode != "":
 			modeRaw = profile.Mode
@@ -1081,6 +1159,13 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		if profile.Test != "" {
 			testCmd = profile.Test
 		}
+		if profile.Lint != "" {
+			lintCmd = profile.Lint
+		}
+		if profile.TestIdentityRegex != "" {
+			testIdentityRegex = profile.TestIdentityRegex
+		}
+		mergeChurnThresholds(&churn, profile.Churn)
 		if profile.ScoutMode != "" {
 			scoutMode = profile.ScoutMode
 		}
@@ -1142,6 +1227,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if changed["state-root"] {
 		stateRoot = flags.StateRoot
+	}
+	if changed["watchdog-timeout"] {
+		watchdogTimeout = flags.WatchdogTimeout
 	}
 	if changed["solo"] {
 		modeRaw = string(ModeSolo)
@@ -1381,6 +1469,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if changed["test"] {
 		testCmd = flags.Test
 	}
+	if changed["lint"] {
+		lintCmd = flags.Lint
+	}
 	if changed["allow-dirty"] {
 		gitSafety = "allow-dirty"
 	}
@@ -1389,6 +1480,15 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if gitSafety != "clean" && gitSafety != "autostash" && gitSafety != "branch" && gitSafety != "allow-dirty" {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid git_safety %q", gitSafety)}
+	}
+	if testIdentityRegex != "" {
+		compiled, compileErr := regexp.Compile(testIdentityRegex)
+		if compileErr != nil || compiled.NumSubexp() < 1 {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("test_identity_regex must compile and contain a capture group")}
+		}
+	}
+	if churn.MaxFiles <= 0 || churn.MaxChangedLines <= 0 || churn.MaxFixtureFiles <= 0 || churn.WhitespaceRatio <= 0 || churn.WhitespaceRatio > 1 || churn.MinimumSemanticRatio <= 0 || churn.MinimumSemanticRatio > 1 {
+		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("invalid churn thresholds")}
 	}
 	if scoutMode == "" {
 		scoutMode = "recon"
@@ -1517,6 +1617,8 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		Prompt:                    strings.TrimSpace(prompt),
 		Workdir:                   workdir,
 		StateRoot:                 strings.TrimSpace(stateRoot),
+		AllowedPaths:              append([]string(nil), flags.AllowedPaths...),
+		WatchdogTimeout:           watchdogTimeout,
 		Mode:                      mode,
 		ModeExplicit:              modeExplicit,
 		Coder:                     editorTarget,
@@ -1553,6 +1655,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		JSONRepair:                jsonRepair,
 		Rounds:                    rounds,
 		TestCmd:                   testCmd,
+		LintCmd:                   lintCmd,
+		TestIdentityRegex:         testIdentityRegex,
+		Churn:                     churn,
 		NoTest:                    flags.NoTest,
 		JSON:                      flags.JSON,
 		DryRun:                    flags.DryRun,

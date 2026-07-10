@@ -88,22 +88,49 @@ tagteam --mode adversarial -mc codex:gpt-5.6-terra -ma claude:claude-opus-4-8 "r
 	root.AddCommand(newRunCommand(flags))
 	root.AddCommand(newReviewCommand(flags))
 	root.AddCommand(newFixCommand(flags))
+	root.AddCommand(newResumeCommand(flags))
+	root.AddCommand(newFindingsCommand(flags))
+	root.AddCommand(newTransferCommand(flags))
 	root.AddCommand(newStatusCommand(flags))
 	root.AddCommand(newPlanCommand(flags))
 	root.AddCommand(newTranscriptCommand(flags))
 	root.AddCommand(newTUICommand(flags))
 	root.AddCommand(newInitCommand(flags))
 	root.AddCommand(newDoctorCommand(flags))
-	root.AddCommand(newVersionCommand())
+	root.AddCommand(newVersionCommand(flags))
+	root.AddCommand(newVerifyInstallCommand(flags))
 	return root
 }
 
-func newVersionCommand() *cobra.Command {
+func newVersionCommand(flags *flagState) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the version number of tagteam",
+		Short: "Print Tagteam build identity",
 		Run: func(cmd *cobra.Command, args []string) {
+			if flags.JSON {
+				payload, _ := json.MarshalIndent(InstallationReport{Version: Version, CommitSHA: CommitSHA, BuildTime: BuildTime, Dirty: Dirty}, "", "  ")
+				fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+				return
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), Version)
+		},
+	}
+}
+
+func newVerifyInstallCommand(flags *flagState) *cobra.Command {
+	return &cobra.Command{
+		Use:          "verify-install",
+		Short:        "Verify embedded build metadata and the adjacent binary checksum manifest",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := verifyInstallation(flags.AllowDevBuild)
+			if flags.JSON {
+				payload, _ := json.MarshalIndent(report, "", "  ")
+				fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "status=%s version=%s commit=%s executable=%s\n", report.Status, report.Version, report.CommitSHA, report.Executable)
+			}
+			return err
 		},
 	}
 }
@@ -144,14 +171,18 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")
 	flagSet.StringVarP(&flags.Workdir, "workdir", "C", ".", "Working directory")
 	flagSet.StringVar(&flags.StateRoot, "state-root", "", "Override authoritative run-state root (default ~/.local/state/tagteam)")
+	flagSet.StringSliceVar(&flags.AllowedPaths, "allow-path", nil, "Allow an exact repo-relative file or directory prefix ending in / (repeatable; required for solo)")
+	flagSet.DurationVar(&flags.WatchdogTimeout, "watchdog-timeout", 0, "Cancel an invocation after this period without Git or output progress (default 5m)")
 	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Hard cap on implementation/review rounds before final no-edit reports")
 	flagSet.StringVarP(&flags.Test, "test", "t", "", "Test command")
+	flagSet.StringVar(&flags.Lint, "lint", "", "Lint command required by the transfer gate")
 	flagSet.BoolVar(&flags.NoTest, "no-test", false, "Skip tests")
 	flagSet.BoolVar(&flags.JSON, "json", false, "Print machine-readable final result")
 	flagSet.BoolVar(&flags.DryRun, "dry-run", false, "Print vendor invocations without executing")
 	flagSet.BoolVar(&flags.ShowReview, "show-review", false, "Include review findings in output")
 	flagSet.BoolVar(&flags.FailOnReview, "fail-on-review", false, "Exit non-zero on blocking review findings")
 	flagSet.BoolVar(&flags.AllowDirty, "allow-dirty", false, "Skip clean-worktree preflight")
+	flagSet.BoolVar(&flags.AllowDevBuild, "allow-dev-build", false, "Explicitly allow a development or unverified binary for mutating commands")
 	flagSet.BoolVar(&flags.Autostash, "autostash", false, "Stash local changes before run")
 	flagSet.DurationVar(&flags.Timeout, "timeout", 15*time.Minute, "Per-invocation timeout")
 	flagSet.BoolVarP(&flags.Quiet, "quiet", "q", false, "Reduce progress output")
@@ -182,6 +213,9 @@ func newRunCommand(shared *flagState) *cobra.Command {
 }
 
 func runDefault(cmd *cobra.Command, flags *flagState, prompt string) error {
+	if err := requireVerifiedInstallation(flags); err != nil {
+		return err
+	}
 	opts, cfg, err := resolve(cmd, flags, prompt)
 	if err != nil {
 		return err
@@ -230,6 +264,9 @@ func newFixCommand(shared *flagState) *cobra.Command {
 		Short:        "Editor applies fixes from the latest saved review (worker or coder depending on --mode)",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
 			opts, cfg, err := resolve(cmd, shared, "")
 			if err != nil {
 				return err
@@ -244,6 +281,107 @@ func newFixCommand(shared *flagState) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func newResumeCommand(shared *flagState) *cobra.Command {
+	return &cobra.Command{
+		Use:          "resume [RUN_ID]",
+		Short:        "Verify and continue an interrupted run from persisted phase state",
+		SilenceUsage: true,
+		Args:         cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
+			opts, cfg, err := resolve(cmd, shared, "")
+			if err != nil {
+				return err
+			}
+			runID := ""
+			if len(args) == 1 {
+				runID = args[0]
+			} else if active, activeErr := tagteam.ReadActiveRunForCLI(opts.Workdir); activeErr == nil && active.RunID != "" {
+				runID = active.RunID
+			} else if latest, latestErr := tagteam.ReadLatestForCLI(opts.Workdir); latestErr == nil {
+				runID = latest.RunID
+			}
+			if runID == "" {
+				return &tagteam.ExitError{Code: tagteam.ExitInvalidArguments, Err: fmt.Errorf("no run id supplied and no active/latest run found")}
+			}
+			app := tagteam.NewApp(cfg)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+			final, runErr := app.Resume(ctx, opts, runID)
+			final = withErrorExitCode(final, runErr)
+			renderFinal(cmd, final, opts)
+			return runErr
+		},
+	}
+}
+
+func newFindingsCommand(shared *flagState) *cobra.Command {
+	findings := &cobra.Command{Use: "findings", Short: "Inspect or disposition persisted findings"}
+	var reason string
+	deferCommand := &cobra.Command{
+		Use:          "defer RUN_ID FINDING_ID",
+		Short:        "Record an operator-approved blocker or major finding deferral",
+		SilenceUsage: true,
+		Args:         cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
+			workdir, err := filepath.Abs(shared.Workdir)
+			if err != nil {
+				return err
+			}
+			runDir, err := tagteam.RunDirForCLI(workdir, args[0])
+			if err != nil {
+				return err
+			}
+			summary, err := tagteam.DeferFinding(runDir, args[1], reason)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "deferred=%s open-blocker-major=%d ledger=%s\n", args[1], summary.OpenBlockerOrMajor, summary.Path)
+			return nil
+		},
+	}
+	deferCommand.Flags().StringVar(&reason, "reason", "", "Required operator justification")
+	_ = deferCommand.MarkFlagRequired("reason")
+	findings.AddCommand(deferCommand)
+	return findings
+}
+
+func newTransferCommand(shared *flagState) *cobra.Command {
+	var target string
+	command := &cobra.Command{
+		Use:          "transfer RUN_ID",
+		Short:        "Apply a fully gated run patch to the primary checkout",
+		SilenceUsage: true,
+		Args:         cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
+			opts, _, err := resolve(cmd, shared, "")
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+			record, err := tagteam.TransferRun(ctx, opts, args[0], target)
+			if shared.JSON {
+				payload, _ := json.MarshalIndent(record, "", "  ")
+				fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+			} else if record.RunID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "run=%s transfer=%s target=%s patch=%s\n", record.RunID, record.Status, record.Target, record.PatchSHA256)
+			}
+			return err
+		},
+	}
+	command.Flags().StringVar(&target, "to", "", "Target checkout (inferred only when the primary checkout is unambiguous)")
+	return command
 }
 
 func newStatusCommand(shared *flagState) *cobra.Command {
@@ -364,6 +502,9 @@ func newInitCommand(shared *flagState) *cobra.Command {
 		Short:        "Write a starter user config",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
 			workdir, _ := filepath.Abs(shared.Workdir)
 			cfg, _, err := tagteam.LoadConfig(workdir)
 			if err != nil {
@@ -407,6 +548,9 @@ func resolve(cmd *cobra.Command, flags *flagState, prompt string) (tagteam.RunOp
 	opts, err := tagteam.ResolveOptions(cfg, sources, flags.FlagInputs, changed, prompt)
 	if err != nil {
 		return tagteam.RunOptions{}, tagteam.Config{}, err
+	}
+	if opts.Mode == tagteam.ModeSolo && !opts.DryRun && len(opts.AllowedPaths) == 0 {
+		return tagteam.RunOptions{}, tagteam.Config{}, &tagteam.ExitError{Code: tagteam.ExitInvalidArguments, Err: fmt.Errorf("solo mode requires at least one --allow-path")}
 	}
 	return opts, cfg, nil
 }

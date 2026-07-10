@@ -14,16 +14,22 @@ const liveProgressArtifact = "live-progress.json"
 // LiveProgress is host-owned runtime evidence collected while an adapter is
 // active. Agents never write this artifact.
 type LiveProgress struct {
-	SchemaVersion int       `json:"schema_version"`
-	Phase         string    `json:"phase"`
-	Role          Role      `json:"role"`
-	Status        string    `json:"status"`
-	Elapsed       string    `json:"elapsed"`
-	FilesChanged  int       `json:"files_changed"`
-	Additions     int       `json:"additions"`
-	Deletions     int       `json:"deletions"`
-	ChangedFiles  []string  `json:"changed_files,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	SchemaVersion  int       `json:"schema_version"`
+	InvocationID   string    `json:"invocation_id,omitempty"`
+	Phase          string    `json:"phase"`
+	Role           Role      `json:"role"`
+	Status         string    `json:"status"`
+	Elapsed        string    `json:"elapsed"`
+	FilesChanged   int       `json:"files_changed"`
+	Additions      int       `json:"additions"`
+	Deletions      int       `json:"deletions"`
+	ChangedFiles   []string  `json:"changed_files,omitempty"`
+	DiffHash       string    `json:"diff_hash,omitempty"`
+	StdoutBytes    int64     `json:"stdout_bytes,omitempty"`
+	StderrBytes    int64     `json:"stderr_bytes,omitempty"`
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	NoProgressFor  string    `json:"no_progress_for,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func writeLiveProgress(
@@ -36,11 +42,22 @@ func writeLiveProgress(
 ) (LiveProgress, error) {
 	progress := LiveProgress{
 		SchemaVersion: ArtifactSchemaVersion,
+		InvocationID:  req.InvocationID,
 		Phase:         phase,
 		Role:          role,
 		Status:        status,
 		Elapsed:       shortDuration(time.Since(started)),
 		UpdatedAt:     time.Now().UTC(),
+	}
+	if req.ProgressStdout != nil {
+		progress.StdoutBytes = req.ProgressStdout.Received()
+	}
+	if req.ProgressStderr != nil {
+		progress.StderrBytes = req.ProgressStderr.Received()
+	}
+	if req.ProgressLastActivity != nil {
+		progress.LastActivityAt = *req.ProgressLastActivity
+		progress.NoProgressFor = shortDuration(time.Since(*req.ProgressLastActivity))
 	}
 	if req.Workdir != "" {
 		files, err := liveChangedFiles(ctx, req.Workdir)
@@ -55,6 +72,9 @@ func writeLiveProgress(
 		}
 		progress.Additions = additions
 		progress.Deletions = deletions
+		if patch, patchErr := runGitCommandBytes(ctx, req.Workdir, []string{"LC_ALL=C"}, "diff", "--no-ext-diff", "--no-color", "--binary", "HEAD", "--", ".", ":(exclude).tagteam"); patchErr == nil {
+			progress.DiffHash = sha256Sum(patch)
+		}
 	}
 	if req.RunDir == "" {
 		return progress, nil

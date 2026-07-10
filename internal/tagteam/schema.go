@@ -3,11 +3,11 @@ package tagteam
 const ReviewSchema = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["schema_version", "verdict", "summary", "findings", "test_suggestions"],
+  "required": ["schema_version", "verdict", "summary", "findings", "test_suggestions", "data_loss_checks", "prior_finding_dispositions"],
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "verdict": {
       "type": "string",
@@ -46,6 +46,41 @@ const ReviewSchema = `{
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "data_loss_checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["malformed_input_preservation", "annotation_history_retention", "ambiguous_identity_handling", "read_only_non_mutation"],
+      "properties": {
+        "malformed_input_preservation": {"$ref": "#/definitions/dataLossCheck"},
+        "annotation_history_retention": {"$ref": "#/definitions/dataLossCheck"},
+        "ambiguous_identity_handling": {"$ref": "#/definitions/dataLossCheck"},
+        "read_only_non_mutation": {"$ref": "#/definitions/dataLossCheck"}
+      }
+    },
+    "prior_finding_dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "status", "evidence"],
+        "properties": {
+          "finding_id": {"type": "string"},
+          "status": {"type": "string", "enum": ["fixed", "disputed_with_evidence"]},
+          "evidence": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "dataLossCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pass", "fail", "not_applicable"]},
+        "evidence": {"type": "string", "minLength": 1}
       }
     }
   },

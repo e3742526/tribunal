@@ -31,11 +31,13 @@ const (
 type RunStatus string
 
 const (
-	RunStatusRunning  RunStatus = "running"
-	RunStatusPassed   RunStatus = "passed"
-	RunStatusFailed   RunStatus = "failed"
-	RunStatusDegraded RunStatus = "degraded"
-	RunStatusBlocked  RunStatus = "blocked"
+	RunStatusRunning     RunStatus = "running"
+	RunStatusPassed      RunStatus = "passed"
+	RunStatusFailed      RunStatus = "failed"
+	RunStatusDegraded    RunStatus = "degraded"
+	RunStatusBlocked     RunStatus = "blocked"
+	RunStatusCancelled   RunStatus = "cancelled"
+	RunStatusQuarantined RunStatus = "quarantined"
 )
 
 type ReasonCode string
@@ -57,6 +59,9 @@ const (
 	ReasonFallbackUsed          ReasonCode = "fallback_used"
 	ReasonBudgetExceeded        ReasonCode = "budget_exceeded"
 	ReasonJSONRepairUsed        ReasonCode = "json_repair_used"
+	ReasonCancelled             ReasonCode = "cancelled"
+	ReasonStalled               ReasonCode = "stalled"
+	ReasonQuarantined           ReasonCode = "quarantined"
 )
 
 type LossPolicy string
@@ -221,6 +226,7 @@ type Request struct {
 	OutputPath            string
 	SchemaPath            string
 	Timeout               time.Duration
+	WatchdogTimeout       time.Duration
 	MaxOutputBytes        int64
 	Passthrough           []string
 	ResumeID              string
@@ -231,6 +237,10 @@ type Request struct {
 	Verbose               bool
 	Budget                *InvocationBudget
 	RequireWorkerContract bool
+	InvocationID          string
+	ProgressStdout        *invocationStream
+	ProgressStderr        *invocationStream
+	ProgressLastActivity  *time.Time
 }
 
 type InvocationBudget struct {
@@ -446,19 +456,42 @@ type ScoutItem struct {
 }
 
 type Review struct {
-	SchemaVersion   int       `json:"schema_version,omitempty"`
-	Verdict         string    `json:"verdict"`
-	Summary         string    `json:"summary"`
-	Findings        []Finding `json:"findings"`
-	TestSuggestions []string  `json:"test_suggestions,omitempty"`
+	SchemaVersion            int                  `json:"schema_version,omitempty"`
+	Verdict                  string               `json:"verdict"`
+	Summary                  string               `json:"summary"`
+	Findings                 []Finding            `json:"findings"`
+	TestSuggestions          []string             `json:"test_suggestions"`
+	DataLossChecks           *DataLossChecks      `json:"data_loss_checks,omitempty"`
+	PriorFindingDispositions []FindingDisposition `json:"prior_finding_dispositions"`
 }
 
 type Finding struct {
+	ID       string `json:"id,omitempty"`
 	Severity string `json:"severity"`
 	File     string `json:"file"`
 	Line     int    `json:"line,omitempty"`
 	Issue    string `json:"issue"`
 	Fix      string `json:"fix"`
+}
+
+const ReviewSchemaVersion = 2
+
+type DataLossCheck struct {
+	Status   string `json:"status"`
+	Evidence string `json:"evidence"`
+}
+
+type DataLossChecks struct {
+	MalformedInputPreservation DataLossCheck `json:"malformed_input_preservation"`
+	AnnotationHistoryRetention DataLossCheck `json:"annotation_history_retention"`
+	AmbiguousIdentityHandling  DataLossCheck `json:"ambiguous_identity_handling"`
+	ReadOnlyNonMutation        DataLossCheck `json:"read_only_non_mutation"`
+}
+
+type FindingDisposition struct {
+	FindingID string `json:"finding_id"`
+	Status    string `json:"status"`
+	Evidence  string `json:"evidence"`
 }
 
 func (r Review) HasBlockingFindings() bool {
@@ -483,7 +516,7 @@ func (r Review) OnlyMinorOrNit() bool {
 }
 
 func (r Review) Validate() error {
-	if r.SchemaVersion != 0 && r.SchemaVersion != ArtifactSchemaVersion {
+	if r.SchemaVersion != 0 && r.SchemaVersion != ArtifactSchemaVersion && r.SchemaVersion != ReviewSchemaVersion {
 		return fmt.Errorf("unsupported review schema_version %d", r.SchemaVersion)
 	}
 	if r.Verdict != "pass" && r.Verdict != "needs_changes" {
@@ -508,7 +541,52 @@ func (r Review) Validate() error {
 	if r.Verdict == "pass" && r.HasBlockingFindings() {
 		return fmt.Errorf("pass verdict cannot include blocker or major findings")
 	}
+	// Schema v0/v1 artifacts remain readable for status, transcript, and
+	// migration. Live reviewer invocations call ValidateCurrent after parsing.
+	if r.SchemaVersion == 0 || r.SchemaVersion == ArtifactSchemaVersion {
+		return nil
+	}
+	if r.DataLossChecks == nil {
+		return fmt.Errorf("missing data_loss_checks")
+	}
+	checks := []struct {
+		name  string
+		check DataLossCheck
+	}{
+		{"malformed_input_preservation", r.DataLossChecks.MalformedInputPreservation},
+		{"annotation_history_retention", r.DataLossChecks.AnnotationHistoryRetention},
+		{"ambiguous_identity_handling", r.DataLossChecks.AmbiguousIdentityHandling},
+		{"read_only_non_mutation", r.DataLossChecks.ReadOnlyNonMutation},
+	}
+	for _, item := range checks {
+		switch item.check.Status {
+		case "pass", "fail", "not_applicable":
+		default:
+			return fmt.Errorf("data-loss check %s has invalid status %q", item.name, item.check.Status)
+		}
+		if strings.TrimSpace(item.check.Evidence) == "" {
+			return fmt.Errorf("data-loss check %s missing evidence", item.name)
+		}
+		if item.check.Status == "fail" && r.Verdict == "pass" {
+			return fmt.Errorf("pass verdict cannot include failed data-loss check %s", item.name)
+		}
+	}
+	for i, disposition := range r.PriorFindingDispositions {
+		if strings.TrimSpace(disposition.FindingID) == "" || strings.TrimSpace(disposition.Evidence) == "" {
+			return fmt.Errorf("prior finding disposition %d missing finding_id or evidence", i)
+		}
+		if disposition.Status != "fixed" && disposition.Status != "disputed_with_evidence" {
+			return fmt.Errorf("prior finding disposition %d has invalid status %q", i, disposition.Status)
+		}
+	}
 	return nil
+}
+
+func (r Review) ValidateCurrent() error {
+	if r.SchemaVersion != ReviewSchemaVersion {
+		return fmt.Errorf("live review requires schema_version %d", ReviewSchemaVersion)
+	}
+	return r.Validate()
 }
 
 type RoleTarget struct {
@@ -541,6 +619,7 @@ type Config struct {
 
 type DefaultsConfig struct {
 	StateRoot               string           `toml:"state_root"`
+	WatchdogTimeout         string           `toml:"watchdog_timeout"`
 	Mode                    string           `toml:"mode"`
 	Coder                   string           `toml:"coder"`
 	RelayCoder              string           `toml:"relay_coder"`
@@ -569,11 +648,15 @@ type DefaultsConfig struct {
 	JSONRepair              string           `toml:"json_repair"`
 	Rounds                  int              `toml:"rounds"`
 	Test                    string           `toml:"test"`
+	Lint                    string           `toml:"lint"`
+	TestIdentityRegex       string           `toml:"test_identity_regex"`
+	Churn                   ChurnThresholds  `toml:"churn"`
 	GitSafety               string           `toml:"git_safety"`
 }
 
 type ProfileConfig struct {
 	StateRoot               string           `toml:"state_root"`
+	WatchdogTimeout         string           `toml:"watchdog_timeout"`
 	Mode                    string           `toml:"mode"`
 	Coder                   string           `toml:"coder"`
 	Adversary               string           `toml:"adversary"`
@@ -601,6 +684,17 @@ type ProfileConfig struct {
 	JSONRepair              string           `toml:"json_repair"`
 	Rounds                  int              `toml:"rounds"`
 	Test                    string           `toml:"test"`
+	Lint                    string           `toml:"lint"`
+	TestIdentityRegex       string           `toml:"test_identity_regex"`
+	Churn                   ChurnThresholds  `toml:"churn"`
+}
+
+type ChurnThresholds struct {
+	MaxFiles             int     `toml:"max_files" json:"max_files"`
+	MaxChangedLines      int     `toml:"max_changed_lines" json:"max_changed_lines"`
+	MaxFixtureFiles      int     `toml:"max_fixture_files" json:"max_fixture_files"`
+	WhitespaceRatio      float64 `toml:"whitespace_ratio" json:"whitespace_ratio"`
+	MinimumSemanticRatio float64 `toml:"minimum_semantic_ratio" json:"minimum_semantic_ratio"`
 }
 
 type AdapterConfigSet struct {
@@ -689,14 +783,18 @@ type FlagInputs struct {
 	Profile                 string
 	Workdir                 string
 	StateRoot               string
+	AllowedPaths            []string
+	WatchdogTimeout         time.Duration
 	Rounds                  int
 	Test                    string
+	Lint                    string
 	NoTest                  bool
 	JSON                    bool
 	DryRun                  bool
 	ShowReview              bool
 	FailOnReview            bool
 	AllowDirty              bool
+	AllowDevBuild           bool
 	Autostash               bool
 	Timeout                 time.Duration
 	Quiet                   bool
@@ -712,8 +810,10 @@ type RunOptions struct {
 	Prompt  string
 	Workdir string
 	// StateRoot overrides the default ~/.local/state/tagteam artifact root.
-	StateRoot string
-	Mode      Mode
+	StateRoot    string
+	ResumedFrom  string
+	AllowedPaths []string
+	Mode         Mode
 	// ModeExplicit is true when the caller explicitly requested Mode for
 	// this invocation (via --mode or a --profile), as opposed to it being
 	// left at the config/built-in default. Fix uses this to decide whether
@@ -761,6 +861,9 @@ type RunOptions struct {
 	JSONRepair                string
 	Rounds                    int
 	TestCmd                   string
+	LintCmd                   string
+	TestIdentityRegex         string
+	Churn                     ChurnThresholds
 	NoTest                    bool
 	JSON                      bool
 	DryRun                    bool
@@ -769,6 +872,7 @@ type RunOptions struct {
 	AllowDirty                bool
 	Autostash                 bool
 	Timeout                   time.Duration
+	WatchdogTimeout           time.Duration
 	Quiet                     bool
 	Verbose                   bool
 	GitSafety                 string
@@ -798,9 +902,12 @@ type Meta struct {
 }
 
 type TestRun struct {
-	Command string `json:"command"`
-	Output  string `json:"output,omitempty"`
-	Passed  bool   `json:"passed"`
+	Command           string   `json:"command"`
+	Output            string   `json:"output,omitempty"`
+	Passed            bool     `json:"passed"`
+	FailureIdentities []string `json:"failure_identities,omitempty"`
+	StateRoot         string   `json:"state_root,omitempty"`
+	TempDir           string   `json:"temp_dir,omitempty"`
 }
 
 type DiffFile struct {
@@ -824,6 +931,7 @@ type DiffFilesMetadata struct {
 type FinalRun struct {
 	SchemaVersion int    `json:"schema_version"`
 	RunID         string `json:"run_id"`
+	ResumedFrom   string `json:"resumed_from,omitempty"`
 	RunDir        string `json:"run_dir"`
 	Workdir       string `json:"workdir"`
 	Baseline      string `json:"baseline"`
@@ -866,6 +974,10 @@ type FinalRun struct {
 	RoundLimitReports []RoundLimitReport    `json:"round_limit_reports,omitempty"`
 	Review            *Review               `json:"review,omitempty"`
 	Tests             []TestRun             `json:"tests,omitempty"`
+	BaselineTest      *TestRun              `json:"baseline_test,omitempty"`
+	Regression        *RegressionResult     `json:"regression,omitempty"`
+	QualityGates      []QualityGateResult   `json:"quality_gates,omitempty"`
+	Findings          FindingsSummary       `json:"findings_ledger,omitempty"`
 	Costs             map[string]float64    `json:"costs,omitempty"`
 	Adapters          map[string]string     `json:"adapters,omitempty"`
 	Models            map[string]string     `json:"models,omitempty"`
@@ -944,6 +1056,16 @@ type RunState struct {
 	Mode             Mode                  `json:"mode,omitempty"`
 	Status           string                `json:"status"`
 	Phase            string                `json:"phase,omitempty"`
+	CompletedPhase   RunPhase              `json:"completed_phase,omitempty"`
+	RepoID           string                `json:"repo_id,omitempty"`
+	Workdir          string                `json:"workdir,omitempty"`
+	BaselineSHA      string                `json:"baseline_sha,omitempty"`
+	DiffHash         string                `json:"diff_hash,omitempty"`
+	Role             string                `json:"role,omitempty"`
+	Adapter          string                `json:"adapter,omitempty"`
+	Model            string                `json:"model,omitempty"`
+	InvocationID     string                `json:"invocation_id,omitempty"`
+	RecoveryStatus   string                `json:"recovery_status,omitempty"`
 	Degraded         bool                  `json:"degraded"`
 	DegradedReason   string                `json:"degraded_reason,omitempty"`
 	BlockingReason   string                `json:"blocking_reason,omitempty"`

@@ -16,10 +16,17 @@ func prepareProcessTree(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return err
 		}
+		pid := cmd.Process.Pid
+		go func() {
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			<-timer.C
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}()
 		return nil
 	}
-	cmd.WaitDelay = 5 * time.Second
+	cmd.WaitDelay = 6 * time.Second
 }

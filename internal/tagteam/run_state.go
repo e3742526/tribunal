@@ -24,6 +24,9 @@ func initFinalState(final *FinalRun, opts RunOptions) {
 }
 
 func finalizeRunState(final *FinalRun) {
+	if final.Status == RunStatusCancelled || final.Status == RunStatusQuarantined {
+		return
+	}
 	if final.ExitCode == ExitSuccess {
 		if final.Degraded || final.DegradedReason != "" {
 			final.Status = RunStatusDegraded
@@ -148,6 +151,9 @@ func classifyRoleFailure(role string, err error) ReasonCode {
 	if errors.Is(err, errInvocationBudgetExceeded) {
 		return ReasonBudgetExceeded
 	}
+	if errors.Is(err, errInvocationStalled) {
+		return ReasonStalled
+	}
 	if errors.Is(err, errScoutContextTooSmall) {
 		return ReasonScoutContextTooSmall
 	}
@@ -167,6 +173,7 @@ func classifyRoleFailure(role string, err error) ReasonCode {
 }
 
 var errInvocationBudgetExceeded = errors.New("role invocation budget exceeded")
+var errInvocationStalled = errors.New("invocation stalled without Git or output progress")
 
 func (b *InvocationBudget) Before(role, phase string) error {
 	if b == nil || b.Max <= 0 {

@@ -14,12 +14,22 @@ builds:
     binary: tagteam
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/cephalopod-ai/tagteam/internal/cli.Version={{ .Version }}
+        -X github.com/cephalopod-ai/tagteam/internal/cli.CommitSHA={{ .FullCommit }}
+        -X github.com/cephalopod-ai/tagteam/internal/cli.BuildTime={{ .Date }}
+        -X github.com/cephalopod-ai/tagteam/internal/cli.Dirty=false
     goos:
       - darwin
       - linux
     goarch:
       - amd64
       - arm64
+    hooks:
+      post:
+        - scripts/write-binary-manifest.sh "{{ .Path }}"
 
 archives:
   - id: default
@@ -33,6 +43,9 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
     files:
+      - src: dist/tagteam_{{ .Os }}_{{ .Arch }}*/tagteam.sha256
+        dst: tagteam.sha256
+        strip_parent: true
       - README.md
       - LICENSE
       - AGENTS.md
