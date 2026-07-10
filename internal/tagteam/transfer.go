@@ -23,6 +23,7 @@ type TransferRecord struct {
 	FocusedTest   TestRun   `json:"focused_test"`
 	Lint          TestRun   `json:"lint"`
 	Status        string    `json:"status"`
+	RolledBack    bool      `json:"rolled_back,omitempty"`
 	Error         string    `json:"error,omitempty"`
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at"`
@@ -160,14 +161,23 @@ func TransferRun(ctx context.Context, opts RunOptions, runID, targetOverride str
 	}
 	targetPatch, err := deterministicDiffPatch(ctx, target, final.Baseline, filepath.Join(runDir, "transfer-target.index"))
 	if err != nil {
+		record.RolledBack = rollbackAppliedPatch(ctx, target, patch)
 		return record, fmt.Errorf("capture transferred target diff: %w", err)
 	}
 	record.TargetDiffSHA = sha256Sum(targetPatch)
 	if record.TargetDiffSHA != final.LatestDiffSHA256 {
+		record.RolledBack = rollbackAppliedPatch(ctx, target, patch)
 		return record, fmt.Errorf("target diff checksum differs after transfer")
 	}
 	record.Status = "transferred"
 	return record, nil
+}
+
+func rollbackAppliedPatch(ctx context.Context, target string, patch []byte) bool {
+	cmd := exec.CommandContext(ctx, "git", "apply", "--reverse", "--whitespace=nowarn")
+	cmd.Dir = target
+	cmd.Stdin = bytes.NewReader(patch)
+	return cmd.Run() == nil
 }
 
 func inferPrimaryCheckout(ctx context.Context, workdir string) (string, error) {

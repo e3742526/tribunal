@@ -65,7 +65,16 @@ func pathWithin(root, candidate string) bool {
 func captureIntegritySnapshot(req Request) (integritySnapshot, error) {
 	snapshot := integritySnapshot{Files: map[string]protectedFile{}}
 	if req.Workdir != "" {
-		if err := snapshot.captureTree(filepath.Join(req.Workdir, ".tagteam"), func(string) bool { return true }); err != nil {
+		legacyRunDir := ""
+		if req.RunDir != "" {
+			legacyRoot := filepath.Join(req.Workdir, ".tagteam")
+			if pathWithin(legacyRoot, req.RunDir) {
+				legacyRunDir = filepath.Clean(req.RunDir)
+			}
+		}
+		if err := snapshot.captureTree(filepath.Join(req.Workdir, ".tagteam"), func(path string) bool {
+			return legacyRunDir == "" || !pathWithin(legacyRunDir, filepath.Clean(path))
+		}); err != nil {
 			return integritySnapshot{}, err
 		}
 	}

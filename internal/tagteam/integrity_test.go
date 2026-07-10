@@ -81,3 +81,39 @@ func TestRunAdapterRestoresProtectedPointer(t *testing.T) {
 		t.Fatalf("pointer was not restored: %q err=%v", data, readErr)
 	}
 }
+
+func TestRunAdapterRestoresProtectedRunState(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "baseline")
+
+	runDir := t.TempDir()
+	statePath := filepath.Join(runDir, "state.json")
+	if err := writeRunState(runDir, RunState{RunID: "integrity-test", Status: "running", Phase: string(PhasePlanning)}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) { return &CommandSpec{}, nil },
+		direct: func(role Role, req Request) (Result, error) {
+			if err := os.WriteFile(statePath, []byte("tampered\n"), 0o600); err != nil {
+				return Result{}, err
+			}
+			return Result{Text: "report"}, nil
+		},
+	}
+	_, err := (&App{}).runAdapter(context.Background(), adapter, RoleReporter, Request{Workdir: repo, RunDir: runDir, Phase: "state test"}, false)
+	if err == nil || !IsIntegrityViolation(err) {
+		t.Fatalf("error = %v, want integrity violation", err)
+	}
+	var restored RunState
+	readJSONFile(t, statePath, &restored)
+	if restored.InvocationID == "" || restored.Role != string(RoleReporter) {
+		t.Fatalf("restored state did not retain the host transition: %#v", restored)
+	}
+}

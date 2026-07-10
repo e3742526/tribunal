@@ -11,7 +11,10 @@ import (
 
 func TestBuildRunOptionsUsesComposeModeTargets(t *testing.T) {
 	workdir := t.TempDir()
-	m, err := newModel(RunOptions{Workdir: workdir})
+	m, err := newModel(RunOptions{
+		Workdir: workdir,
+		Flags:   tagteam.FlagInputs{AllowedPaths: []string{"README.md"}},
+	})
 	if err != nil {
 		t.Fatalf("newModel() error = %v", err)
 	}
@@ -141,6 +144,7 @@ func TestBuildRunOptionsHonorsTUIOverridesOverInitialFlags(t *testing.T) {
 		Workdir: t.TempDir(),
 		Flags: tagteam.FlagInputs{
 			Mode:                 "relay",
+			AllowedPaths:         []string{"README.md"},
 			StrictScout:          true,
 			NoScoutRetrieval:     true,
 			RepairJSONWithWorker: true,
@@ -188,7 +192,10 @@ func TestBuildRunOptionsHonorsTUIOverridesOverInitialFlags(t *testing.T) {
 func TestBuildRunOptionsClearsStaleNoSliceFlag(t *testing.T) {
 	m, err := newModel(RunOptions{
 		Workdir: t.TempDir(),
-		Flags:   tagteam.FlagInputs{NoSlice: true},
+		Flags: tagteam.FlagInputs{
+			AllowedPaths: []string{"README.md"},
+			NoSlice:      true,
+		},
 		Changed: map[string]bool{"no-slice": true},
 	})
 	if err != nil {

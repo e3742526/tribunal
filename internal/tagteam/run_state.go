@@ -197,19 +197,20 @@ func applyInvocationBudget(final *FinalRun, budget *InvocationBudget) {
 }
 
 type ReviewBundle struct {
-	SchemaVersion     int       `json:"schema_version"`
-	Role              string    `json:"role"`
-	Round             int       `json:"round"`
-	Baseline          string    `json:"baseline"`
-	PromptPath        string    `json:"prompt_path"`
-	ConfigSummaryPath string    `json:"config_summary_path"`
-	DiffPath          string    `json:"diff_path,omitempty"`
-	FilesPath         string    `json:"files_path,omitempty"`
-	TestOutputPath    string    `json:"test_output_path,omitempty"`
-	ScoutOutputPath   string    `json:"scout_output_path,omitempty"`
-	CoderOutputPath   string    `json:"coder_output_path,omitempty"`
-	PriorFindingsPath string    `json:"prior_findings_path,omitempty"`
-	GeneratedAt       time.Time `json:"generated_at"`
+	SchemaVersion      int       `json:"schema_version"`
+	Role               string    `json:"role"`
+	Round              int       `json:"round"`
+	Baseline           string    `json:"baseline"`
+	PromptPath         string    `json:"prompt_path"`
+	ConfigSummaryPath  string    `json:"config_summary_path"`
+	DiffPath           string    `json:"diff_path,omitempty"`
+	FilesPath          string    `json:"files_path,omitempty"`
+	TestOutputPath     string    `json:"test_output_path,omitempty"`
+	ScoutOutputPath    string    `json:"scout_output_path,omitempty"`
+	CoderOutputPath    string    `json:"coder_output_path,omitempty"`
+	PriorFindingsPath  string    `json:"prior_findings_path,omitempty"`
+	FindingsLedgerPath string    `json:"findings_ledger_path,omitempty"`
+	GeneratedAt        time.Time `json:"generated_at"`
 }
 
 func buildReviewBundle(runDir string, opts RunOptions, role string, round int, baseline string, diff DiffArtifact, testOutput, coderOutputPath string, relay RelayContext, prior *Review) (ReviewBundle, error) {
@@ -261,6 +262,12 @@ func buildReviewBundle(runDir string, opts RunOptions, role string, round int, b
 	if prior != nil {
 		bundle.PriorFindingsPath = filepath.Join(dir, "prior-review.json")
 		if err := writeJSONWithNewline(bundle.PriorFindingsPath, prior); err != nil {
+			return ReviewBundle{}, err
+		}
+	}
+	if ledger, err := os.ReadFile(filepath.Join(runDir, findingsLedgerFilename)); err == nil {
+		bundle.FindingsLedgerPath = filepath.Join(dir, "findings-ledger.json")
+		if err := writeFileDurable(bundle.FindingsLedgerPath, ledger, 0o644, true); err != nil {
 			return ReviewBundle{}, err
 		}
 	}

@@ -557,6 +557,7 @@ func (r Review) Validate() error {
 		{"ambiguous_identity_handling", r.DataLossChecks.AmbiguousIdentityHandling},
 		{"read_only_non_mutation", r.DataLossChecks.ReadOnlyNonMutation},
 	}
+	failedDataLossCheck := false
 	for _, item := range checks {
 		switch item.check.Status {
 		case "pass", "fail", "not_applicable":
@@ -569,6 +570,12 @@ func (r Review) Validate() error {
 		if item.check.Status == "fail" && r.Verdict == "pass" {
 			return fmt.Errorf("pass verdict cannot include failed data-loss check %s", item.name)
 		}
+		if item.check.Status == "fail" {
+			failedDataLossCheck = true
+		}
+	}
+	if failedDataLossCheck && !r.HasBlockingFindings() {
+		return fmt.Errorf("failed data-loss checks require a blocker or major finding")
 	}
 	for i, disposition := range r.PriorFindingDispositions {
 		if strings.TrimSpace(disposition.FindingID) == "" || strings.TrimSpace(disposition.Evidence) == "" {

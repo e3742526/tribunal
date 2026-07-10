@@ -54,3 +54,12 @@ func TestDeferFindingRequiresOperatorReason(t *testing.T) {
 		t.Fatalf("summary=%#v err=%v", summary, err)
 	}
 }
+
+func TestReviewRejectsFailedDataLossCheckWithoutBlockingFinding(t *testing.T) {
+	review := currentReviewForTest()
+	review.Findings = []Finding{}
+	review.DataLossChecks.MalformedInputPreservation = DataLossCheck{Status: "fail", Evidence: "malformed record was dropped"}
+	if err := review.ValidateCurrent(); err == nil {
+		t.Fatal("expected failed data-loss check without major finding to be rejected")
+	}
+}

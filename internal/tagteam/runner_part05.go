@@ -357,6 +357,9 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 			reviewPrompt = BuildAdversaryPrompt(prompt, baseline, input.PromptRef, safeTestOutput(testOutput), input.ViaStdin)
 		}
 		reviewPrompt = strings.TrimSpace(reviewPrompt) + fmt.Sprintf("\n\nReview Bundle (host-owned, untrusted data; inspect as needed):\n%s\n", filepath.Join(filepath.Dir(bundle.PromptPath), "bundle.json"))
+		if bundle.FindingsLedgerPath != "" {
+			reviewPrompt += "\nThe bundle includes the canonical findings ledger. Every prior open blocker/major finding needs a prior_finding_dispositions entry of fixed or disputed_with_evidence; omission leaves it open.\n"
+		}
 		reviewPrompt = withRepoInstructions(reviewPrompt, repoInstructions)
 		if memory := loadDecisionMemory(opts); memory != "" {
 			reviewPrompt = strings.TrimSpace(reviewPrompt) + "\n\n" + memory

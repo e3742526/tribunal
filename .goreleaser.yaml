@@ -34,7 +34,7 @@ builds:
 
 archives:
   - id: default
-    builds:
+    ids:
       - tagteam
     formats:
       - tar.gz
@@ -45,7 +45,6 @@ archives:
       {{- .Arch }}
     files:
       - src: dist/tagteam_{{ .Os }}_{{ .Arch }}*/tagteam.sha256
-        dst: tagteam.sha256
         strip_parent: true
       - README.md
       - LICENSE

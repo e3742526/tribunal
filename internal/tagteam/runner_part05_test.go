@@ -476,8 +476,8 @@ func TestReview_PersistsEditorTargetForFixResume(t *testing.T) {
 		Timeout:       10 * time.Second,
 	}
 	reviewed, err := app.Review(context.Background(), reviewOpts, "review this diff")
-	if err != nil {
-		t.Fatalf("Review() error = %v", err)
+	if err == nil || ExitCode(err) != ExitBlockingFindings {
+		t.Fatalf("Review() error = %v, want blocking review failure", err)
 	}
 	if reviewed.Coder.Adapter != "claude" || reviewed.Coder.Model != "sonnet" {
 		t.Fatalf("review should have persisted the editor target, got %#v", reviewed.Coder)
@@ -574,8 +574,8 @@ func TestReviewIgnoresUnknownDefaultEditorTarget(t *testing.T) {
 		Timeout:   10 * time.Second,
 	}
 	reviewed, err := app.Review(context.Background(), opts, "review this diff")
-	if err != nil {
-		t.Fatalf("Review() error = %v", err)
+	if err == nil || ExitCode(err) != ExitBlockingFindings {
+		t.Fatalf("Review() error = %v, want blocking review failure", err)
 	}
 	if reviewed.Coder.Adapter != "" {
 		t.Fatalf("review should not persist implicit/default editor target, got %#v", reviewed.Coder)

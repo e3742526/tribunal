@@ -113,6 +113,13 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 			return Result{}, err
 		}
 		recordInvocationState(req, record)
+		if !dryRun && req.Workdir != "" {
+			refreshed, snapshotErr := captureIntegritySnapshot(req)
+			if snapshotErr != nil {
+				return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("refresh protected artifact state: %w", snapshotErr)}
+			}
+			hostBefore = refreshed
+		}
 		if dryRun {
 			payload, _ := json.MarshalIndent(spec, "", "  ")
 			result := Result{Text: redactSecretsWithOverlay(string(payload), req.EnvOverlay), Command: spec.Argv}
@@ -207,6 +214,13 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		return Result{}, err
 	}
 	recordInvocationState(req, record)
+	if !dryRun && req.Workdir != "" {
+		refreshed, snapshotErr := captureIntegritySnapshot(req)
+		if snapshotErr != nil {
+			return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("refresh protected artifact state: %w", snapshotErr)}
+		}
+		hostBefore = refreshed
+	}
 	if dryRun {
 		payload, _ := json.MarshalIndent(spec, "", "  ")
 		result := Result{Text: redactSecretsWithOverlay(string(payload), req.EnvOverlay), Command: spec.Argv}
