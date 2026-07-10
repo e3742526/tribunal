@@ -242,6 +242,9 @@ func newReviewCommand(shared *flagState) *cobra.Command {
 		Short:        "Reviewer-only review over the current diff (supervisor or adversary depending on --mode)",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireVerifiedInstallation(shared); err != nil {
+				return err
+			}
 			opts, cfg, err := resolve(cmd, shared, "")
 			if err != nil {
 				return err

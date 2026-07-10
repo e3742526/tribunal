@@ -42,3 +42,14 @@ func TestChecksumManifestNamesAdjacentBinary(t *testing.T) {
 		t.Fatalf("expected filename mismatch, got %v", err)
 	}
 }
+
+func TestReviewCommandRejectsUnverifiedBuild(t *testing.T) {
+	oldVersion, oldCommit, oldTime, oldDirty := Version, CommitSHA, BuildTime, Dirty
+	t.Cleanup(func() { Version, CommitSHA, BuildTime, Dirty = oldVersion, oldCommit, oldTime, oldDirty })
+	Version, CommitSHA, BuildTime, Dirty = "dev", "", "", "unknown"
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"review"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "development build") {
+		t.Fatalf("review error = %v, want installation-integrity rejection", err)
+	}
+}
