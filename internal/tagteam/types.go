@@ -49,6 +49,7 @@ const (
 	ReasonSupervisorUnavailable ReasonCode = "supervisor_unavailable"
 	ReasonWorkerTimeout         ReasonCode = "worker_timeout"
 	ReasonWorkerUnavailable     ReasonCode = "worker_unavailable"
+	ReasonWorkerOutputInvalid   ReasonCode = "worker_output_invalid"
 	ReasonBlockingFindings      ReasonCode = "blocking_findings"
 	ReasonTestFailed            ReasonCode = "test_failed"
 	ReasonRoundsExhausted       ReasonCode = "rounds_exhausted"
@@ -68,12 +69,14 @@ const (
 )
 
 type RoleLossPolicies struct {
+	Worker     LossPolicy `json:"worker,omitempty" toml:"worker"`
 	Reviewer   LossPolicy `json:"reviewer,omitempty" toml:"reviewer"`
 	Supervisor LossPolicy `json:"supervisor,omitempty" toml:"supervisor"`
 	Scout      LossPolicy `json:"scout,omitempty" toml:"scout"`
 }
 
 type RoleFallbacks struct {
+	Worker     []string `json:"worker,omitempty" toml:"worker"`
 	Reviewer   []string `json:"reviewer,omitempty" toml:"reviewer"`
 	Supervisor []string `json:"supervisor,omitempty" toml:"supervisor"`
 	Scout      []string `json:"scout,omitempty" toml:"scout"`
@@ -208,25 +211,26 @@ type VersionInfo struct {
 }
 
 type Request struct {
-	Context        context.Context
-	Prompt         string
-	SystemPrompt   string
-	EnvOverlay     map[string]string
-	Model          string
-	Workdir        string
-	RunDir         string
-	OutputPath     string
-	SchemaPath     string
-	Timeout        time.Duration
-	MaxOutputBytes int64
-	Passthrough    []string
-	ResumeID       string
-	Stdin          []byte
-	InputMode      string
-	Phase          string
-	Quiet          bool
-	Verbose        bool
-	Budget         *InvocationBudget
+	Context               context.Context
+	Prompt                string
+	SystemPrompt          string
+	EnvOverlay            map[string]string
+	Model                 string
+	Workdir               string
+	RunDir                string
+	OutputPath            string
+	SchemaPath            string
+	Timeout               time.Duration
+	MaxOutputBytes        int64
+	Passthrough           []string
+	ResumeID              string
+	Stdin                 []byte
+	InputMode             string
+	Phase                 string
+	Quiet                 bool
+	Verbose               bool
+	Budget                *InvocationBudget
+	RequireWorkerContract bool
 }
 
 type InvocationBudget struct {
@@ -255,13 +259,14 @@ type CommandSpec struct {
 }
 
 type Result struct {
-	Text      string   `json:"text,omitempty"`
-	Review    *Review  `json:"review,omitempty"`
-	Scout     *Scout   `json:"scout,omitempty"`
-	SessionID string   `json:"session_id,omitempty"`
-	CostUSD   float64  `json:"cost_usd,omitempty"`
-	Raw       []byte   `json:"-"`
-	Command   []string `json:"command,omitempty"`
+	Text      string        `json:"text,omitempty"`
+	Review    *Review       `json:"review,omitempty"`
+	Scout     *Scout        `json:"scout,omitempty"`
+	Worker    *WorkerResult `json:"worker,omitempty"`
+	SessionID string        `json:"session_id,omitempty"`
+	CostUSD   float64       `json:"cost_usd,omitempty"`
+	Raw       []byte        `json:"-"`
+	Command   []string      `json:"command,omitempty"`
 }
 
 type WorkPlan struct {
@@ -273,12 +278,13 @@ type WorkPlan struct {
 }
 
 type WorkPackage struct {
-	ID           string   `json:"id"`
-	Title        string   `json:"title"`
-	Goal         string   `json:"goal"`
-	AllowedScope []string `json:"allowed_scope"`
-	Acceptance   []string `json:"acceptance"`
-	Validation   []string `json:"validation"`
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	Goal             string   `json:"goal"`
+	EstimatedSeconds int      `json:"estimated_seconds"`
+	AllowedScope     []string `json:"allowed_scope"`
+	Acceptance       []string `json:"acceptance"`
+	Validation       []string `json:"validation"`
 }
 
 type OrchestrationAdvisory struct {
@@ -534,6 +540,7 @@ type Config struct {
 }
 
 type DefaultsConfig struct {
+	StateRoot               string           `toml:"state_root"`
 	Mode                    string           `toml:"mode"`
 	Coder                   string           `toml:"coder"`
 	RelayCoder              string           `toml:"relay_coder"`
@@ -566,6 +573,7 @@ type DefaultsConfig struct {
 }
 
 type ProfileConfig struct {
+	StateRoot               string           `toml:"state_root"`
 	Mode                    string           `toml:"mode"`
 	Coder                   string           `toml:"coder"`
 	Adversary               string           `toml:"adversary"`
@@ -680,6 +688,7 @@ type FlagInputs struct {
 	RepairJSONWithWorker    bool
 	Profile                 string
 	Workdir                 string
+	StateRoot               string
 	Rounds                  int
 	Test                    string
 	NoTest                  bool
@@ -702,7 +711,9 @@ type FlagInputs struct {
 type RunOptions struct {
 	Prompt  string
 	Workdir string
-	Mode    Mode
+	// StateRoot overrides the default ~/.local/state/tagteam artifact root.
+	StateRoot string
+	Mode      Mode
 	// ModeExplicit is true when the caller explicitly requested Mode for
 	// this invocation (via --mode or a --profile), as opposed to it being
 	// left at the config/built-in default. Fix uses this to decide whether
@@ -895,6 +906,7 @@ type RunCaps struct {
 
 type DeliveryRecord struct {
 	SchemaVersion       int       `json:"schema_version"`
+	InvocationID        string    `json:"invocation_id"`
 	Role                Role      `json:"role"`
 	Adapter             string    `json:"adapter"`
 	Phase               string    `json:"phase,omitempty"`
@@ -903,6 +915,12 @@ type DeliveryRecord struct {
 	StdinBytes          int       `json:"stdin_bytes,omitempty"`
 	StdinSHA256         string    `json:"stdin_sha256,omitempty"`
 	OutputPath          string    `json:"output_path,omitempty"`
+	StdoutPath          string    `json:"stdout_path,omitempty"`
+	StderrPath          string    `json:"stderr_path,omitempty"`
+	StdoutBytes         int64     `json:"stdout_bytes,omitempty"`
+	StderrBytes         int64     `json:"stderr_bytes,omitempty"`
+	StdoutTruncated     bool      `json:"stdout_truncated,omitempty"`
+	StderrTruncated     bool      `json:"stderr_truncated,omitempty"`
 	RawOutputPath       string    `json:"raw_output_path,omitempty"`
 	ParsedPath          string    `json:"parsed_path,omitempty"`
 	ValidationErrorPath string    `json:"validation_error_path,omitempty"`
@@ -915,6 +933,8 @@ type DeliveryRecord struct {
 	StartedAt           time.Time `json:"started_at"`
 	FinishedAt          time.Time `json:"finished_at"`
 	Status              string    `json:"status"`
+	ProcessExitCode     int       `json:"process_exit_code,omitempty"`
+	CancellationCause   string    `json:"cancellation_cause,omitempty"`
 	Error               string    `json:"error,omitempty"`
 }
 

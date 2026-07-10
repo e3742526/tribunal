@@ -257,6 +257,7 @@ Return JSON only, with this shape:
       "id": "P1",
       "title": "Short package title",
       "goal": "Concrete outcome for this package only.",
+      "estimated_seconds": 240,
       "allowed_scope": ["path/or/area"],
       "acceptance": ["specific pass condition"],
       "validation": ["specific command or check"]

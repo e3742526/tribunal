@@ -143,6 +143,7 @@ func bindSharedFlags(cmd *cobra.Command, flags *flagState) {
 	flagSet.BoolVar(&flags.RepairJSONWithWorker, "repair-json-with-worker", false, "Explicitly allow the selected worker to repair invalid JSON contract output in read-only parser mode")
 	flagSet.StringVarP(&flags.Profile, "profile", "P", "", "Named profile")
 	flagSet.StringVarP(&flags.Workdir, "workdir", "C", ".", "Working directory")
+	flagSet.StringVar(&flags.StateRoot, "state-root", "", "Override authoritative run-state root (default ~/.local/state/tagteam)")
 	flagSet.IntVarP(&flags.Rounds, "rounds", "r", 0, "Hard cap on implementation/review rounds before final no-edit reports")
 	flagSet.StringVarP(&flags.Test, "test", "t", "", "Test command")
 	flagSet.BoolVar(&flags.NoTest, "no-test", false, "Skip tests")
@@ -286,7 +287,11 @@ func newPlanCommand(shared *flagState) *cobra.Command {
 				}
 				runDir = latest.RunDir
 			} else {
-				runDir = filepath.Join(workdir, ".tagteam", "runs", args[0])
+				resolved, resolveErr := tagteam.RunDirForCLI(workdir, args[0])
+				if resolveErr != nil {
+					return resolveErr
+				}
+				runDir = resolved
 			}
 			plan, err := tagteam.ReadPlanForCLI(runDir)
 			if err != nil {
@@ -318,7 +323,11 @@ func newTranscriptCommand(shared *flagState) *cobra.Command {
 				}
 				runDir = latest.RunDir
 			} else {
-				runDir = filepath.Join(workdir, ".tagteam", "runs", args[0])
+				resolved, resolveErr := tagteam.RunDirForCLI(workdir, args[0])
+				if resolveErr != nil {
+					return resolveErr
+				}
+				runDir = resolved
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), runDir)
 			return nil

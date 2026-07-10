@@ -231,7 +231,7 @@ func (m *model) loadRuns() {
 		active[current.RunDir] = true
 	}
 
-	root := filepath.Join(m.workdir, ".tagteam", "runs")
+	root := tagteam.RunsRootForCLI(m.workdir)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1529,7 +1529,10 @@ func (m *model) watchRun(raw string) error {
 		}
 		m.currentRunDir = latest.RunDir
 	default:
-		runDir := filepath.Join(m.workdir, ".tagteam", "runs", target)
+		runDir, resolveErr := tagteam.RunDirForCLI(m.workdir, target)
+		if resolveErr != nil {
+			return resolveErr
+		}
 		info, err := os.Stat(runDir)
 		if err != nil || !info.IsDir() {
 			return fmt.Errorf("run %q not found", target)

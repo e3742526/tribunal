@@ -25,7 +25,7 @@ type ActiveRun struct {
 }
 
 func activeRunPath(workdir string) string {
-	return filepath.Join(workdir, ".tagteam", "active.json")
+	return statePathForWorkdir(workdir, "active.json")
 }
 
 func writeActiveRun(workdir string, active ActiveRun) error {

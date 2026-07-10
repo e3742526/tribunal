@@ -148,7 +148,7 @@ func TestRunSolo_SuccessfulRunRemovesActivePointer(t *testing.T) {
 	}
 
 	var latest LatestRun
-	readJSONFile(t, filepath.Join(repo, ".tagteam", "latest.json"), &latest)
+	readJSONFile(t, statePathForWorkdir(repo, "latest.json"), &latest)
 	if latest.RunID != final.RunID {
 		t.Fatalf("latest run id = %q, want %q (existing latest/final behavior must still pass)", latest.RunID, final.RunID)
 	}

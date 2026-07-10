@@ -139,6 +139,9 @@ func classifyRoleFailure(role string, err error) ReasonCode {
 	if err == nil {
 		return ReasonNone
 	}
+	if IsOutputContractError(err) && (role == "worker" || role == "coder" || role == "solo") {
+		return ReasonWorkerOutputInvalid
+	}
 	if IsOutputContractError(err) {
 		return ReasonReviewerJSONInvalid
 	}
@@ -267,6 +270,8 @@ func fallbackTargetsForRole(opts RunOptions, role string, primary RoleTarget) []
 		out = append(out, opts.FallbacksByTarget[roleTargetString(primary)]...)
 	}
 	switch role {
+	case "worker", "coder", "solo":
+		out = append(out, opts.Fallbacks.Worker...)
 	case "scout":
 		out = append(out, opts.Fallbacks.Scout...)
 	case "supervisor":
@@ -279,6 +284,8 @@ func fallbackTargetsForRole(opts RunOptions, role string, primary RoleTarget) []
 
 func lossPolicyForRole(opts RunOptions, role string) LossPolicy {
 	switch role {
+	case "worker", "coder", "solo":
+		return opts.LossPolicy.Worker
 	case "scout":
 		return opts.LossPolicy.Scout
 	case "supervisor":

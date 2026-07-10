@@ -32,7 +32,7 @@ func DefaultConfig() Config {
 			ScoutMode:               "recon",
 			PostScoutMode:           "polish",
 			ScoutFailurePolicy:      "continue",
-			LossPolicy:              RoleLossPolicies{Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
+			LossPolicy:              RoleLossPolicies{Worker: LossPolicyBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
 			ScoutRetrieval:          &scoutRetrieval,
 			ScoutContextPolicy:      "warn",
 			SupervisorSlicing:       &supervisorSlicing,
@@ -69,7 +69,7 @@ func DefaultConfig() Config {
 				ScoutMode:          "recon",
 				PostScoutMode:      "polish",
 				ScoutFailurePolicy: "continue",
-				LossPolicy:         RoleLossPolicies{Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
+				LossPolicy:         RoleLossPolicies{Worker: LossPolicyBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
 				ScoutRetrieval:     &scoutRetrieval,
 				ScoutContextPolicy: "warn",
 				Rounds:             2,
@@ -332,6 +332,7 @@ func mergeConfigFileWithOptions(dst *Config, path string, opts mergeConfigFileOp
 }
 
 func sanitizeUntrustedRepoConfig(src Config) Config {
+	src.Defaults.StateRoot = ""
 	src.Defaults.Test = ""
 	src.Defaults.GitSafety = ""
 	src.Defaults.MaxOutputBytes = 0
@@ -343,6 +344,7 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Defaults.FallbacksByTarget = nil
 	src.Defaults.ScoutContextPolicy = ""
 	for name, profile := range src.Profiles {
+		profile.StateRoot = ""
 		profile.Test = ""
 		profile.MaxOutputBytes = 0
 		profile.MaxWallTime = ""
@@ -369,6 +371,9 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 }
 
 func mergeConfig(dst *Config, src Config) {
+	if src.Defaults.StateRoot != "" {
+		dst.Defaults.StateRoot = src.Defaults.StateRoot
+	}
 	legacyDefaultsOnly := src.Defaults.Mode == "" &&
 		(src.Defaults.Coder != "" || src.Defaults.Adversary != "") &&
 		src.Defaults.Worker == "" &&
@@ -467,6 +472,9 @@ func mergeConfig(dst *Config, src Config) {
 		}
 		for key, profile := range src.Profiles {
 			current := dst.Profiles[key]
+			if profile.StateRoot != "" {
+				current.StateRoot = profile.StateRoot
+			}
 			if profile.Mode != "" {
 				current.Mode = profile.Mode
 			}
@@ -620,6 +628,9 @@ func mergeContextBudget(dstMax, dstReserved **int, srcMax, srcReserved *int) {
 }
 
 func mergeRoleLossPolicies(dst *RoleLossPolicies, src RoleLossPolicies) {
+	if src.Worker != "" {
+		dst.Worker = src.Worker
+	}
 	if src.Reviewer != "" {
 		dst.Reviewer = src.Reviewer
 	}
@@ -632,6 +643,9 @@ func mergeRoleLossPolicies(dst *RoleLossPolicies, src RoleLossPolicies) {
 }
 
 func mergeRoleFallbacks(dst *RoleFallbacks, src RoleFallbacks) {
+	if len(src.Worker) > 0 {
+		dst.Worker = append([]string{}, src.Worker...)
+	}
 	if len(src.Reviewer) > 0 {
 		dst.Reviewer = append([]string{}, src.Reviewer...)
 	}
@@ -722,6 +736,9 @@ func hasTagteamEnv(overlay map[string]string) bool {
 }
 
 func mergeEnvConfig(cfg *Config, overlay map[string]string) {
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_STATE_ROOT"); ok {
+		cfg.Defaults.StateRoot = value
+	}
 	legacyRoleEnvSet := false
 	coderEnvSet := false
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODER"); ok {
@@ -753,6 +770,9 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_LOSS_POLICY"); ok {
 		cfg.Defaults.LossPolicy.Scout = LossPolicy(value)
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_WORKER_LOSS_POLICY"); ok {
+		cfg.Defaults.LossPolicy.Worker = LossPolicy(value)
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_REVIEWER_LOSS_POLICY"); ok {
 		cfg.Defaults.LossPolicy.Reviewer = LossPolicy(value)
@@ -978,6 +998,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if err := validateConfig(cfg); err != nil {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
 	}
+	stateRoot := cfg.Defaults.StateRoot
 	modeRaw := cfg.Defaults.Mode
 	rounds := cfg.Defaults.Rounds
 	testCmd := cfg.Defaults.Test
@@ -1034,6 +1055,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		}
 		profile = p
 		hasProfile = true
+		if profile.StateRoot != "" {
+			stateRoot = profile.StateRoot
+		}
 		switch {
 		case profile.Mode != "":
 			modeRaw = profile.Mode
@@ -1115,6 +1139,9 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	}
 	if changed["mode"] {
 		modeRaw = flags.Mode
+	}
+	if changed["state-root"] {
+		stateRoot = flags.StateRoot
 	}
 	if changed["solo"] {
 		modeRaw = string(ModeSolo)
@@ -1489,6 +1516,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	return RunOptions{
 		Prompt:                    strings.TrimSpace(prompt),
 		Workdir:                   workdir,
+		StateRoot:                 strings.TrimSpace(stateRoot),
 		Mode:                      mode,
 		ModeExplicit:              modeExplicit,
 		Coder:                     editorTarget,
@@ -1597,6 +1625,7 @@ func validateRoleLossPolicies(p RoleLossPolicies) error {
 		value LossPolicy
 	}{
 		{"loss_policy.reviewer", p.Reviewer},
+		{"loss_policy.worker", p.Worker},
 		{"loss_policy.supervisor", p.Supervisor},
 		{"loss_policy.scout", p.Scout},
 	} {
@@ -1610,8 +1639,8 @@ func validateRoleLossPolicies(p RoleLossPolicies) error {
 }
 
 func normalizeRoleFallbacks(f RoleFallbacks, editor, reviewer, scout RoleTarget) RoleFallbacks {
-	_ = editor
 	return RoleFallbacks{
+		Worker:     normalizeFallbackTargets(f.Worker, editor),
 		Reviewer:   normalizeFallbackTargets(f.Reviewer, reviewer),
 		Supervisor: normalizeFallbackTargets(f.Supervisor, reviewer),
 		Scout:      normalizeFallbackTargets(f.Scout, scout),

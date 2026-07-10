@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -549,7 +550,7 @@ func (a *App) Review(ctx context.Context, opts RunOptions, prompt string) (final
 		return FinalRun{}, err
 	}
 	runID := newRunID()
-	runDir, err := createRunDir(opts.Workdir, runID)
+	runDir, err := createRunDir(opts.Workdir, opts.StateRoot, runID)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
@@ -974,13 +975,17 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if cleanup != nil {
 		defer cleanup()
 	}
-	runDir, err := createRunDir(opts.Workdir, runID)
+	runDir, err := createRunDir(opts.Workdir, opts.StateRoot, runID)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
 	activateRun(opts.Workdir, runID, runDir, opts.Mode)
 	runCompleted := false
 	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
+	workerSchemaPath := filepath.Join(runDir, "worker-result-schema.json")
+	if err := writeFileDurable(workerSchemaPath, []byte(WorkerResultSchema+"\n"), 0o644, false); err != nil {
+		return FinalRun{}, err
+	}
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1006,11 +1011,16 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	logProgress(opts, "run %s started mode=%s baseline=%s run-dir=%s", runID, opts.Mode, baseline, runDir)
 
 	registry := Registry(a.Config, opts)
-	editor, ok := registry[opts.Coder.Adapter]
-	if !ok {
-		return FinalRun{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", editorLabel, opts.Coder.Adapter)}
+	selectionState := FinalRun{}
+	initFinalState(&selectionState, opts)
+	selectedCoder, editor, err := selectRunnableRoleAdapter(ctx, registry, editorLabel, opts.Coder, fallbackTargetsForRole(opts, editorLabel, opts.Coder), lossPolicyForRole(opts, editorLabel), &selectionState)
+	if err != nil {
+		return FinalRun{}, err
 	}
-	if err := checkAdapters(ctx, editor); err != nil {
+	opts.Coder = selectedCoder
+	meta.Adapters[editorLabel] = opts.Coder.Adapter
+	meta.Models[editorLabel] = opts.Coder.Model
+	if err := writeJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
 		return FinalRun{}, err
 	}
 
@@ -1031,6 +1041,10 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 		StartedAt:       meta.StartedAt,
 	}
 	initFinalState(&final, opts)
+	final.Degraded = selectionState.Degraded
+	final.DegradedReason = selectionState.DegradedReason
+	final.RoleStatuses = selectionState.RoleStatuses
+	final.RoleLosses = selectionState.RoleLosses
 	budget := &InvocationBudget{Max: opts.MaxRoleInvocations}
 	opts.InvocationBudget = budget
 	setRoleStatus(&final, editorLabel, opts.Coder, "running", "", "")
@@ -1046,19 +1060,21 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	logProgress(opts, "solo implementation started adapter=%s", editor.ID())
 	outputPath := filepath.Join(runDir, "solo-round-1.md")
 	editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
-		Context:      ctx,
-		Prompt:       withRepoInstructions(BuildSoloPrompt(opts.Workdir, opts.Prompt), repoInstructions),
-		SystemPrompt: "",
-		EnvOverlay:   opts.EnvOverlay,
-		Model:        opts.Coder.Model,
-		Workdir:      opts.Workdir,
-		RunDir:       runDir,
-		OutputPath:   outputPath,
-		Timeout:      opts.Timeout,
-		Phase:        fmt.Sprintf("solo %s", editor.ID()),
-		Quiet:        opts.Quiet,
-		Verbose:      opts.Verbose,
-		Budget:       opts.InvocationBudget,
+		Context:               ctx,
+		Prompt:                workerContractPrompt(withRepoInstructions(BuildSoloPrompt(opts.Workdir, opts.Prompt), repoInstructions)),
+		SystemPrompt:          "",
+		EnvOverlay:            opts.EnvOverlay,
+		Model:                 opts.Coder.Model,
+		Workdir:               opts.Workdir,
+		RunDir:                runDir,
+		OutputPath:            outputPath,
+		SchemaPath:            workerSchemaPath,
+		Timeout:               opts.Timeout,
+		Phase:                 fmt.Sprintf("solo %s", editor.ID()),
+		Quiet:                 opts.Quiet,
+		Verbose:               opts.Verbose,
+		Budget:                opts.InvocationBudget,
+		RequireWorkerContract: true,
 	}, opts.DryRun)
 	if err != nil {
 		reason := classifyRoleFailure(editorLabel, err)
@@ -1256,13 +1272,17 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if cleanup != nil {
 		defer cleanup()
 	}
-	runDir, err := createRunDir(opts.Workdir, runID)
+	runDir, err := createRunDir(opts.Workdir, opts.StateRoot, runID)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
 	activateRun(opts.Workdir, runID, runDir, opts.Mode)
 	runCompleted := false
 	defer func() { deactivateRun(opts.Workdir, runID, runCompleted) }()
+	workerSchemaPath := filepath.Join(runDir, "worker-result-schema.json")
+	if err := writeFileDurable(workerSchemaPath, []byte(WorkerResultSchema+"\n"), 0o644, false); err != nil {
+		return FinalRun{}, err
+	}
 	if err := writeRedactedBytes(filepath.Join(runDir, "input.md"), []byte(opts.Prompt), opts.EnvOverlay); err != nil {
 		return FinalRun{}, err
 	}
@@ -1366,11 +1386,13 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			return final, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown scout adapter %q", opts.Scout.Adapter)}
 		}
 	}
-	if err := checkAdapters(ctx, editor); err != nil {
-		setRoleStatus(&final, editorLabel, opts.Coder, "failed", classifyRoleFailure(editorLabel, err), err.Error())
+	opts.Coder, editor, err = selectRunnableRoleAdapter(ctx, registry, editorLabel, opts.Coder, fallbackTargetsForRole(opts, editorLabel, opts.Coder), lossPolicyForRole(opts, editorLabel), &final)
+	if err != nil {
 		return final, err
 	}
-	setRoleStatus(&final, editorLabel, opts.Coder, "ready", "", "")
+	meta.Adapters[editorLabel] = opts.Coder.Adapter
+	meta.Models[editorLabel] = opts.Coder.Model
+	final.Coder = opts.Coder
 	reviewerRoleForPolicy := reviewerLabel
 	currentRole = reviewerRoleForPolicy
 	opts.Adversary, reviewer, err = selectRunnableRoleAdapter(ctx, registry, reviewerRoleForPolicy, opts.Adversary, fallbackTargetsForRole(opts, reviewerRoleForPolicy, opts.Adversary), lossPolicyForRole(opts, reviewerRoleForPolicy), &final)
@@ -1383,6 +1405,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	final.Adversary = opts.Adversary
 	final.Adapters = meta.Adapters
 	final.Models = meta.Models
+	if err := writeJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
+		return final, err
+	}
 
 	var brief string
 	var relay RelayContext
@@ -1540,6 +1565,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 					plan = parsed
 					planCost += planResult.CostUSD
 				}
+			}
+			if err := validateWorkPlanBudget(plan, int64(opts.Timeout.Seconds()*0.8)); err != nil {
+				return final, &ExitError{Code: ExitAdapterFailure, Err: err}
 			}
 			pkg, ok := plan.Selected()
 			if !ok {
@@ -1847,7 +1875,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				editorPrompt = BuildFixPrompt(round, opts.Prompt, diff, review)
 			}
 		}
-		editorPrompt = withRepoInstructions(editorPrompt, repoInstructions)
+		editorPrompt = workerContractPrompt(withRepoInstructions(editorPrompt, repoInstructions))
 		implementSelectedPackage = false
 		editorOutputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.md", editorLabel, round))
 		if selectedPackage != nil {
@@ -1858,20 +1886,22 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			}
 		}
 		editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
-			Context:      ctx,
-			Prompt:       editorPrompt,
-			SystemPrompt: editorSystemPrompt,
-			EnvOverlay:   opts.EnvOverlay,
-			Model:        opts.Coder.Model,
-			Workdir:      opts.Workdir,
-			RunDir:       runDir,
-			OutputPath:   editorOutputPath,
-			ResumeID:     sessionID,
-			Timeout:      opts.Timeout,
-			Phase:        fmt.Sprintf("round %d %s %s", round, editorLabel, editor.ID()),
-			Quiet:        opts.Quiet,
-			Verbose:      opts.Verbose,
-			Budget:       opts.InvocationBudget,
+			Context:               ctx,
+			Prompt:                editorPrompt,
+			SystemPrompt:          editorSystemPrompt,
+			EnvOverlay:            opts.EnvOverlay,
+			Model:                 opts.Coder.Model,
+			Workdir:               opts.Workdir,
+			RunDir:                runDir,
+			OutputPath:            editorOutputPath,
+			SchemaPath:            workerSchemaPath,
+			ResumeID:              sessionID,
+			Timeout:               opts.Timeout,
+			Phase:                 fmt.Sprintf("round %d %s %s", round, editorLabel, editor.ID()),
+			Quiet:                 opts.Quiet,
+			Verbose:               opts.Verbose,
+			Budget:                opts.InvocationBudget,
+			RequireWorkerContract: true,
 		}, opts.DryRun)
 		if err != nil {
 			setRoleStatus(&final, editorLabel, opts.Coder, "failed", classifyRoleFailure(editorLabel, err), err.Error())
@@ -2248,12 +2278,13 @@ func syntheticWorkPlan(prompt, requestedPackage string) WorkPlan {
 		Summary:       "dry-run work package",
 		Packages: []WorkPackage{
 			{
-				ID:           selected,
-				Title:        "Dry-run package",
-				Goal:         strings.TrimSpace(prompt),
-				AllowedScope: []string{"."},
-				Acceptance:   []string{"dry-run"},
-				Validation:   []string{"dry-run"},
+				ID:               selected,
+				Title:            "Dry-run package",
+				Goal:             strings.TrimSpace(prompt),
+				EstimatedSeconds: 60,
+				AllowedScope:     []string{"."},
+				Acceptance:       []string{"dry-run"},
+				Validation:       []string{"dry-run"},
 			},
 		},
 		SelectedPackage: selected,
@@ -2294,6 +2325,12 @@ func validateWorkPlan(plan *WorkPlan, requestedPackage string, maxPackages int) 
 		if strings.TrimSpace(pkg.Goal) == "" {
 			return fmt.Errorf("package %s missing goal", pkg.ID)
 		}
+		if pkg.EstimatedSeconds <= 0 {
+			return fmt.Errorf("package %s missing or invalid estimated_seconds", pkg.ID)
+		}
+		if len(pkg.AllowedScope) == 0 {
+			return fmt.Errorf("package %s missing allowed_scope", pkg.ID)
+		}
 		if len(pkg.Acceptance) == 0 {
 			return fmt.Errorf("package %s missing acceptance", pkg.ID)
 		}
@@ -2312,6 +2349,18 @@ func validateWorkPlan(plan *WorkPlan, requestedPackage string, maxPackages int) 
 	}
 	if !seen[plan.SelectedPackage] {
 		return fmt.Errorf("selected package %q not found in work plan", plan.SelectedPackage)
+	}
+	return nil
+}
+
+func validateWorkPlanBudget(plan WorkPlan, budgetSeconds int64) error {
+	if budgetSeconds <= 0 {
+		return nil
+	}
+	for _, pkg := range plan.Packages {
+		if int64(pkg.EstimatedSeconds) > budgetSeconds {
+			return fmt.Errorf("package %s estimated_seconds=%d exceeds calibrated package budget=%d", pkg.ID, pkg.EstimatedSeconds, budgetSeconds)
+		}
 	}
 	return nil
 }
@@ -2669,8 +2718,10 @@ func maxOutputBytes(req Request) int64 {
 
 func startDeliveryRecord(adapter Adapter, role Role, req Request, dryRun bool, spec *CommandSpec) (DeliveryRecord, string, error) {
 	started := time.Now().UTC()
+	name := fmt.Sprintf("%s-%s-%s", started.Format("20060102T150405.000000000Z"), sanitizeArtifactName(string(role)), sanitizeArtifactName(adapter.ID()))
 	record := DeliveryRecord{
 		SchemaVersion: ArtifactSchemaVersion,
+		InvocationID:  name,
 		Role:          role,
 		Adapter:       adapter.ID(),
 		Phase:         req.Phase,
@@ -2699,13 +2750,18 @@ func startDeliveryRecord(adapter Adapter, role Role, req Request, dryRun bool, s
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return record, "", err
 	}
-	name := fmt.Sprintf("%s-%s-%s", started.Format("20060102T150405.000000000Z"), sanitizeArtifactName(string(role)), sanitizeArtifactName(adapter.ID()))
 	promptPath := filepath.Join(dir, name+".prompt.md")
 	if err := writeRedactedBytes(promptPath, []byte(req.Prompt), req.EnvOverlay); err != nil {
 		return record, "", err
 	}
 	record.PromptPath = promptPath
-	return record, filepath.Join(dir, name+".json"), nil
+	record.StdoutPath = filepath.Join(dir, name+".stdout.txt")
+	record.StderrPath = filepath.Join(dir, name+".stderr.txt")
+	recordPath := filepath.Join(dir, name+".json")
+	if err := writeJSONWithNewline(recordPath, record); err != nil {
+		return record, "", err
+	}
+	return record, recordPath, nil
 }
 
 func promptInArgv(prompt string, spec *CommandSpec) bool {
@@ -2730,6 +2786,19 @@ func finishDeliveryRecord(path string, record DeliveryRecord, status string, err
 		record.Error = redactSecrets(err.Error())
 	}
 	_ = writeJSONWithNewline(path, record)
+}
+
+func finishInvocationStreams(record *DeliveryRecord, stdout, stderr *invocationStream) {
+	if stdout != nil {
+		_ = stdout.Close()
+		record.StdoutBytes = stdout.Received()
+		record.StdoutTruncated = stdout.Exceeded()
+	}
+	if stderr != nil {
+		_ = stderr.Close()
+		record.StderrBytes = stderr.Received()
+		record.StderrTruncated = stderr.Exceeded()
+	}
 }
 
 func sanitizeArtifactName(raw string) string {
@@ -2758,6 +2827,12 @@ func writeOutputContractArtifacts(req Request, role Role, result Result, raw []b
 		return rawPath, err
 	}
 	switch role {
+	case RoleCoder:
+		if result.Worker != nil {
+			if err := writeJSONWithNewline(req.OutputPath+".parsed.json", result.Worker); err != nil {
+				return rawPath, err
+			}
+		}
 	case RoleAdversary:
 		if result.Review != nil {
 			normalizeReview(result.Review)
@@ -2788,6 +2863,19 @@ func writeValidationErrorArtifact(req Request, err error) string {
 func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Request, dryRun bool) (Result, error) {
 	if err := req.Budget.Before(string(role), req.Phase); err != nil {
 		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: err}
+	}
+	var before worktreeSnapshot
+	if req.RequireWorkerContract && !dryRun {
+		var snapshotErr error
+		before, snapshotErr = captureWorktreeSnapshot(ctx, req.Workdir)
+		if snapshotErr != nil {
+			return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("capture pre-invocation Git state: %w", snapshotErr)}
+		}
+	}
+	calibration, effectiveTimeout := calibrateTimeout(ctx, adapter, role, req)
+	req.Timeout = effectiveTimeout
+	if calibration.Warning != "" {
+		logRequestProgress(req, "timeout calibration warning: %s", calibration.Warning)
 	}
 	if direct, ok := adapter.(DirectAdapter); ok {
 		spec, err := adapter.BuildCmd(role, req)
@@ -2829,6 +2917,10 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		}
 		result, err := direct.RunDirect(role, req)
 		if err != nil {
+			if record.StderrPath != "" {
+				_ = writeRedactedBytes(record.StderrPath, []byte(err.Error()+"\n"), req.EnvOverlay)
+				record.StderrBytes = int64(len(err.Error()) + 1)
+			}
 			finishDeliveryRecord(recordPath, record, "failed", err)
 			return Result{}, err
 		}
@@ -2836,8 +2928,18 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		if len(raw) == 0 {
 			raw = []byte(result.Text)
 		}
+		if record.StdoutPath != "" {
+			_ = writeRedactedBytes(record.StdoutPath, raw, req.EnvOverlay)
+			record.StdoutBytes = int64(len(raw))
+		}
 		if int64(len(raw)) > maxOutputBytes(req) {
 			err := &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s output exceeded max_output_bytes=%d", adapter.ID(), maxOutputBytes(req))}
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+		if err := validateWorkerResultForRequest(ctx, req, &result, before); err != nil {
+			record.ValidationErrorPath = writeValidationErrorArtifact(req, err)
+			_, _ = writeOutputContractArtifacts(req, role, result, raw)
 			finishDeliveryRecord(recordPath, record, "failed", err)
 			return Result{}, err
 		}
@@ -2853,7 +2955,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 			return Result{}, artifactErr
 		}
 		record.RawOutputPath = rawPath
-		if req.OutputPath != "" && (role == RoleAdversary || role == RoleScout) {
+		if req.OutputPath != "" && (role == RoleCoder || role == RoleAdversary || role == RoleScout) {
 			record.ParsedPath = req.OutputPath + ".parsed.json"
 		}
 		normalizeReview(result.Review)
@@ -2918,8 +3020,17 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	if len(spec.Stdin) > 0 {
 		cmd.Stdin = bytes.NewReader(spec.Stdin)
 	}
-	stdout := newBoundedBuffer(maxOutputBytes(req))
-	stderr := newBoundedBuffer(maxOutputBytes(req))
+	stdout, err := newInvocationStream(record.StdoutPath, maxOutputBytes(req), req.EnvOverlay)
+	if err != nil {
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	stderr, err := newInvocationStream(record.StderrPath, maxOutputBytes(req), req.EnvOverlay)
+	if err != nil {
+		_ = stdout.Close()
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	started := time.Now()
@@ -2932,6 +3043,8 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		for {
 			select {
 			case <-ticker.C:
+				_ = stdout.Sync()
+				_ = stderr.Sync()
 				progress, err := writeLiveProgress(runCtx, req, role, phase, started, "running")
 				if !req.Quiet {
 					if err != nil {
@@ -2956,6 +3069,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	}()
 	if err := cmd.Run(); err != nil {
 		close(done)
+		finishInvocationStreams(&record, stdout, stderr)
 		_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "failed")
 		if stdout.Exceeded() || stderr.Exceeded() {
 			limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
@@ -2967,13 +3081,28 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 			msg = redactSecretsWithOverlay(err.Error(), req.EnvOverlay)
 		}
 		logRequestProgress(req, "%s failed elapsed=%s", phase, shortDuration(time.Since(started)))
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			record.ProcessExitCode = exitErr.ExitCode()
+		}
+		if runCtx.Err() != nil {
+			record.CancellationCause = runCtx.Err().Error()
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				recordTimeoutObservation(req.RunDir, calibration, time.Since(started))
+			}
+		}
 		runErr := &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s failed: %s", adapter.ID(), msg)}
 		finishDeliveryRecord(recordPath, record, "failed", runErr)
 		return Result{}, runErr
 	}
 	close(done)
+	finishInvocationStreams(&record, stdout, stderr)
 	_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "completed")
 	logRequestProgress(req, "%s process completed elapsed=%s", phase, shortDuration(time.Since(started)))
+	if stdout.Exceeded() || stderr.Exceeded() {
+		limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
+		finishDeliveryRecord(recordPath, record, "failed", limitErr)
+		return Result{}, limitErr
+	}
 	raw := stdout.Bytes()
 	if req.OutputPath != "" && fileExists(req.OutputPath) {
 		if info, statErr := os.Stat(req.OutputPath); statErr == nil && info.Size() > maxOutputBytes(req) {
@@ -3007,6 +3136,12 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		finishDeliveryRecord(recordPath, record, "failed", err)
 		return Result{}, err
 	}
+	if err := validateWorkerResultForRequest(ctx, req, &result, before); err != nil {
+		record.ValidationErrorPath = writeValidationErrorArtifact(req, err)
+		_, _ = writeOutputContractArtifacts(req, role, result, raw)
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
 	normalizeReview(result.Review)
 	normalizeScout(result.Scout)
 	if role == RoleScout && req.OutputPath != "" && result.Scout != nil {
@@ -3021,7 +3156,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		return Result{}, artifactErr
 	}
 	record.RawOutputPath = rawPath
-	if req.OutputPath != "" && (role == RoleAdversary || role == RoleScout) {
+	if req.OutputPath != "" && (role == RoleCoder || role == RoleAdversary || role == RoleScout) {
 		record.ParsedPath = req.OutputPath + ".parsed.json"
 	}
 	result.Command = spec.Argv
@@ -3059,7 +3194,7 @@ func (a *App) persistFinal(workdir string, final FinalRun) error {
 		ExitCode:  final.ExitCode,
 		UpdatedAt: time.Now().UTC(),
 	}
-	return writeJSON(filepath.Join(workdir, ".tagteam", "latest.json"), latest)
+	return writeJSON(statePathForWorkdir(workdir, "latest.json"), latest)
 }
 
 func preflight(opts RunOptions, runID string) (string, func(), error) {
@@ -3313,15 +3448,18 @@ func isForwardableAuthEnvKey(key string) bool {
 	return strings.HasSuffix(upper, "_API_KEY") || strings.HasSuffix(upper, "_AUTH_TOKEN")
 }
 
-func createRunDir(workdir, runID string) (string, error) {
-	rootDir := filepath.Join(workdir, ".tagteam")
-	if err := os.MkdirAll(filepath.Join(rootDir, "runs"), 0o755); err != nil {
+func createRunDir(workdir, stateRoot, runID string) (string, error) {
+	locator, err := resolveStateLocator(workdir, stateRoot)
+	if err != nil {
 		return "", err
 	}
-	if err := ensureRunRootIgnore(rootDir); err != nil {
+	if err := locator.Prepare(); err != nil {
 		return "", err
 	}
-	root := filepath.Join(rootDir, "runs", runID)
+	root, err := locator.RunDir(runID)
+	if err != nil {
+		return "", err
+	}
 	if err := os.Mkdir(root, 0o755); err != nil {
 		return "", err
 	}
@@ -3329,16 +3467,12 @@ func createRunDir(workdir, runID string) (string, error) {
 }
 
 func writeJSON(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONDurable(path, value, false, true)
 }
 
 func readLatest(workdir string) (LatestRun, error) {
 	var latest LatestRun
-	data, err := os.ReadFile(filepath.Join(workdir, ".tagteam", "latest.json"))
+	data, err := os.ReadFile(statePathForWorkdir(workdir, "latest.json"))
 	if err != nil {
 		return LatestRun{}, err
 	}
@@ -3672,15 +3806,7 @@ func normalizeTextFileNewline(data []byte) []byte {
 }
 
 func writeJSONWithNewline(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONDurable(path, value, true, true)
 }
 
 func gitDirty(workdir string) (bool, error) {

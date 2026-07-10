@@ -1,5 +1,7 @@
 package tagteam
 
+import "path/filepath"
+
 func ReadLatestForCLI(workdir string) (LatestRun, error) {
 	return readLatest(workdir)
 }
@@ -22,4 +24,15 @@ func UserConfigPathForCLI() (string, error) {
 
 func EnsureGitignoreEntryForCLI(workdir, entry string) error {
 	return ensureGitignoreEntry(workdir, entry)
+}
+
+func RunDirForCLI(workdir, runID string) (string, error) {
+	return runDirForWorkdir(workdir, runID)
+}
+
+func RunsRootForCLI(workdir string) string {
+	if locator, err := locatorFromPointer(workdir); err == nil {
+		return locator.RunsRoot
+	}
+	return filepath.Join(workdir, ".tagteam", "runs")
 }

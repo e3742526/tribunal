@@ -69,7 +69,7 @@ const WorkPlanSchema = `{
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "title", "goal", "acceptance", "validation"],
+        "required": ["id", "title", "goal", "estimated_seconds", "allowed_scope", "acceptance", "validation"],
         "properties": {
           "id": {
             "type": "string"
@@ -79,6 +79,10 @@ const WorkPlanSchema = `{
           },
           "goal": {
             "type": "string"
+          },
+          "estimated_seconds": {
+            "type": "integer",
+            "minimum": 1
           },
           "allowed_scope": {
             "type": "array",

@@ -909,6 +909,7 @@ func TestParseWorkPlanSelectsRequestedPackage(t *testing.T) {
 	      "id": "P1",
 	      "title": "First",
 	      "goal": "Do first",
+	      "estimated_seconds": 60,
 	      "allowed_scope": ["a.go"],
 	      "acceptance": ["first passes"],
 	      "validation": ["go test ./..."]
@@ -917,6 +918,7 @@ func TestParseWorkPlanSelectsRequestedPackage(t *testing.T) {
 	      "id": "P2",
 	      "title": "Second",
 	      "goal": "Do second",
+	      "estimated_seconds": 60,
 	      "allowed_scope": ["b.go"],
 	      "acceptance": ["second passes"],
 	      "validation": ["go test ./..."]
@@ -942,8 +944,8 @@ func TestParseWorkPlanRejectsTooManyPackages(t *testing.T) {
 	raw := []byte(`{
 	  "summary": "split work",
 	  "packages": [
-	    {"id":"P1","title":"First","goal":"Do first","acceptance":["ok"],"validation":["go test ./..."]},
-	    {"id":"P2","title":"Second","goal":"Do second","acceptance":["ok"],"validation":["go test ./..."]}
+	    {"id":"P1","title":"First","goal":"Do first","estimated_seconds":60,"allowed_scope":["a.go"],"acceptance":["ok"],"validation":["go test ./..."]},
+	    {"id":"P2","title":"Second","goal":"Do second","estimated_seconds":60,"allowed_scope":["b.go"],"acceptance":["ok"],"validation":["go test ./..."]}
 	  ],
 	  "selected_package": "P1"
 	}`)
@@ -954,7 +956,7 @@ func TestParseWorkPlanRejectsTooManyPackages(t *testing.T) {
 }
 
 func TestParseWorkPlanExtractsFencedJSON(t *testing.T) {
-	raw := []byte("```json\n{\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\n```")
+	raw := []byte("```json\n{\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"estimated_seconds\":60,\"allowed_scope\":[\"a.go\"],\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\n```")
 	plan, err := parseWorkPlan(raw, "", 5)
 	if err != nil {
 		t.Fatalf("parseWorkPlan() error = %v", err)
@@ -965,7 +967,7 @@ func TestParseWorkPlanExtractsFencedJSON(t *testing.T) {
 }
 
 func TestParseWorkPlanExtractsWrappedJSON(t *testing.T) {
-	raw := []byte("Here is the work plan:\n{\"schema_version\":1,\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\nDone.")
+	raw := []byte("Here is the work plan:\n{\"schema_version\":1,\"summary\":\"split work\",\"packages\":[{\"id\":\"P1\",\"title\":\"First\",\"goal\":\"Do first\",\"estimated_seconds\":60,\"allowed_scope\":[\"a.go\"],\"acceptance\":[\"ok\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\"}\nDone.")
 	plan, err := parseWorkPlan(raw, "", 5)
 	if err != nil {
 		t.Fatalf("parseWorkPlan() error = %v", err)
@@ -1316,7 +1318,7 @@ func TestRunLoop_PersistsFinalOnMidRunFailure(t *testing.T) {
 		t.Fatalf("persisted verdict = %q", persisted.Verdict)
 	}
 	var latest LatestRun
-	readJSONFile(t, filepath.Join(repo, ".tagteam", "latest.json"), &latest)
+	readJSONFile(t, statePathForWorkdir(repo, "latest.json"), &latest)
 	if latest.RunID != final.RunID || latest.FinalPath != filepath.Join(final.RunDir, "final.json") {
 		t.Fatalf("latest = %#v final=%#v", latest, final)
 	}
@@ -1408,7 +1410,7 @@ func TestReview_PersistsFinalOnReviewerFailure(t *testing.T) {
 		t.Fatalf("adversary status = %#v", status)
 	}
 	var latest LatestRun
-	readJSONFile(t, filepath.Join(repo, ".tagteam", "latest.json"), &latest)
+	readJSONFile(t, statePathForWorkdir(repo, "latest.json"), &latest)
 	if latest.RunID != final.RunID || latest.FinalPath != filepath.Join(final.RunDir, "final.json") {
 		t.Fatalf("latest = %#v final=%#v", latest, final)
 	}
@@ -1936,7 +1938,7 @@ case "$match" in
     exit 0
     ;;
   *"implementation work packages"*)
-    printf '%s' '{"result":"{\"schema_version\":1,\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
+    printf '%s' '{"result":"{\"schema_version\":1,\"summary\":\"Implement package one\",\"packages\":[{\"id\":\"P1\",\"title\":\"Package one\",\"goal\":\"Do the first slice\",\"estimated_seconds\":60,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"README updated\"],\"validation\":[\"go test ./...\"]},{\"id\":\"P2\",\"title\":\"Package two\",\"goal\":\"Deferred follow-up\",\"estimated_seconds\":60,\"allowed_scope\":[\"README.md\"],\"acceptance\":[\"follow-up done\"],\"validation\":[\"go test ./...\"]}],\"selected_package\":\"P1\",\"defer\":[\"P2\"]}","session_id":"","total_cost_usd":0}'
     exit 0
     ;;
 esac
@@ -1949,7 +1951,7 @@ done
 if [ "$is_review" = "1" ]; then
   printf '%s' '{"result":"{\"verdict\":\"needs_changes\",\"summary\":\"needs fixes\",\"findings\":[{\"severity\":\"major\",\"file\":\"main.go\",\"issue\":\"bug\",\"fix\":\"fix it\"}],\"test_suggestions\":[]}","session_id":"","total_cost_usd":0}'
 else
-  printf '%s' '{"result":"ok","session_id":"sess1","total_cost_usd":0}'
+  printf '%s' '{"result":"{\"schema_version\":1,\"status\":\"completed\",\"summary\":\"ok\",\"files_changed\":[],\"checks_run\":[],\"remaining_risks\":[]}","session_id":"sess1","total_cost_usd":0}'
 fi
 `
 

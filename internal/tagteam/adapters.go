@@ -97,7 +97,7 @@ func (a *CodexAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	if a.ReasoningEffort != "" {
 		argv = append(argv, "-c", fmt.Sprintf("model_reasoning_effort=%q", a.ReasoningEffort))
 	}
-	if (role == RoleAdversary || role == RoleSupervisor) && req.SchemaPath != "" {
+	if (role == RoleCoder || role == RoleAdversary || role == RoleSupervisor) && req.SchemaPath != "" {
 		argv = append(argv, "--output-schema", req.SchemaPath)
 	}
 	if req.OutputPath != "" {
@@ -179,6 +179,13 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 		if req.SystemPrompt != "" {
 			argv = append(argv, "--append-system-prompt", req.SystemPrompt)
 		}
+		if req.SchemaPath != "" {
+			schemaBytes, err := osReadFile(req.SchemaPath)
+			if err != nil {
+				return nil, err
+			}
+			argv = append(argv, "--json-schema", string(schemaBytes))
+		}
 	case RoleAdversary:
 		argv = append(argv,
 			"--permission-mode", "dontAsk",
@@ -240,6 +247,12 @@ func (a *ClaudeAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 		Text:      strings.TrimSpace(envelope.Result),
 		SessionID: envelope.SessionID,
 		CostUSD:   envelope.TotalCostUSD,
+	}
+	if role == RoleCoder {
+		structured := normalizeClaudeStructuredOutput(envelope.StructuredOutput)
+		if len(structured) > 0 && string(structured) != "null" {
+			result.Text = strings.TrimSpace(string(structured))
+		}
 	}
 	if role == RoleAdversary {
 		reviewRaw := normalizeClaudeStructuredOutput(envelope.StructuredOutput)
@@ -320,6 +333,8 @@ func (a *AgyAdapter) Detect(ctx context.Context) (VersionInfo, error) {
 	if err != nil {
 		return VersionInfo{Found: false, Auth: "unknown", Hint: "install agy", Runnable: false}, nil
 	}
+	versionCmd := execCommandContext(ctx, "agy", "--version")
+	versionOutput, versionErr := versionCmd.CombinedOutput()
 	cmd := execCommandContext(ctx, "agy", "--help")
 	if err := cmd.Run(); err != nil {
 		return VersionInfo{
@@ -333,11 +348,11 @@ func (a *AgyAdapter) Detect(ctx context.Context) (VersionInfo, error) {
 	}
 	return VersionInfo{
 		Found:    true,
-		Version:  "installed",
+		Version:  strings.TrimSpace(string(versionOutput)),
 		Auth:     "unknown",
 		Binary:   path,
 		Hint:     "run agy login or configure agy",
-		Runnable: true,
+		Runnable: versionErr == nil,
 	}, nil
 }
 

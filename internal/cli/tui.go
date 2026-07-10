@@ -49,10 +49,13 @@ With no RUN_ID it starts in compose mode, surfaces the active/latest run as cont
 func resolveTUIRunDir(workdir string, args []string) (string, error) {
 	if len(args) > 0 {
 		runID := args[0]
-		runDir := filepath.Join(workdir, ".tagteam", "runs", runID)
+		runDir, resolveErr := tagteam.RunDirForCLI(workdir, runID)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
 		info, err := os.Stat(runDir)
 		if err != nil || !info.IsDir() {
-			return "", fmt.Errorf("run %q not found under %s", runID, filepath.Join(workdir, ".tagteam", "runs"))
+			return "", fmt.Errorf("run %q not found under %s", runID, tagteam.RunsRootForCLI(workdir))
 		}
 		return runDir, nil
 	}
