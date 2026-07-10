@@ -652,3 +652,13 @@ func TestResolveOptions_EnvCanDisableScoutRetrieval(t *testing.T) {
 		t.Fatal("expected env to disable scout retrieval")
 	}
 }
+
+func TestResolveOptionsRejectsInvalidAllowedPaths(t *testing.T) {
+	_, err := ResolveOptions(DefaultConfig(), nil, FlagInputs{
+		AllowedPaths: []string{"../outside"},
+		Timeout:      15 * time.Minute,
+	}, map[string]bool{"allow-path": true}, "ship it")
+	if err == nil || !strings.Contains(err.Error(), "allow paths must be") {
+		t.Fatalf("ResolveOptions() error = %v, want invalid allow-path error", err)
+	}
+}

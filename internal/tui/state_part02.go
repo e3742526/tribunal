@@ -144,6 +144,10 @@ func (m *model) slashArgumentSuggestions(name, argument string, trailingSpace bo
 	case "rounds":
 		values := []string{"1", "2", "3", "4", "6", "8"}
 		return valueSuggestions(name, values, strconv.Itoa(m.compose.Rounds)), true
+	case "timeout":
+		return valueSuggestions(name, []string{"5m", "10m", "15m", "30m", "1h"}, m.compose.Timeout.String()), true
+	case "watchdog-timeout":
+		return valueSuggestions(name, []string{"1m", "2m", "5m", "10m"}, m.compose.WatchdogTimeout.String()), true
 	case "focus":
 		return valueSuggestions(name, []string{"compose", "detail", "runs"}, ""), true
 	case "toggle":
@@ -399,7 +403,7 @@ func (m *model) visibleFields() []composeField {
 	if m.compose.Mode == tagteam.ModeRelay {
 		fields = append(fields, fieldScoutMode, fieldPostScoutMode, fieldStrictScout, fieldScoutRetrieval, fieldScoutContextPolicy)
 	}
-	fields = append(fields, fieldRounds, fieldTest, fieldNoTest)
+	fields = append(fields, fieldAllowedPaths, fieldRounds, fieldTimeout, fieldWatchdogTimeout, fieldTest, fieldLint, fieldNoTest)
 	if m.compose.Mode == tagteam.ModeSupervisor {
 		fields = append(fields, fieldSlice)
 	}
@@ -435,8 +439,16 @@ func (m *model) fieldStringValue(field composeField) string {
 		return m.compose.ReviewerTarget
 	case fieldScout:
 		return m.compose.ScoutTarget
+	case fieldAllowedPaths:
+		return strings.Join(m.compose.AllowedPaths, ", ")
+	case fieldTimeout:
+		return m.compose.Timeout.String()
+	case fieldWatchdogTimeout:
+		return m.compose.WatchdogTimeout.String()
 	case fieldTest:
 		return m.compose.TestCmd
+	case fieldLint:
+		return m.compose.LintCmd
 	default:
 		return ""
 	}
@@ -457,8 +469,16 @@ func (m *model) applyEditorValue() {
 		m.compose.ReviewerTarget = value
 	case fieldScout:
 		m.compose.ScoutTarget = value
+	case fieldAllowedPaths:
+		m.compose.AllowedPaths = parseAllowedPaths(value)
+	case fieldTimeout:
+		m.applyDurationEditorValue("timeout", value, &m.compose.Timeout)
+	case fieldWatchdogTimeout:
+		m.applyDurationEditorValue("watchdog-timeout", value, &m.compose.WatchdogTimeout)
 	case fieldTest:
 		m.compose.TestCmd = value
+	case fieldLint:
+		m.compose.LintCmd = value
 	}
 	m.editor = editorState{}
 }
@@ -504,6 +524,10 @@ func (m *model) adjustField(field composeField, delta int) {
 		if m.compose.Rounds > 9 {
 			m.compose.Rounds = 9
 		}
+	case fieldTimeout:
+		m.compose.Timeout = cycleDuration([]time.Duration{5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour}, m.compose.Timeout, delta)
+	case fieldWatchdogTimeout:
+		m.compose.WatchdogTimeout = cycleDuration([]time.Duration{time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute}, m.compose.WatchdogTimeout, delta)
 	case fieldNoTest:
 		m.compose.NoTest = !m.compose.NoTest
 	case fieldSlice:
@@ -540,13 +564,50 @@ func (m *model) setComposeFromResolved(profile string, opts tagteam.RunOptions) 
 		StrictScout:        opts.ScoutFailurePolicy == "fail",
 		ScoutRetrieval:     opts.ScoutRetrieval,
 		ScoutContextPolicy: opts.ScoutContextPolicy,
+		AllowedPaths:       append([]string(nil), opts.AllowedPaths...),
 		Rounds:             opts.Rounds,
+		Timeout:            opts.Timeout,
+		WatchdogTimeout:    opts.WatchdogTimeout,
 		TestCmd:            opts.TestCmd,
+		LintCmd:            opts.LintCmd,
 		NoTest:             opts.NoTest,
 		Slice:              opts.SupervisorSlicing,
 		AllowDirty:         opts.AllowDirty,
 		RepairJSONWorker:   opts.JSONRepair == "worker",
 	}
+}
+
+func (m *model) applyDurationEditorValue(label, raw string, destination *time.Duration) {
+	value, err := parsePositiveDuration(label, raw)
+	if err != nil {
+		m.statusMessage = err.Error()
+		return
+	}
+	*destination = value
+}
+
+func parseAllowedPaths(raw string) []string {
+	seen := map[string]bool{}
+	paths := []string{}
+	for _, value := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' }) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		paths = append(paths, value)
+	}
+	return paths
+}
+
+func cycleDuration(values []time.Duration, current time.Duration, delta int) time.Duration {
+	labels := make([]string, len(values))
+	for index, value := range values {
+		labels[index] = value.String()
+	}
+	next := cycleString(labels, current.String(), delta)
+	parsed, _ := time.ParseDuration(next)
+	return parsed
 }
 
 func (m *model) applyProfile(raw string) error {

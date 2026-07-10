@@ -332,3 +332,46 @@ func TestConciseAdapterErrorPreservesHeadTailAndArtifactPath(t *testing.T) {
 		t.Fatalf("small error changed: %q", small)
 	}
 }
+
+func TestRunAdapterPersistsStalledStatusAfterWatchdogCancellation(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "baseline")
+
+	runDir := t.TempDir()
+	adapter := fakeAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) {
+			return &CommandSpec{Argv: []string{"sh", "-c", "sleep 10"}, Dir: repo}, nil
+		},
+		parse: func(role Role, raw []byte) (Result, error) {
+			return Result{Raw: raw}, nil
+		},
+	}
+	started := time.Now()
+	_, err := NewApp(DefaultConfig()).runAdapter(context.Background(), adapter, RoleReporter, Request{
+		Context:         context.Background(),
+		Workdir:         repo,
+		RunDir:          runDir,
+		Timeout:         5 * time.Second,
+		WatchdogTimeout: 500 * time.Millisecond,
+		Phase:           "watchdog regression",
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), string(ReasonStalled)) {
+		t.Fatalf("runAdapter() error = %v, want stalled reason", err)
+	}
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("watchdog cancellation took %s", elapsed)
+	}
+
+	var progress LiveProgress
+	readJSONFile(t, filepath.Join(runDir, liveProgressArtifact), &progress)
+	if progress.Status != "stalled" {
+		t.Fatalf("live progress status = %q, want stalled", progress.Status)
+	}
+}

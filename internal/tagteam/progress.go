@@ -1,16 +1,19 @@
 package tagteam
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 const (
 	liveProgressArtifact        = "live-progress.json"
 	preexistingWorktreeArtifact = "preexisting-worktree.json"
+	liveProgressCaptureTimeout  = 2 * time.Second
 )
 
 type PreexistingWorktree struct {
@@ -68,24 +71,27 @@ func writeLiveProgress(
 		progress.LastActivityAt = *req.ProgressLastActivity
 		progress.NoProgressFor = shortDuration(time.Since(*req.ProgressLastActivity))
 	}
+	var captureErr error
 	if req.Workdir != "" {
-		diff, err := captureLiveDiff(ctx, req.Workdir)
-		if err != nil {
-			return progress, err
+		captureCtx, cancel := context.WithTimeout(ctx, liveProgressCaptureTimeout)
+		diff, err := captureLiveDiff(captureCtx, req.Workdir)
+		cancel()
+		captureErr = err
+		if err == nil {
+			progress.ChangedFiles = diff.files
+			progress.FilesChanged = len(diff.files)
+			progress.Additions = diff.additions
+			progress.Deletions = diff.deletions
+			progress.DiffHash = sha256Sum(diff.patch)
 		}
-		progress.ChangedFiles = diff.files
-		progress.FilesChanged = len(diff.files)
-		progress.Additions = diff.additions
-		progress.Deletions = diff.deletions
-		progress.DiffHash = sha256Sum(diff.patch)
 	}
 	if req.RunDir == "" {
-		return progress, nil
+		return progress, captureErr
 	}
 	if err := writeJSONAtomic(filepath.Join(req.RunDir, liveProgressArtifact), progress); err != nil {
 		return progress, err
 	}
-	return progress, nil
+	return progress, captureErr
 }
 
 type liveDiff struct {
@@ -96,22 +102,53 @@ type liveDiff struct {
 }
 
 func captureLiveDiff(ctx context.Context, workdir string) (liveDiff, error) {
-	tempDir, err := os.MkdirTemp("", "tagteam-live-diff-*")
+	snapshot, err := captureWorktreeSnapshot(ctx, workdir)
 	if err != nil {
 		return liveDiff{}, err
 	}
-	defer os.RemoveAll(tempDir)
-	patch, _, statusZ, numstatZ, err := deterministicDiffOutputs(ctx, workdir, "HEAD", filepath.Join(tempDir, "index"))
+	numstatZ, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "diff", "--numstat", "-z", "HEAD", "--", ".", ":(exclude).tagteam")
 	if err != nil {
 		return liveDiff{}, err
 	}
-	diff := liveDiff{patch: patch}
-	for _, file := range buildDiffFiles(statusZ, numstatZ) {
-		diff.files = append(diff.files, file.Path)
-		diff.additions += file.Additions
-		diff.deletions += file.Deletions
+	diff := liveDiff{files: make([]string, 0, len(snapshot))}
+	for _, stat := range parseNumstatZ(numstatZ) {
+		diff.additions += stat.Additions
+		diff.deletions += stat.Deletions
 	}
+	for path := range snapshot {
+		diff.files = append(diff.files, path)
+	}
+	sort.Strings(diff.files)
+
+	var fingerprint bytes.Buffer
+	for _, path := range diff.files {
+		state := snapshot[path]
+		fingerprint.WriteString(path)
+		fingerprint.WriteByte(0)
+		fingerprint.WriteString(state)
+		fingerprint.WriteByte(0)
+		if !strings.HasPrefix(state, "??:") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(path)))
+		if readErr != nil {
+			return liveDiff{}, readErr
+		}
+		diff.additions += textLineCount(data)
+	}
+	diff.patch = fingerprint.Bytes()
 	return diff, nil
+}
+
+func textLineCount(data []byte) int {
+	if len(data) == 0 || bytes.IndexByte(data, 0) >= 0 {
+		return 0
+	}
+	lines := bytes.Count(data, []byte{'\n'})
+	if data[len(data)-1] != '\n' {
+		lines++
+	}
+	return lines
 }
 
 func writeJSONAtomic(path string, value any) error {

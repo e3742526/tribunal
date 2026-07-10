@@ -180,11 +180,46 @@ func existingStateLocator(workdir string) (StateLocator, bool) {
 	if err != nil {
 		return StateLocator{}, false
 	}
-	info, err := os.Stat(locator.RepoRoot)
-	if err != nil || !info.IsDir() {
+	if !externalStateIsAuthoritative(locator) {
 		return StateLocator{}, false
 	}
 	return locator, true
+}
+
+func externalStateIsAuthoritative(locator StateLocator) bool {
+	externalUpdated, externalPointer := newestStatePointer(locator.RepoRoot)
+	legacyUpdated, legacyPointer := newestStatePointer(locator.LegacyRoot)
+	switch {
+	case externalPointer && legacyPointer:
+		// Equal timestamps indicate a copy that has not yet published repo.json.
+		return externalUpdated.After(legacyUpdated)
+	case externalPointer:
+		return true
+	case legacyPointer:
+		return false
+	}
+	return directoryHasEntries(locator.RunsRoot) && !directoryHasEntries(filepath.Join(locator.LegacyRoot, "runs"))
+}
+
+func newestStatePointer(root string) (time.Time, bool) {
+	var newest time.Time
+	found := false
+	if latest, err := readLatestAt(filepath.Join(root, "latest.json")); err == nil {
+		newest = latest.UpdatedAt
+		found = true
+	}
+	if active, err := readActiveAt(filepath.Join(root, "active.json")); err == nil {
+		if !found || active.UpdatedAt.After(newest) {
+			newest = active.UpdatedAt
+		}
+		found = true
+	}
+	return newest, found
+}
+
+func directoryHasEntries(path string) bool {
+	entries, err := os.ReadDir(path)
+	return err == nil && len(entries) > 0
 }
 
 func (l StateLocator) Prepare() error {
@@ -200,7 +235,10 @@ func (l StateLocator) Prepare() error {
 		StateRoot:     l.StateRoot,
 		UpdatedAt:     time.Now().UTC(),
 	}
-	return writeJSONDurable(l.PointerPath, pointer, true, false)
+	if err := writeJSONDurable(l.PointerPath, pointer, true, false); err != nil {
+		return err
+	}
+	return l.removeLegacyRuntimeState()
 }
 
 func (l StateLocator) RunDir(runID string) (string, error) {
@@ -219,7 +257,11 @@ func validateRunID(runID string) error {
 
 func (l StateLocator) migrateLegacyRuntimeState() error {
 	runsSource := filepath.Join(l.LegacyRoot, "runs")
-	if err := migrateLegacyPath(runsSource, l.RunsRoot); err != nil {
+	if _, err := os.Lstat(runsSource); err == nil {
+		if err := copyAndVerifyPath(runsSource, l.RunsRoot); err != nil {
+			return fmt.Errorf("migrate legacy state %s: %w", runsSource, err)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	for _, name := range []string{"active.json", "latest.json"} {
@@ -230,17 +272,12 @@ func (l StateLocator) migrateLegacyRuntimeState() error {
 	return nil
 }
 
-func migrateLegacyPath(source, destination string) error {
-	if _, err := os.Lstat(source); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	if err := copyAndVerifyPath(source, destination); err != nil {
-		return fmt.Errorf("migrate legacy state %s: %w", source, err)
-	}
-	if err := os.RemoveAll(source); err != nil {
-		return fmt.Errorf("remove verified legacy state %s: %w", source, err)
+func (l StateLocator) removeLegacyRuntimeState() error {
+	for _, name := range []string{"runs", "active.json", "latest.json"} {
+		path := filepath.Join(l.LegacyRoot, name)
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove verified legacy state %s: %w", path, err)
+		}
 	}
 	return nil
 }
@@ -307,9 +344,6 @@ func (l StateLocator) mergeLegacyPointer(name string) error {
 		return fmt.Errorf("unsupported legacy pointer %q", name)
 	}
 
-	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove reconciled legacy state %s: %w", source, err)
-	}
 	return nil
 }
 

@@ -312,7 +312,9 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	}
 	stalled := make(chan struct{}, 1)
 	done := make(chan struct{})
+	watchdogStopped := make(chan struct{})
 	go func() {
+		defer close(watchdogStopped)
 		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
 		for {
@@ -360,8 +362,8 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	}()
 	if err := cmd.Run(); err != nil {
 		close(done)
+		<-watchdogStopped
 		finishInvocationStreams(&record, stdout, stderr)
-		_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, "failed")
 		if stdout.Exceeded() || stderr.Exceeded() {
 			limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
 			finishDeliveryRecord(recordPath, record, "failed", limitErr)
@@ -373,6 +375,11 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 			wasStalled = true
 		default:
 		}
+		progressStatus := "failed"
+		if wasStalled {
+			progressStatus = "stalled"
+		}
+		_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, progressStatus)
 		msg := redactSecretsWithOverlay(strings.TrimSpace(stderr.String()), req.EnvOverlay)
 		if msg == "" {
 			msg = redactSecretsWithOverlay(err.Error(), req.EnvOverlay)
@@ -398,6 +405,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		return Result{}, runErr
 	}
 	close(done)
+	<-watchdogStopped
 	finishInvocationStreams(&record, stdout, stderr)
 	_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, "completed")
 	logRequestProgress(req, "%s process completed elapsed=%s", phase, shortDuration(time.Since(started)))

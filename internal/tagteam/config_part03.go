@@ -14,6 +14,11 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 	if err := validateConfig(cfg); err != nil {
 		return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
 	}
+	if len(flags.AllowedPaths) > 0 {
+		if err := validateExplicitAllowedScope(flags.AllowedPaths); err != nil {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+		}
+	}
 	stateRoot := cfg.Defaults.StateRoot
 	watchdogTimeout, err := time.ParseDuration(cfg.Defaults.WatchdogTimeout)
 	if err != nil {

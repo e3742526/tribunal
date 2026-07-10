@@ -181,6 +181,49 @@ func TestStateLocatorPrepareRejectsConflictingRunArtifact(t *testing.T) {
 	}
 }
 
+func TestStateLocatorPreparePreservesLegacyStateUntilPointerPublished(t *testing.T) {
+	workdir := t.TempDir()
+	stateRoot := t.TempDir()
+	runGit(t, workdir, "init")
+	locator, err := resolveStateLocator(workdir, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRunDir := filepath.Join(locator.LegacyRoot, "runs", "legacy-run")
+	if err := os.MkdirAll(legacyRunDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRunDir, "final.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyLatest := filepath.Join(locator.LegacyRoot, "latest.json")
+	writeArtifactStoreTestJSON(t, legacyLatest, LatestRun{
+		RunID:     "legacy-run",
+		RunDir:    legacyRunDir,
+		FinalPath: filepath.Join(legacyRunDir, "final.json"),
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	// A directory at the pointer path forces durable publication to fail after
+	// the external copy has completed.
+	if err := os.MkdirAll(locator.PointerPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := locator.Prepare(); err == nil {
+		t.Fatal("expected repository pointer publication to fail")
+	}
+	if !fileExists(filepath.Join(legacyRunDir, "final.json")) || !fileExists(legacyLatest) {
+		t.Fatal("legacy runtime state was removed before repository pointer publication")
+	}
+	if !fileExists(filepath.Join(locator.RunsRoot, "legacy-run", "final.json")) {
+		t.Fatal("verified external copy was not retained for retry")
+	}
+	legacyReadPath := filepath.Join(workdir, ".tagteam", "latest.json")
+	if got := statePathForWorkdir(workdir, "latest.json"); got != legacyReadPath {
+		t.Fatalf("read path after interrupted migration = %q, want recoverable legacy pointer %q", got, legacyReadPath)
+	}
+}
+
 func writeArtifactStoreTestJSON(t *testing.T, path string, value any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -76,7 +76,13 @@ func (m *model) composerLines(width int) []string {
 		}
 		lines = append(lines, "> "+padOrTrim(prompt, maxInt(20, width-4)))
 	}
-	lines = append(lines, fmt.Sprintf("mode=%s  profile=%s  rounds=%d  tests=%s  dirty=%s", m.compose.Mode, profileLabel(m.compose.Profile), m.compose.Rounds, onOff(!m.compose.NoTest), onOff(m.compose.AllowDirty)))
+	scope := "required"
+	if len(m.compose.AllowedPaths) > 0 {
+		scope = fmt.Sprintf("%d %s", len(m.compose.AllowedPaths), pluralWord(len(m.compose.AllowedPaths), "path", "paths"))
+	} else if m.compose.Mode == tagteam.ModeSupervisor && m.compose.Slice {
+		scope = "from plan"
+	}
+	lines = append(lines, fmt.Sprintf("mode=%s  profile=%s  rounds=%d  scope=%s  tests=%s  dirty=%s", m.compose.Mode, profileLabel(m.compose.Profile), m.compose.Rounds, scope, onOff(!m.compose.NoTest), onOff(m.compose.AllowDirty)))
 	footer := "Enter edit  m team  / commands  s settings  u runs"
 	if m.currentSnapshot != nil {
 		footer += "  p/f/a/t detail"
@@ -127,13 +133,24 @@ func (m *model) composeFieldValue(field composeField) string {
 		return onOff(m.compose.ScoutRetrieval)
 	case fieldScoutContextPolicy:
 		return dashIfEmpty(m.compose.ScoutContextPolicy)
+	case fieldAllowedPaths:
+		if len(m.compose.AllowedPaths) == 0 {
+			return "(required unless supervisor slicing supplies scope)"
+		}
+		return strings.Join(m.compose.AllowedPaths, ", ")
 	case fieldRounds:
 		return strconv.Itoa(m.compose.Rounds)
+	case fieldTimeout:
+		return m.compose.Timeout.String()
+	case fieldWatchdogTimeout:
+		return m.compose.WatchdogTimeout.String()
 	case fieldTest:
 		if m.compose.NoTest {
 			return "(disabled)"
 		}
 		return dashIfEmpty(m.compose.TestCmd)
+	case fieldLint:
+		return dashIfEmpty(m.compose.LintCmd)
 	case fieldNoTest:
 		return onOff(m.compose.NoTest)
 	case fieldSlice:
@@ -258,10 +275,18 @@ func composeFieldLabel(mode tagteam.Mode, field composeField) string {
 		return "scout-retrieval"
 	case fieldScoutContextPolicy:
 		return "scout-context"
+	case fieldAllowedPaths:
+		return "allowed paths"
 	case fieldRounds:
 		return "rounds"
+	case fieldTimeout:
+		return "invocation timeout"
+	case fieldWatchdogTimeout:
+		return "no-progress timeout"
 	case fieldTest:
 		return "test"
+	case fieldLint:
+		return "lint"
 	case fieldNoTest:
 		return "no-test"
 	case fieldSlice:
@@ -339,7 +364,7 @@ func roleTargetString(target tagteam.RoleTarget) string {
 
 func isEditableField(field composeField) bool {
 	switch field {
-	case fieldPrompt, fieldProfile, fieldEditor, fieldReviewer, fieldScout, fieldTest:
+	case fieldPrompt, fieldProfile, fieldEditor, fieldReviewer, fieldScout, fieldAllowedPaths, fieldTimeout, fieldWatchdogTimeout, fieldTest, fieldLint:
 		return true
 	default:
 		return false
@@ -417,6 +442,21 @@ func requireInSet(label, value string, allowed []string) error {
 		}
 	}
 	return fmt.Errorf("%s must be one of %s", label, strings.Join(allowed, ", "))
+}
+
+func parsePositiveDuration(label, raw string) (time.Duration, error) {
+	value, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration such as 5m or 1h", label)
+	}
+	return value, nil
+}
+
+func pluralWord(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 func validateTargetWord(label, raw string) (string, error) {

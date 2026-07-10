@@ -220,8 +220,31 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 			return
 		}
 		m.compose.Rounds = value
+	case "allow-path":
+		paths := parseAllowedPaths(rest)
+		if len(paths) == 0 {
+			m.statusMessage = "allow-path requires one or more comma-separated repo-relative paths"
+			return
+		}
+		m.compose.AllowedPaths = paths
+	case "timeout":
+		value, err := parsePositiveDuration(name, rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.Timeout = value
+	case "watchdog-timeout":
+		value, err := parsePositiveDuration(name, rest)
+		if err != nil {
+			m.statusMessage = err.Error()
+			return
+		}
+		m.compose.WatchdogTimeout = value
 	case "test":
 		m.compose.TestCmd = rest
+	case "lint":
+		m.compose.LintCmd = rest
 	case "prompt":
 		m.compose.Prompt = rest
 	case "slice":
@@ -431,7 +454,11 @@ func (m *model) buildRunOptions() (tagteam.RunOptions, tagteam.Config, error) {
 	flags.Profile = strings.TrimSpace(m.compose.Profile)
 	flags.Mode = string(m.compose.Mode)
 	flags.Rounds = m.compose.Rounds
+	flags.AllowedPaths = append([]string(nil), m.compose.AllowedPaths...)
+	flags.Timeout = m.compose.Timeout
+	flags.WatchdogTimeout = m.compose.WatchdogTimeout
 	flags.Test = m.compose.TestCmd
+	flags.Lint = m.compose.LintCmd
 	flags.NoTest = m.compose.NoTest
 	flags.AllowDirty = m.compose.AllowDirty
 	flags.Quiet = true
@@ -455,7 +482,11 @@ func (m *model) buildRunOptions() (tagteam.RunOptions, tagteam.Config, error) {
 	clearTUIControlledFlags(changed)
 	changed["mode"] = true
 	changed["rounds"] = true
+	changed["allow-path"] = true
+	changed["timeout"] = true
+	changed["watchdog-timeout"] = true
 	changed["test"] = true
+	changed["lint"] = true
 	changed["no-test"] = true
 	if m.compose.AllowDirty {
 		changed["allow-dirty"] = true
@@ -554,10 +585,10 @@ func (m *model) buildRunOptions() (tagteam.RunOptions, tagteam.Config, error) {
 
 func clearTUIControlledFlags(changed map[string]bool) {
 	for _, name := range []string{
-		"allow-dirty", "coder", "mc", "mode", "model", "no-scout-retrieval", "no-slice",
+		"allow-dirty", "allow-path", "coder", "lint", "mc", "mode", "model", "no-scout-retrieval", "no-slice",
 		"no-test", "post-scout-mode", "profile", "relay", "repair-json-with-worker",
 		"reviewer", "scout", "scout-context-policy", "scout-mode", "slice", "solo",
-		"strict-scout", "supervisor", "test", "worker",
+		"strict-scout", "supervisor", "test", "timeout", "watchdog-timeout", "worker",
 	} {
 		delete(changed, name)
 	}
@@ -621,7 +652,7 @@ func (m *model) detailLines() []string {
 		lines = append(lines, fmt.Sprintf("Working diff: %d files (+%d -%d)", live.FilesChanged, live.Additions, live.Deletions))
 	}
 	if len(s.PreexistingFiles) > 0 {
-		lines = append(lines, fmt.Sprintf("Baseline: cumulative dirty worktree (%d pre-existing files)", len(s.PreexistingFiles)))
+		lines = append(lines, fmt.Sprintf("Baseline: cumulative dirty worktree (%d pre-existing %s)", len(s.PreexistingFiles), pluralWord(len(s.PreexistingFiles), "file", "files")))
 	}
 	if s.RecoveryStatus != "" {
 		lines = append(lines, fmt.Sprintf("Recovery: %s", s.RecoveryStatus))

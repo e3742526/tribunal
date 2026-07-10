@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cephalopod-ai/tagteam/internal/tagteam"
 )
@@ -410,6 +411,32 @@ func TestEffortCommandsPropagateToRunConfig(t *testing.T) {
 	}
 }
 
+func TestExecutionPolicyCommandsPropagateToRunOptions(t *testing.T) {
+	m, err := newModel(RunOptions{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newModel() error = %v", err)
+	}
+	m.compose.Prompt = "ship it"
+	m.applyCommand(nil, "/allow-path internal/, README.md")
+	m.applyCommand(nil, "/timeout 20m")
+	m.applyCommand(nil, "/watchdog-timeout 90s")
+	m.applyCommand(nil, "/lint go vet ./...")
+
+	opts, _, err := m.buildRunOptions()
+	if err != nil {
+		t.Fatalf("buildRunOptions() error = %v", err)
+	}
+	if strings.Join(opts.AllowedPaths, ",") != "internal/,README.md" {
+		t.Fatalf("allowed paths = %#v", opts.AllowedPaths)
+	}
+	if opts.Timeout != 20*time.Minute || opts.WatchdogTimeout != 90*time.Second {
+		t.Fatalf("timeouts = invocation:%s watchdog:%s", opts.Timeout, opts.WatchdogTimeout)
+	}
+	if opts.LintCmd != "go vet ./..." {
+		t.Fatalf("lint = %q", opts.LintCmd)
+	}
+}
+
 func TestBareModelCommandDoesNotClearSelection(t *testing.T) {
 	m, err := newModel(RunOptions{Workdir: t.TempDir()})
 	if err != nil {
@@ -485,8 +512,12 @@ func TestDisplayedSlashCommandsAreRecognized(t *testing.T) {
 		"/strict-scout on",
 		"/scout-retrieval off",
 		"/scout-context-policy block",
+		"/allow-path internal/, README.md",
 		"/rounds 3",
+		"/timeout 20m",
+		"/watchdog-timeout 2m",
 		"/test go test ./...",
+		"/lint go vet ./...",
 		"/no-test on",
 		"/slice on",
 		"/allow-dirty on",

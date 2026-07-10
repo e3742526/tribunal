@@ -52,8 +52,12 @@ const (
 	fieldStrictScout
 	fieldScoutRetrieval
 	fieldScoutContextPolicy
+	fieldAllowedPaths
 	fieldRounds
+	fieldTimeout
+	fieldWatchdogTimeout
 	fieldTest
+	fieldLint
 	fieldNoTest
 	fieldSlice
 	fieldAllowDirty
@@ -82,8 +86,12 @@ type composeState struct {
 	ScoutRetrieval     bool
 	ScoutRetrievalSet  bool
 	ScoutContextPolicy string
+	AllowedPaths       []string
 	Rounds             int
+	Timeout            time.Duration
+	WatchdogTimeout    time.Duration
 	TestCmd            string
+	LintCmd            string
 	NoTest             bool
 	Slice              bool
 	AllowDirty         bool
