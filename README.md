@@ -42,7 +42,7 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 
 - **One command, not a config project.** Pick a mode and go — no pipeline to wire up.
 - **Cost-shaped by design.** Put a cheap model on the grunt work and a stronger one on review, or point everything at frontier models and let them fight it out — the roles make the tradeoff explicit.
-- **Transparent by default.** Roles are explicit and every brief, diff, review, and test result is written to disk under `.tagteam/runs/<run-id>/` — nothing is hidden behind a vendor UI.
+- **Transparent by default.** Roles are explicit and every brief, diff, review, and test result is written to the external state store under `~/.local/state/tagteam/<repo-id>/runs/<run-id>/` — nothing is hidden behind a vendor UI.
 - **Findings loop back automatically.** Reviewed modes feed review findings back to the editor role until the change passes, tests fail, or the round limit is reached.
 
 > [!NOTE]
@@ -53,7 +53,7 @@ The multi-agent part is implicit. You don't wire up a pipeline; you pick a mode 
 ## What's New In v0.1.4
 
 - **Interactive TUI dashboard.** `tagteam tui [RUN_ID]` can now launch runs, switch modes/targets, and inspect recent runs from one terminal UI.
-- **Better live-state observability.** In-progress runs now publish `.tagteam/active.json`, richer `state.json` updates, and a shared run snapshot surface that powers both the TUI and status-style views.
+- **Better live-state observability.** In-progress runs publish external `active.json`, richer phase/progress state, and a shared run snapshot surface that powers both the TUI and status-style views.
 - **Opt-in JSON repair for malformed contract output.** `--repair-json-with-worker` and `json_repair = "worker"` explicitly allow the selected worker to act as a read-only parser workaround for invalid JSON artifacts; repaired runs are marked degraded with `json_repair_used`.
 - **More resilient Claude-heavy setups.** The built-in `claude-failover` profile adds target-specific fallbacks from Claude supervisor/reviewer roles to Codex models when those invocations fail.
 - **Documentation and release hardening.** The user manual, architecture docs, diagrams, and test ledger now describe the current command surface and run-state model.
@@ -103,7 +103,7 @@ Recent additions in this repo:
 - solo mode is available with `--solo <adapter[:model]>`
 - adversarial coder/adversary mode remains available for backward compatibility
 - saved run artifacts include briefs, diffs, reviews, tests, and final summaries
-- active runs publish `.tagteam/active.json` so live views can discover in-flight work
+- active runs publish external `active.json` so live views can discover in-flight work without exposing host state to workers
 - command surface now includes `run`, `review`, `fix`, `status`, `plan`, `transcript`, `tui`, `doctor`, and `init`
 - config layering supports repo config, user config, env overrides, flags, and named profiles
 - explicit JSON repair is available through `--repair-json-with-worker` / `json_repair = "worker"`
@@ -198,6 +198,15 @@ go install github.com/cephalopod-ai/tagteam@latest
 
 Or download a prebuilt archive for your platform from GitHub Releases, then put the `tagteam` binary on your `PATH`.
 
+Release archives include `tagteam.sha256` beside the binary. Verify embedded version, full commit SHA, UTC build time, dirty-tree status, and the installed checksum with:
+
+```bash
+tagteam version --json
+tagteam verify-install
+```
+
+Commands that can edit a checkout reject missing/tampered manifests, dirty release metadata, and ambiguous `dev` builds. `--allow-dev-build` is an explicit escape hatch for local development; read-only status, plan, transcript, doctor, version, verification, and TUI inspection remain available for diagnosis.
+
 Binary releases are published for:
 
 - macOS (`darwin/amd64`, `darwin/arm64`)
@@ -208,7 +217,7 @@ Binary releases are published for:
 
 Create a release by pushing a tag such as `v0.1.4`; GitHub Actions runs Go checks on macOS and Linux, then GoReleaser attaches archives plus `checksums.txt` to the release.
 
-Build from source:
+Build from source (development builds must be explicitly allowed for commands that edit a worktree):
 
 ```bash
 go build -o tagteam .
@@ -217,7 +226,7 @@ go build -o tagteam .
 Run locally:
 
 ```bash
-go run . "add OAuth login"
+go run . --allow-dev-build "add OAuth login"
 ```
 
 ## Quick start
@@ -237,7 +246,7 @@ cd my-project
 tagteam "add a --json flag to the export command and cover it with a test"
 ```
 
-With no other options, `tagteam` uses the default supervisor mode: `codex:gpt-5.6-terra` writes a brief and reviews, `agy:Gemini 3.5 Flash (Medium)` implements, and findings loop back until the change passes review, tests fail, or the round limit is hit. Every brief, diff, review, and test run is written under `.tagteam/runs/<run-id>/`, and the final verdict prints to the terminal. Run `tagteam status` afterward to see the latest run, or `tagteam doctor` first if you're not sure your agent CLIs are set up.
+With no other options, `tagteam` uses the default supervisor mode: `codex:gpt-5.6-terra` writes a brief and reviews, `agy:Gemini 3.5 Flash (Medium)` implements, and findings loop back until the change passes review, tests fail, or the round limit is hit. Every brief, diff, review, and test run is written to the external state store, and the final verdict prints to the terminal. Run `tagteam status` afterward to see the latest run, or `tagteam doctor` first if you're not sure your agent CLIs are set up.
 
 Supervisor mode slices work by default before the worker edits. The supervisor writes a bounded work plan, selects one package, and the worker implements only that package. If packages remain, `tagteam` stops after the selected package passes and reports the next packages unless `--auto-next-package` is set.
 
@@ -493,11 +502,13 @@ tagteam init
 | `rounds` | hard cap on implementation/review cycles; exhausted runs stop and collect final reports from both agents |
 | `max_role_invocations` | optional hard cap on adapter calls in one run; `--max-role-invocations` overrides it |
 | `json_repair` | explicit JSON contract repair mode: `off` (default) or `worker`; `--repair-json-with-worker` enables the selected worker as a read-only parser for invalid JSON artifacts |
-| `test`, `git_safety` | test command and git safety settings |
+| `state_root`, `watchdog_timeout` | authoritative external artifact root and no-progress timeout |
+| `lint`, `test`, `test_identity_regex`, `git_safety` | transfer lint, focused tests, optional failure-identity regex, and git safety settings |
+| `churn` | configurable `max_files`, `max_changed_lines`, `max_fixture_files`, `whitespace_ratio`, and `minimum_semantic_ratio` gates |
 
 </details>
 
-Profiles may override `mode`, `scout`, `scout_mode`, `scout_retrieval`, `scout_failure_policy`, `scout_context_policy`, `loss_policy`, `fallbacks`, `fallbacks_by_target`, `json_repair`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, and `test`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
+Profiles may override `mode`, `state_root`, `watchdog_timeout`, `scout`, `scout_mode`, `scout_retrieval`, `scout_failure_policy`, `scout_context_policy`, `loss_policy`, `fallbacks`, `fallbacks_by_target`, `json_repair`, `post_scout_mode`, `worker`, `supervisor`, `coder`, `adversary`, `rounds`, `test`, `lint`, `test_identity_regex`, and `churn`. A profile that sets `coder`/`adversary` but omits `mode` resolves as an adversarial-mode profile, so profiles written before `mode` existed keep working unchanged:
 
 ```toml
 [defaults]
@@ -568,26 +579,23 @@ Repo instructions are loaded from the selected workdir, then from the Git root w
 Each run writes artifacts under:
 
 ```text
-.tagteam/runs/<run-id>/
+~/.local/state/tagteam/<repo-id>/runs/<run-id>/
 ```
 
-While a run is in progress, `.tagteam/active.json` points at it:
+Override the root with `--state-root`, `TAGTEAM_STATE_ROOT`, or `state_root` in user config. The repository ID is the first 24 hexadecimal characters of SHA-256 over the canonical Git common-directory path, so linked worktrees share state. `.tagteam/repo.json` is the only runtime pointer retained in a worktree:
 
 ```json
 {
   "schema_version": 1,
-  "run_id": "...",
-  "run_dir": ".tagteam/runs/...",
-  "state_path": ".tagteam/runs/.../state.json",
-  "final_path": ".tagteam/runs/.../final.json",
-  "mode": "supervisor",
-  "status": "running",
-  "started_at": "...",
+  "repo_id": "0123456789abcdef01234567",
+  "state_root": "/home/user/.local/state/tagteam",
   "updated_at": "..."
 }
 ```
 
-`active.json` exists only while the run is running. Once the run finishes it is either removed (the common case) or, if the process aborted through an error path after the run directory was created, left behind with `status: "failed"` so the run directory can still be inspected. `.tagteam/latest.json` is unaffected by this and keeps its existing meaning: the most recent run that reached `final.json`.
+`active.json`, `latest.json`, locks, and all run artifacts are authoritative only in the external repository state directory. On first use, legacy `.tagteam/runs`, `.tagteam/active.json`, and `.tagteam/latest.json` are checksum-copied, verified, and only then removed. Unmigrated legacy artifacts remain readable but are not resumable.
+
+State changes are atomic and journaled through `state.json` plus `events.jsonl`. `tagteam resume [RUN_ID]` verifies repository identity, baseline, diff hash, and lock ownership before continuing an interrupted run. Timeouts, stalls, cancellation, and invalid worker output preserve streams and partial diffs; changed work enters a supervisor recovery decision (`repair`, `continue_with_fallback`, or `quarantine`) instead of being discarded.
 
 <details>
 <summary><strong>Typical contents</strong></summary>
@@ -613,18 +621,27 @@ While a run is in progress, `.tagteam/active.json` points at it:
 - `diff-round-N.sha256`
 - `bundle-<role>-round-N/` (host-owned review/supervisor input bundle)
 - `test-round-N.txt`
+- `deliveries/<invocation-id>.stdout.txt` / `.stderr.txt` / `.json`
+- `timeout-calibration.json`, `live-progress.json`
+- `recovery-round-N.json` and the preserved partial patch when recovery is required
+- `quality-gates-round-N.json`, `findings.json`
 - `post-scout-execution-round-N.json` (relay post-scout host-owned success/failure status)
 - `post-scout-round-N.json` (relay mode)
 - `supervisor-round-N.json` (supervisor mode) / `adversary-round-N.json` (adversarial mode) / `supervisor-review-round-N.json` (relay mode)
 - `worker-final-report.md` / `coder-final-report.md` and `supervisor-final-report.md` / `adversary-final-report.md` when the round limit is exhausted
 - `final.json`
 - `state.json`
+- `events.jsonl`
 
 </details>
 
 Diff artifacts are captured through a temporary Git index, not the real staging area. The canonical patch includes tracked changes, deletions, renames, binary patches, and untracked files, while always excluding `.tagteam/`.
 
 `final.json` and `state.json` include machine-readable status fields such as `status`, `degraded`, `degraded_reason`, `blocking_reason`, `role_statuses`, `role_losses`, `budgets`, and `exit_code`. Text output prints degraded/blocking state when present so summaries do not silently disagree with artifacts.
+
+Every live implementation response must match the worker-result JSON contract and name exactly the files changed during that invocation. Reviewer schema v2 requires evidence for malformed-input preservation, annotation/history retention, ambiguous identity handling, and read-only non-mutation. Scope, churn, regression, and unresolved independent-review findings remain blocking even when tests are green.
+
+Transfer is never automatic. Use `tagteam transfer RUN_ID --test '...' --lint '...' [--to PATH]`; Tagteam rechecks the patch hash, repository identity, target baseline/cleanliness, bounded scope, lint, focused tests, regression identities, findings ledger, and final review before applying the patch without staging or committing. Approve an explicit risk deferral with `tagteam findings defer RUN_ID FINDING_ID --reason '...'`.
 
 <details>
 <summary><strong><code>blocking_reason</code> vocabulary</strong></summary>
@@ -669,7 +686,7 @@ The dashboard has three main surfaces:
 
 It polls the run directory once a second while a run is active and can also launch a new run directly through the same config/runner path as the normal CLI.
 
-With no `RUN_ID`, it still discovers the active run (`.tagteam/active.json`, if `status` is `running`) and the most recent completed run (`.tagteam/latest.json`) so the dashboard can show context and open them on demand. Passing `RUN_ID` opens that run immediately.
+With no `RUN_ID`, it discovers the external active/latest pointers so the dashboard can show context and open saved runs on demand. Passing `RUN_ID` opens that run immediately.
 
 Core keyboard affordances:
 

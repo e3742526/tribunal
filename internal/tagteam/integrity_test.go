@@ -1,0 +1,83 @@
+package tagteam
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestValidateRequestArtifactPathsRejectsEscape(t *testing.T) {
+	runDir := t.TempDir()
+	err := validateRequestArtifactPaths(Request{RunDir: runDir, OutputPath: filepath.Join(filepath.Dir(runDir), "escape.json")})
+	if err == nil {
+		t.Fatal("expected escaped output path to be rejected")
+	}
+}
+
+func TestRunAdapterRejectsReadOnlyGitMutation(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	readme := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(readme, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "baseline")
+
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) { return &CommandSpec{}, nil },
+		direct: func(role Role, req Request) (Result, error) {
+			if err := os.WriteFile(readme, []byte("mutated\n"), 0o644); err != nil {
+				return Result{}, err
+			}
+			return Result{Text: "report"}, nil
+		},
+	}
+	runDir := t.TempDir()
+	_, err := (&App{}).runAdapter(context.Background(), adapter, RoleReporter, Request{Workdir: repo, RunDir: runDir, Phase: "read-only test"}, false)
+	if err == nil || !IsIntegrityViolation(err) {
+		t.Fatalf("error = %v, want integrity violation", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(runDir, "integrity-violation.json")); statErr != nil {
+		t.Fatalf("integrity artifact: %v", statErr)
+	}
+}
+
+func TestRunAdapterRestoresProtectedPointer(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "baseline")
+	pointer := filepath.Join(repo, ".tagteam", "repo.json")
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pointer, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adapter := fakeDirectAdapter{
+		build: func(role Role, req Request) (*CommandSpec, error) { return &CommandSpec{}, nil },
+		direct: func(role Role, req Request) (Result, error) {
+			if err := os.WriteFile(pointer, []byte("tampered\n"), 0o644); err != nil {
+				return Result{}, err
+			}
+			return Result{Text: "report"}, nil
+		},
+	}
+	_, err := (&App{}).runAdapter(context.Background(), adapter, RoleReporter, Request{Workdir: repo, RunDir: t.TempDir(), Phase: "pointer test"}, false)
+	if err == nil || !IsIntegrityViolation(err) {
+		t.Fatalf("error = %v, want integrity violation", err)
+	}
+	data, readErr := os.ReadFile(pointer)
+	if readErr != nil || string(data) != "original\n" {
+		t.Fatalf("pointer was not restored: %q err=%v", data, readErr)
+	}
+}

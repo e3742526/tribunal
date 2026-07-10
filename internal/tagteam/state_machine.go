@@ -164,6 +164,37 @@ func diffHashForState(path string) string {
 	return hash
 }
 
+func recordInvocationState(req Request, record DeliveryRecord) {
+	if req.RunDir == "" {
+		return
+	}
+	state, err := readRunState(req.RunDir)
+	if err != nil {
+		return
+	}
+	state.Status = "running"
+	state.Phase = string(invocationPhase(record.Role, req.Phase))
+	state.Role = string(record.Role)
+	state.Adapter = record.Adapter
+	state.Model = record.Model
+	state.InvocationID = record.InvocationID
+	_ = persistRunState(req.RunDir, state)
+}
+
+func invocationPhase(role Role, description string) RunPhase {
+	if strings.Contains(strings.ToLower(description), "repair") {
+		return PhaseRepairing
+	}
+	switch role {
+	case RoleCoder:
+		return PhaseImplementing
+	case RoleAdversary, RoleReporter:
+		return PhaseReviewing
+	default:
+		return PhasePlanning
+	}
+}
+
 func hashBytes(data []byte) (string, error) {
 	if data == nil {
 		return "", fmt.Errorf("cannot hash nil data")

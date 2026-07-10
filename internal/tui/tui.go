@@ -22,6 +22,7 @@ type RunOptions struct {
 	Flags           tagteam.FlagInputs
 	Changed         map[string]bool
 	TrustRepoConfig bool
+	MutationBlocked string
 }
 
 // Run drives the interactive tagteam terminal UI. It can launch new runs via

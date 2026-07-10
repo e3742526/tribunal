@@ -5,6 +5,7 @@ project_name: tagteam
 before:
   hooks:
     - sh -c 'test -z "$(gofmt -l .)"'
+    - scripts/check-go-file-lines.sh
     - go test ./...
     - go vet ./...
 

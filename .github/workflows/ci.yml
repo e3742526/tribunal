@@ -31,6 +31,9 @@ jobs:
           unformatted="$(gofmt -l .)"
           test -z "$unformatted"
 
+      - name: Check Go file line limit
+        run: scripts/check-go-file-lines.sh
+
       - name: Run tests
         run: go test ./...
 

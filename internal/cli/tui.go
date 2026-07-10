@@ -31,6 +31,10 @@ With no RUN_ID it starts in compose mode, surfaces the active/latest run as cont
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
+			mutationBlocked := ""
+			if _, verifyErr := verifyInstallation(shared.AllowDevBuild); verifyErr != nil {
+				mutationBlocked = verifyErr.Error()
+			}
 			return tui.Run(ctx, tui.RunOptions{
 				Workdir:         workdir,
 				InitialRunDir:   runDir,
@@ -38,6 +42,7 @@ With no RUN_ID it starts in compose mode, surfaces the active/latest run as cont
 				Flags:           shared.FlagInputs,
 				Changed:         collectChangedFlags(cmd),
 				TrustRepoConfig: shared.TrustRepoConfig && collectChangedFlags(cmd)["trust-repo-config"],
+				MutationBlocked: mutationBlocked,
 			}, os.Stdout, os.Stdin)
 		},
 	}

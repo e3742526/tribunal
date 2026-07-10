@@ -1,0 +1,673 @@
+package tagteam
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func sanitizeArtifactName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	for _, r := range raw {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('-')
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "call"
+	}
+	return out
+}
+
+func writeOutputContractArtifacts(req Request, role Role, result Result, raw []byte) (string, error) {
+	if req.OutputPath == "" {
+		return "", nil
+	}
+	rawPath := req.OutputPath + ".raw"
+	if err := writeRedactedBytes(rawPath, raw, req.EnvOverlay); err != nil {
+		return rawPath, err
+	}
+	switch role {
+	case RoleCoder:
+		if result.Worker != nil {
+			if err := writeJSONWithNewline(req.OutputPath+".parsed.json", result.Worker); err != nil {
+				return rawPath, err
+			}
+		}
+	case RoleAdversary:
+		if result.Review != nil {
+			normalizeReview(result.Review)
+			if err := writeJSONWithNewline(req.OutputPath+".parsed.json", result.Review); err != nil {
+				return rawPath, err
+			}
+		}
+	case RoleScout:
+		if result.Scout != nil {
+			normalizeScout(result.Scout)
+			if err := writeJSONWithNewline(req.OutputPath+".parsed.json", result.Scout); err != nil {
+				return rawPath, err
+			}
+		}
+	}
+	return rawPath, nil
+}
+
+func writeValidationErrorArtifact(req Request, err error) string {
+	if req.OutputPath == "" || err == nil {
+		return ""
+	}
+	path := req.OutputPath + ".validation-error.txt"
+	_ = writeFileDurable(path, []byte(redactSecretsWithOverlay(err.Error(), req.EnvOverlay)+"\n"), 0o644, true)
+	return path
+}
+
+func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Request, dryRun bool) (result Result, runErr error) {
+	if err := req.Budget.Before(string(role), req.Phase); err != nil {
+		return Result{}, &ExitError{Code: ExitAdapterFailure, Err: err}
+	}
+	if err := validateRequestArtifactPaths(req); err != nil {
+		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+	}
+	var before worktreeSnapshot
+	var hostBefore integritySnapshot
+	if !dryRun && req.Workdir != "" {
+		var snapshotErr error
+		before, snapshotErr = captureWorktreeSnapshot(ctx, req.Workdir)
+		if snapshotErr != nil {
+			return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("capture pre-invocation Git state: %w", snapshotErr)}
+		}
+		hostBefore, snapshotErr = captureIntegritySnapshot(req)
+		if snapshotErr != nil {
+			return Result{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("capture protected artifact state: %w", snapshotErr)}
+		}
+		defer func() {
+			if integrityErr := validateInvocationIntegrity(context.Background(), req, role, before, hostBefore); integrityErr != nil {
+				result = Result{}
+				runErr = &ExitError{Code: ExitAdapterFailure, Err: integrityErr}
+			}
+		}()
+	}
+	calibration, effectiveTimeout := calibrateTimeout(ctx, adapter, role, req)
+	req.Timeout = effectiveTimeout
+	if calibration.Warning != "" {
+		logRequestProgress(req, "timeout calibration warning: %s", calibration.Warning)
+	}
+	if direct, ok := adapter.(DirectAdapter); ok {
+		spec, err := adapter.BuildCmd(role, req)
+		if err != nil {
+			return Result{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+		}
+		record, recordPath, err := startDeliveryRecord(adapter, role, req, dryRun, spec)
+		if err != nil {
+			return Result{}, err
+		}
+		recordInvocationState(req, record)
+		if dryRun {
+			payload, _ := json.MarshalIndent(spec, "", "  ")
+			result := Result{Text: redactSecretsWithOverlay(string(payload), req.EnvOverlay), Command: spec.Argv}
+			if role == RoleAdversary {
+				result.Review = &Review{
+					SchemaVersion:   ArtifactSchemaVersion,
+					Verdict:         "pass",
+					Summary:         "dry-run",
+					Findings:        []Finding{},
+					TestSuggestions: []string{},
+				}
+			}
+			if role == RoleScout {
+				result.Scout = &Scout{
+					SchemaVersion:     ArtifactSchemaVersion,
+					Mode:              "recon",
+					Summary:           "dry-run",
+					RelevantFiles:     []string{},
+					LikelyEntryPoints: []string{},
+					ExistingPatterns:  []string{},
+					Risks:             []string{},
+					SuggestedTests:    []string{},
+					Items:             []ScoutItem{},
+					DoNotBlock:        true,
+				}
+			}
+			finishDeliveryRecord(recordPath, record, "dry-run", nil)
+			return result, nil
+		}
+		result, err := direct.RunDirect(role, req)
+		if err != nil {
+			if record.StderrPath != "" {
+				_ = writeRedactedBytes(record.StderrPath, []byte(err.Error()+"\n"), req.EnvOverlay)
+				record.StderrBytes = int64(len(err.Error()) + 1)
+			}
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+		raw := result.Raw
+		if len(raw) == 0 {
+			raw = []byte(result.Text)
+		}
+		if record.StdoutPath != "" {
+			_ = writeRedactedBytes(record.StdoutPath, raw, req.EnvOverlay)
+			record.StdoutBytes = int64(len(raw))
+		}
+		if int64(len(raw)) > maxOutputBytes(req) {
+			err := &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s output exceeded max_output_bytes=%d", adapter.ID(), maxOutputBytes(req))}
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+		if err := validateWorkerResultForRequest(ctx, req, &result, before); err != nil {
+			record.ValidationErrorPath = writeValidationErrorArtifact(req, err)
+			_, _ = writeOutputContractArtifacts(req, role, result, raw)
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+		if role == RoleAdversary && result.Review != nil {
+			if err := result.Review.ValidateCurrent(); err != nil {
+				contractErr := &OutputContractError{Err: err}
+				record.ValidationErrorPath = writeValidationErrorArtifact(req, contractErr)
+				finishDeliveryRecord(recordPath, record, "failed", contractErr)
+				return Result{}, contractErr
+			}
+		}
+		if req.OutputPath != "" && !fileExists(req.OutputPath) {
+			if writeErr := writeRedactedBytes(req.OutputPath, raw, req.EnvOverlay); writeErr != nil {
+				finishDeliveryRecord(recordPath, record, "failed", writeErr)
+				return Result{}, writeErr
+			}
+		}
+		rawPath, artifactErr := writeOutputContractArtifacts(req, role, result, raw)
+		if artifactErr != nil {
+			finishDeliveryRecord(recordPath, record, "failed", artifactErr)
+			return Result{}, artifactErr
+		}
+		record.RawOutputPath = rawPath
+		if req.OutputPath != "" && (role == RoleCoder || role == RoleAdversary || role == RoleScout) {
+			record.ParsedPath = req.OutputPath + ".parsed.json"
+		}
+		normalizeReview(result.Review)
+		normalizeScout(result.Scout)
+		finishDeliveryRecord(recordPath, record, "completed", nil)
+		return result, nil
+	}
+	spec, err := adapter.BuildCmd(role, req)
+	if err != nil {
+		return Result{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+	}
+	record, recordPath, err := startDeliveryRecord(adapter, role, req, dryRun, spec)
+	if err != nil {
+		return Result{}, err
+	}
+	recordInvocationState(req, record)
+	if dryRun {
+		payload, _ := json.MarshalIndent(spec, "", "  ")
+		result := Result{Text: redactSecretsWithOverlay(string(payload), req.EnvOverlay), Command: spec.Argv}
+		if role == RoleAdversary {
+			result.Review = &Review{
+				SchemaVersion:   ArtifactSchemaVersion,
+				Verdict:         "pass",
+				Summary:         "dry-run",
+				Findings:        []Finding{},
+				TestSuggestions: []string{},
+			}
+		}
+		if role == RoleScout {
+			result.Scout = &Scout{
+				SchemaVersion:     ArtifactSchemaVersion,
+				Mode:              "recon",
+				Summary:           "dry-run",
+				RelevantFiles:     []string{},
+				LikelyEntryPoints: []string{},
+				ExistingPatterns:  []string{},
+				Risks:             []string{},
+				SuggestedTests:    []string{},
+				Items:             []ScoutItem{},
+				DoNotBlock:        true,
+			}
+		}
+		finishDeliveryRecord(recordPath, record, "dry-run", nil)
+		return result, nil
+	}
+	req.InvocationID = record.InvocationID
+	phase := req.Phase
+	if phase == "" {
+		phase = fmt.Sprintf("%s %s", role, adapter.ID())
+	}
+	runCtx := req.Context
+	if runCtx == nil {
+		runCtx = ctx
+	}
+	cancel := func() {}
+	if req.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, req.Timeout)
+	}
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, spec.Argv[0], spec.Argv[1:]...)
+	prepareProcessTree(cmd)
+	cmd.Dir = spec.Dir
+	cmd.Env = mergeCommandEnvForRole(role, req.EnvOverlay, spec.Env)
+	if len(spec.Stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(spec.Stdin)
+	}
+	stdout, err := newInvocationStream(record.StdoutPath, maxOutputBytes(req), req.EnvOverlay)
+	if err != nil {
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	stderr, err := newInvocationStream(record.StderrPath, maxOutputBytes(req), req.EnvOverlay)
+	if err != nil {
+		_ = stdout.Close()
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	started := time.Now()
+	lastActivity := started
+	req.ProgressStdout = stdout
+	req.ProgressStderr = stderr
+	req.ProgressLastActivity = &lastActivity
+	logRequestProgress(req, "%s process starting output=%s", phase, spec.Output)
+	initialProgress, _ := writeLiveProgress(runCtx, req, role, phase, started, "running")
+	lastFingerprint := fmt.Sprintf("%s:%d:%d:%s", initialProgress.DiffHash, initialProgress.StdoutBytes, initialProgress.StderrBytes, outputArtifactFingerprint(req.OutputPath))
+	watchdogTimeout := req.WatchdogTimeout
+	if watchdogTimeout <= 0 {
+		watchdogTimeout = 5 * time.Minute
+	}
+	if effectiveWatchdog := time.Duration(float64(req.Timeout) * 0.8); effectiveWatchdog > 0 && effectiveWatchdog < watchdogTimeout {
+		watchdogTimeout = effectiveWatchdog
+	}
+	tickInterval := 30 * time.Second
+	if watchdogTimeout/4 < tickInterval {
+		tickInterval = watchdogTimeout / 4
+	}
+	if tickInterval < time.Second {
+		tickInterval = time.Second
+	}
+	stalled := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = stdout.Sync()
+				_ = stderr.Sync()
+				progress, err := writeLiveProgress(runCtx, req, role, phase, started, "running")
+				fingerprint := fmt.Sprintf("%s:%d:%d:%s", progress.DiffHash, progress.StdoutBytes, progress.StderrBytes, outputArtifactFingerprint(req.OutputPath))
+				if fingerprint != lastFingerprint {
+					lastFingerprint = fingerprint
+					lastActivity = time.Now()
+					_, _ = writeLiveProgress(runCtx, req, role, phase, started, "running")
+				}
+				if !req.Quiet {
+					if err != nil {
+						logRequestProgress(req, "%s still running elapsed=%s progress_error=%q", phase, shortDuration(time.Since(started)), err.Error())
+					} else {
+						logRequestProgress(
+							req,
+							"%s still running elapsed=%s files=%d +%d -%d progress=%s",
+							phase,
+							shortDuration(time.Since(started)),
+							progress.FilesChanged,
+							progress.Additions,
+							progress.Deletions,
+							filepath.Join(req.RunDir, liveProgressArtifact),
+						)
+					}
+				}
+				if time.Since(lastActivity) >= watchdogTimeout {
+					select {
+					case stalled <- struct{}{}:
+					default:
+					}
+					_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "stalled")
+					cancel()
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	if err := cmd.Run(); err != nil {
+		close(done)
+		finishInvocationStreams(&record, stdout, stderr)
+		_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "failed")
+		if stdout.Exceeded() || stderr.Exceeded() {
+			limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
+			finishDeliveryRecord(recordPath, record, "failed", limitErr)
+			return Result{}, limitErr
+		}
+		wasStalled := false
+		select {
+		case <-stalled:
+			wasStalled = true
+		default:
+		}
+		msg := redactSecretsWithOverlay(strings.TrimSpace(stderr.String()), req.EnvOverlay)
+		if msg == "" {
+			msg = redactSecretsWithOverlay(err.Error(), req.EnvOverlay)
+		}
+		logRequestProgress(req, "%s failed elapsed=%s", phase, shortDuration(time.Since(started)))
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			record.ProcessExitCode = exitErr.ExitCode()
+		}
+		if runCtx.Err() != nil {
+			record.CancellationCause = runCtx.Err().Error()
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				recordTimeoutObservation(req.RunDir, calibration, time.Since(started))
+			}
+		}
+		var cause error = fmt.Errorf("%s failed: %s", adapter.ID(), msg)
+		if wasStalled {
+			record.CancellationCause = string(ReasonStalled)
+			cause = fmt.Errorf("%w: %s", errInvocationStalled, cause)
+		}
+		runErr := &ExitError{Code: ExitAdapterFailure, Err: cause}
+		finishDeliveryRecord(recordPath, record, "failed", runErr)
+		return Result{}, runErr
+	}
+	close(done)
+	finishInvocationStreams(&record, stdout, stderr)
+	_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "completed")
+	logRequestProgress(req, "%s process completed elapsed=%s", phase, shortDuration(time.Since(started)))
+	if stdout.Exceeded() || stderr.Exceeded() {
+		limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
+		finishDeliveryRecord(recordPath, record, "failed", limitErr)
+		return Result{}, limitErr
+	}
+	raw := stdout.Bytes()
+	if req.OutputPath != "" && fileExists(req.OutputPath) {
+		if info, statErr := os.Stat(req.OutputPath); statErr == nil && info.Size() > maxOutputBytes(req) {
+			err := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+		var readErr error
+		raw, readErr = os.ReadFile(req.OutputPath)
+		if readErr != nil {
+			return Result{}, readErr
+		}
+	}
+	if len(raw) == 0 {
+		raw = stdout.Bytes()
+	}
+	if int64(len(raw)) > maxOutputBytes(req) {
+		err := &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%s output exceeded max_output_bytes=%d", adapter.ID(), maxOutputBytes(req))}
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	if req.OutputPath != "" && !fileExists(req.OutputPath) {
+		if writeErr := writeRedactedBytes(req.OutputPath, raw, req.EnvOverlay); writeErr != nil {
+			finishDeliveryRecord(recordPath, record, "failed", writeErr)
+			return Result{}, writeErr
+		}
+	}
+	result, err = adapter.ParseResult(role, raw)
+	if err != nil {
+		record.ValidationErrorPath = writeValidationErrorArtifact(req, err)
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	if err := validateWorkerResultForRequest(ctx, req, &result, before); err != nil {
+		record.ValidationErrorPath = writeValidationErrorArtifact(req, err)
+		_, _ = writeOutputContractArtifacts(req, role, result, raw)
+		finishDeliveryRecord(recordPath, record, "failed", err)
+		return Result{}, err
+	}
+	if role == RoleAdversary && result.Review != nil {
+		if err := result.Review.ValidateCurrent(); err != nil {
+			contractErr := &OutputContractError{Err: err}
+			record.ValidationErrorPath = writeValidationErrorArtifact(req, contractErr)
+			finishDeliveryRecord(recordPath, record, "failed", contractErr)
+			return Result{}, contractErr
+		}
+	}
+	normalizeReview(result.Review)
+	normalizeScout(result.Scout)
+	if role == RoleScout && req.OutputPath != "" && result.Scout != nil {
+		if err := writeJSONWithNewline(req.OutputPath, result.Scout); err != nil {
+			finishDeliveryRecord(recordPath, record, "failed", err)
+			return Result{}, err
+		}
+	}
+	rawPath, artifactErr := writeOutputContractArtifacts(req, role, result, raw)
+	if artifactErr != nil {
+		finishDeliveryRecord(recordPath, record, "failed", artifactErr)
+		return Result{}, artifactErr
+	}
+	record.RawOutputPath = rawPath
+	if req.OutputPath != "" && (role == RoleCoder || role == RoleAdversary || role == RoleScout) {
+		record.ParsedPath = req.OutputPath + ".parsed.json"
+	}
+	result.Command = spec.Argv
+	finishDeliveryRecord(recordPath, record, "completed", nil)
+	return result, nil
+}
+
+func outputArtifactFingerprint(path string) string {
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "missing"
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+func (a *App) computeExitCode(final FinalRun) int {
+	if final.Findings.OpenBlockerOrMajor > 0 {
+		return ExitBlockingFindings
+	}
+	if len(final.QualityGates) > 0 && final.QualityGates[len(final.QualityGates)-1].Blocking {
+		return ExitBlockingFindings
+	}
+	if final.Regression != nil {
+		if final.Regression.Status == "new_failures" || final.Regression.Status == "unknown" {
+			return ExitTestsFailed
+		}
+	} else if len(final.Tests) > 0 && !final.Tests[len(final.Tests)-1].Passed {
+		return ExitTestsFailed
+	}
+	if final.Review != nil && final.Review.HasBlockingFindings() {
+		return ExitBlockingFindings
+	}
+	return ExitSuccess
+}
+
+func (a *App) persistFinal(workdir string, final FinalRun) error {
+	if final.SchemaVersion == 0 {
+		final.SchemaVersion = ArtifactSchemaVersion
+	}
+	if final.Caps == (RunCaps{}) {
+		final.Caps = RunCaps{}
+	}
+	normalizeReview(final.Review)
+	finalPath := filepath.Join(final.RunDir, "final.json")
+	if err := writeJSON(finalPath, final); err != nil {
+		return err
+	}
+	latest := LatestRun{
+		RunID:     final.RunID,
+		RunDir:    final.RunDir,
+		FinalPath: finalPath,
+		Verdict:   final.Verdict,
+		ExitCode:  final.ExitCode,
+		UpdatedAt: time.Now().UTC(),
+	}
+	return writeJSON(statePathForWorkdir(workdir, "latest.json"), latest)
+}
+
+func preflight(opts RunOptions, runID string) (string, func(), error) {
+	baseline := opts.Baseline
+	if baseline == "" {
+		var err error
+		baseline, err = ensureGitRepo(opts.Workdir)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if opts.TestCmd != "" && !opts.NoTest {
+		if err := validateTestCommand(opts.Workdir, opts.TestCmd); err != nil {
+			return "", nil, err
+		}
+	}
+	if opts.AllowDirty || opts.GitSafety == "allow-dirty" {
+		return baseline, nil, nil
+	}
+	if opts.SkipDirtyCheck {
+		return baseline, nil, nil
+	}
+	if opts.GitSafety == "branch" {
+		if err := gitCreateBranch(opts.Workdir, "tagteam/"+runID); err != nil {
+			return "", nil, err
+		}
+		return baseline, nil, nil
+	}
+	dirty, err := gitDirty(opts.Workdir)
+	if err != nil {
+		return "", nil, err
+	}
+	if !dirty {
+		return baseline, nil, nil
+	}
+	if opts.Autostash || opts.GitSafety == "autostash" {
+		stashRef, err := gitAutostash(opts.Workdir)
+		if err != nil {
+			return "", nil, err
+		}
+		return baseline, func() {
+			_, _ = runCommand(context.Background(), opts.Workdir, "git", "stash", "pop", stashRef)
+		}, nil
+	}
+	return "", nil, &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("worktree is dirty; use --allow-dirty or --autostash")}
+}
+
+func ensureGitRepo(workdir string) (string, error) {
+	out, err := runCommand(context.Background(), workdir, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("workdir is not a git repo or has no HEAD: %w", err)}
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func checkAdapters(ctx context.Context, adapters ...Adapter) error {
+	for _, adapter := range adapters {
+		if adapter == nil {
+			return &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("adapter is not configured")}
+		}
+		info, err := adapter.Detect(ctx)
+		if err != nil {
+			return &ExitError{Code: ExitPreflightFailed, Err: err}
+		}
+		if !info.Found || !info.Runnable {
+			return &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("%s not runnable; try %s", adapter.ID(), info.Hint)}
+		}
+	}
+	return nil
+}
+
+func selectRunnableRoleAdapter(ctx context.Context, registry map[string]Adapter, role string, primary RoleTarget, fallbackRaw []string, policy LossPolicy, final *FinalRun) (RoleTarget, Adapter, error) {
+	adapter, ok := registry[primary.Adapter]
+	if !ok {
+		return primary, nil, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("unknown %s adapter %q", role, primary.Adapter)}
+	}
+	attempts := []string{roleTargetString(primary)}
+	if err := checkAdapters(ctx, adapter); err == nil {
+		setRoleStatus(final, role, primary, "ready", "", "")
+		return primary, adapter, nil
+	} else if !policyAttemptsReplacement(policy) {
+		reason := classifyRoleFailure(role, err)
+		setRoleStatus(final, role, primary, "failed", reason, err.Error())
+		return primary, adapter, err
+	} else {
+		for _, raw := range fallbackRaw {
+			target, parseErr := ParseRoleTarget(raw)
+			if parseErr != nil {
+				continue
+			}
+			attempts = append(attempts, roleTargetString(target))
+			candidate, ok := registry[target.Adapter]
+			if !ok {
+				continue
+			}
+			if err := checkAdapters(ctx, candidate); err != nil {
+				continue
+			}
+			setFinalDegraded(final, ReasonFallbackUsed, fmt.Sprintf("%s fallback selected", role))
+			appendRoleLoss(final, role, policy, "replace", "fallback_selected", ReasonFallbackUsed, fmt.Sprintf("%s -> %s", roleTargetString(primary), roleTargetString(target)))
+			setRoleStatus(final, role, target, "ready", ReasonFallbackUsed, "fallback selected")
+			status := final.RoleStatuses[role]
+			status.Attempts = attempts
+			status.Selected = roleTargetString(target)
+			final.RoleStatuses[role] = status
+			return target, candidate, nil
+		}
+		err := &ExitError{Code: ExitPreflightFailed, Err: fmt.Errorf("%s not runnable and no fallback target was runnable", role)}
+		reason := classifyRoleFailure(role, err)
+		setRoleStatus(final, role, primary, "failed", reason, err.Error())
+		status := final.RoleStatuses[role]
+		status.Attempts = attempts
+		final.RoleStatuses[role] = status
+		return primary, adapter, err
+	}
+}
+
+func runTestCommand(ctx context.Context, workdir, testCmd string, timeout time.Duration, outputPath string, dryRun bool, envOverlay map[string]string, maxBytes int64, identityRegex string) (TestRun, error) {
+	if dryRun {
+		return TestRun{Command: testCmd, Passed: true, Output: "dry-run"}, nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2 * 1024 * 1024
+	}
+	runCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, "/bin/sh", "-lc", testCmd)
+	prepareProcessTree(cmd)
+	cmd.Dir = workdir
+	stateRoot, tempDir, isolationErr := isolatedTestDirectories(outputPath)
+	if isolationErr != nil {
+		return TestRun{}, isolationErr
+	}
+	cmd.Env = mergeCommandEnv(envOverlay, []string{
+		"TAGTEAM_STATE_ROOT=" + stateRoot,
+		"XDG_STATE_HOME=" + stateRoot,
+		"TMPDIR=" + tempDir,
+		"TMP=" + tempDir,
+		"TEMP=" + tempDir,
+	})
+	var out boundedBuffer
+	out.limit = maxBytes
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	output := out.Bytes()
+	if out.Exceeded() {
+		err = outputLimitError("test command", maxBytes)
+	}
+	testRun := TestRun{
+		Command:           testCmd,
+		Output:            redactSecretsWithOverlay(string(output), envOverlay),
+		Passed:            err == nil,
+		FailureIdentities: extractFailureIdentitiesWithRegex(string(output), identityRegex),
+		StateRoot:         stateRoot,
+		TempDir:           tempDir,
+	}
+	_ = writeRedactedBytes(outputPath, output, envOverlay)
+	return testRun, nil
+}

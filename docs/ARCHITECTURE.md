@@ -17,12 +17,15 @@ orchestration logic lives in `internal/tagteam`; the TUI lives in `internal/tui`
 | Component | File(s) | Responsibility |
 |---|---|---|
 | Entry point | `main.go` | Wires cobra root command, invokes `internal/cli`. |
-| CLI surface | `internal/cli/root.go`, `internal/cli/tui.go` | Defines commands (`run`, `review`, `fix`, `status`, `plan`, `transcript`, `tui`, `doctor`, `init`), flag parsing, output formatting, and TUI run selection. |
+| CLI surface | `internal/cli/root.go`, `internal/cli/tui.go` | Defines commands including `resume`, `transfer`, `findings defer`, and `verify-install`, flag parsing, output formatting, and TUI run selection. |
 | App / run loop | `internal/tagteam/runner.go` | `App` type; `Run`, `Review`, `Fix`, `Doctor`; the round loop, role dispatch, env policy, artifact writing. |
 | Config resolution | `internal/tagteam/config.go` | Layered config (flags > shell env > `.env` overlay > repo `.tagteam.toml` > user config > defaults), profiles, `ResolveOptions`. |
 | Adapters | `internal/tagteam/adapters.go` | Adapter interface + `codex`, `codex-oss`, `claude`, `agy`, `gosling`, `openai-compatible`; `Registry`, command construction, capability sets. |
 | Types | `internal/tagteam/types.go` | `Mode`, `Role`, `ReasonCode`, `RunOptions`, `FinalRun`, `RunState`, exit codes, JSON contracts. |
-| Active run pointer | `internal/tagteam/active_run.go` | Persists `.tagteam/active.json` for in-flight run discovery and failure cleanup. |
+| Artifact store | `internal/tagteam/artifact_store.go`, `durable_io.go` | Derives repository identity, maintains `.tagteam/repo.json`, migrates legacy state, and atomically persists external artifacts. |
+| Active run pointer | `internal/tagteam/active_run.go` | Persists external `active.json` for in-flight run discovery and failure cleanup. |
+| Resilience | `state_machine.go`, `run_lock.go`, `recovery.go`, `resume.go`, `timeout_calibration.go`, `invocation_stream.go` | Phase journaling, locks/cancellation, partial-diff recovery, continuation, calibrated deadlines, and durable subprocess streams. |
+| Quality / transfer | `quality_gates.go`, `findings.go`, `test_hardening.go`, `transfer.go`, `integrity.go` | Scope/churn/data-loss/findings/regression gates, isolated tests, structural integrity, and explicit patch transfer. |
 | Snapshot / live status | `internal/tagteam/snapshot.go` | Builds `RunSnapshot` from `active.json`, `state.json`, `final.json`, and `plan.json`. |
 | Run state / reasons | `internal/tagteam/run_state.go` | Failure classification, exit→reason mapping, role status/loss records, budget state, redacted persistence helpers. |
 | Orchestration decision | `internal/tagteam/orchestration.go` | Host-owned single advisory adjustment (relay↔supervisor) before implementation. |
@@ -61,9 +64,11 @@ orchestration logic lives in `internal/tagteam`; the TUI lives in `internal/tui`
 
 ## Data model / persistence
 
-Per run, artifacts are written under `.tagteam/runs/<run-id>/` (briefs, diffs,
-reviews, tests, scout artifacts, `final.json`, `state.json`, optional
-`plan.json`). While a run is active, `.tagteam/active.json` points at that run.
+Per run, authoritative artifacts are written under
+`~/.local/state/tagteam/<repo-id>/runs/<run-id>/` (briefs, streams, diffs,
+reviews, tests, recovery and gate artifacts, `final.json`, `state.json`, optional
+`plan.json`). `.tagteam/repo.json` is the only in-worktree runtime pointer;
+`active.json` and `latest.json` live beside the external `runs/` directory.
 Diffs are captured through a temporary Git index, always excluding `.tagteam/`.
 `final.json` / `state.json` carry machine-readable `status`, `degraded`,
 `blocking_reason`, `role_statuses`, `role_losses`, `budgets`, `exit_code`.
@@ -73,10 +78,10 @@ as the TUI. See the README
 
 ## Live status / TUI flow
 
-1. The runner creates a run directory and writes `.tagteam/active.json`.
+1. The runner creates an external run directory and writes external `active.json`.
 2. As the run advances, it updates `state.json` with phase, round, role status,
    and latest artifact paths.
-3. On completion, it writes `final.json` and removes `active.json` on the
+3. On completion, it writes `final.json` and removes external `active.json` on the
    success path; aborted runs may leave `active.json` behind with
    `status = "failed"` for postmortem inspection.
 4. `BuildRunSnapshot` merges `active.json`, `state.json`, `final.json`, and
@@ -106,8 +111,10 @@ as the TUI. See the README
 
 ## Known architecture risks
 
-- `internal/tagteam` is one large package; `runner.go` (~3.5k lines) is a
-  natural candidate for a post-release split by concern.
+- `internal/tagteam` remains a broad package, but runner, config, type, adapter,
+  TUI-state, and test declarations are split into focused files capped at 800
+  lines. Further package-boundary extraction should preserve the current
+  artifact and adapter contracts.
 - Adapter behavior depends on third-party CLI stability (documented in README
   "Compatibility Issues And Known Rough Edges").
 - Supervisor slicing is more format-sensitive than the schema-validated final

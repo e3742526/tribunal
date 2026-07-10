@@ -129,8 +129,10 @@ func captureWorktreeSnapshot(ctx context.Context, workdir string) (worktreeSnaps
 		status := token[:2]
 		path := token[3:]
 		if (strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C")) && i+1 < len(tokens) {
+			// In porcelain -z mode the first path is the destination and the
+			// following token is the source path. Track the destination while
+			// consuming the source token.
 			i++
-			path = tokens[i]
 		}
 		path = filepath.ToSlash(path)
 		if path == ".tagteam" || strings.HasPrefix(path, ".tagteam/") {

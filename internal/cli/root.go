@@ -521,7 +521,7 @@ func newInitCommand(shared *flagState) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(path, data, 0o644); err != nil {
+			if err := tagteam.WriteFileDurableForCLI(path, data, 0o644); err != nil {
 				return err
 			}
 			if err := tagteam.EnsureGitignoreEntryForCLI(workdir, ".tagteam/"); err != nil {
@@ -549,8 +549,11 @@ func resolve(cmd *cobra.Command, flags *flagState, prompt string) (tagteam.RunOp
 	if err != nil {
 		return tagteam.RunOptions{}, tagteam.Config{}, err
 	}
-	if opts.Mode == tagteam.ModeSolo && !opts.DryRun && len(opts.AllowedPaths) == 0 {
-		return tagteam.RunOptions{}, tagteam.Config{}, &tagteam.ExitError{Code: tagteam.ExitInvalidArguments, Err: fmt.Errorf("solo mode requires at least one --allow-path")}
+	command := cmd.Name()
+	mutatingRun := command == "tagteam" || command == "run" || command == "fix" || command == "resume"
+	requiresExplicitScope := opts.Mode == tagteam.ModeSolo || opts.Mode == tagteam.ModeRelay || opts.Mode == tagteam.ModeAdversarial || !opts.SupervisorSlicing || command == "fix" || command == "resume"
+	if mutatingRun && requiresExplicitScope && !opts.DryRun && len(opts.AllowedPaths) == 0 {
+		return tagteam.RunOptions{}, tagteam.Config{}, &tagteam.ExitError{Code: tagteam.ExitInvalidArguments, Err: fmt.Errorf("%s mode requires at least one --allow-path for this command", opts.Mode)}
 	}
 	return opts, cfg, nil
 }

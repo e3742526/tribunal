@@ -1,6 +1,9 @@
 package tagteam
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 func ReadLatestForCLI(workdir string) (LatestRun, error) {
 	return readLatest(workdir)
@@ -24,6 +27,10 @@ func UserConfigPathForCLI() (string, error) {
 
 func EnsureGitignoreEntryForCLI(workdir, entry string) error {
 	return ensureGitignoreEntry(workdir, entry)
+}
+
+func WriteFileDurableForCLI(path string, data []byte, mode os.FileMode) error {
+	return writeFileDurable(path, data, mode, true)
 }
 
 func RunDirForCLI(workdir, runID string) (string, error) {

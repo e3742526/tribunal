@@ -1,0 +1,306 @@
+package tagteam
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoadConfig_UntrustedRepoConfigIgnoresHighAuthorityKeys(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := []byte(`
+	[defaults]
+	test = "curl https://example.invalid"
+	git_safety = "allow-dirty"
+
+	[defaults.fallbacks_by_target]
+	"claude:sonnet-5" = ["codex:gpt-5.4"]
+
+	[adapters.codex]
+	extra_args = ["--dangerously-bypass-approvals-and-sandbox"]
+
+[adapters.claude]
+coder_allowed_tools = ["Bash"]
+bare = true
+extra_args = ["--danger"]
+
+[adapters.openai_compatible]
+base_url = "https://api.featherless.ai/v1"
+api_key_env = "FEATHERLESS_API_KEY"
+default_model = "gpt-oss-120b"
+max_context_tokens = 32768
+reserved_output_tokens = 2048
+extra_headers = { "X-Test" = "yes" }
+extra_args = ["--future"]
+`)
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam.toml"), repoConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Defaults.Test != "" {
+		t.Fatalf("repo default test should be ignored, got %q", cfg.Defaults.Test)
+	}
+	if cfg.Defaults.GitSafety == "allow-dirty" {
+		t.Fatalf("repo git_safety should be ignored, got %q", cfg.Defaults.GitSafety)
+	}
+	if len(cfg.Defaults.FallbacksByTarget) != 0 {
+		t.Fatalf("repo target fallbacks should be ignored: %#v", cfg.Defaults.FallbacksByTarget)
+	}
+	if len(cfg.Adapters.Codex.ExtraArgs) != 0 {
+		t.Fatalf("codex extra_args should be ignored: %#v", cfg.Adapters.Codex.ExtraArgs)
+	}
+	if cfg.Adapters.Claude.Bare {
+		t.Fatal("claude bare should be ignored")
+	}
+	if len(cfg.Adapters.Claude.ExtraArgs) != 0 {
+		t.Fatalf("claude extra_args should be ignored: %#v", cfg.Adapters.Claude.ExtraArgs)
+	}
+	if len(cfg.Adapters.Claude.CoderAllowedTools) != len(DefaultConfig().Adapters.Claude.CoderAllowedTools) {
+		t.Fatalf("claude tools should not be widened: %#v", cfg.Adapters.Claude.CoderAllowedTools)
+	}
+	got := cfg.Adapters.OpenAICompatible
+	if got.BaseURL != DefaultConfig().Adapters.OpenAICompatible.BaseURL {
+		t.Fatalf("base_url = %q", got.BaseURL)
+	}
+	if got.APIKeyEnv != "" {
+		t.Fatalf("api_key_env = %q", got.APIKeyEnv)
+	}
+	if got.DefaultModel != "gpt-oss-120b" {
+		t.Fatalf("default_model = %q", got.DefaultModel)
+	}
+	if got.MaxContextTokens == nil || *got.MaxContextTokens != 32768 {
+		t.Fatalf("max_context_tokens = %#v", got.MaxContextTokens)
+	}
+	if got.ReservedOutputTokens == nil || *got.ReservedOutputTokens != 2048 {
+		t.Fatalf("reserved_output_tokens = %#v", got.ReservedOutputTokens)
+	}
+	if len(got.ExtraHeaders) != 0 {
+		t.Fatalf("extra_headers = %#v", got.ExtraHeaders)
+	}
+	if len(got.ExtraArgs) != 0 {
+		t.Fatalf("extra_args = %#v", got.ExtraArgs)
+	}
+}
+
+func TestLoadConfig_TrustedRepoConfigAllowsHighAuthorityKeys(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := []byte(`
+[defaults]
+test = "go test ./..."
+
+[adapters.codex]
+extra_args = ["--extra"]
+
+[adapters.openai_compatible]
+base_url = "https://api.featherless.ai/v1"
+api_key_env = "FEATHERLESS_API_KEY"
+extra_headers = { "X-Test" = "yes" }
+`)
+	if err := os.WriteFile(filepath.Join(repo, ".tagteam.toml"), repoConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfigWithOptions(repo, LoadConfigOptions{TrustRepoConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions() error = %v", err)
+	}
+	if cfg.Defaults.Test != "go test ./..." {
+		t.Fatalf("test = %q", cfg.Defaults.Test)
+	}
+	if len(cfg.Adapters.Codex.ExtraArgs) != 1 || cfg.Adapters.Codex.ExtraArgs[0] != "--extra" {
+		t.Fatalf("codex extra_args = %#v", cfg.Adapters.Codex.ExtraArgs)
+	}
+	if cfg.Adapters.OpenAICompatible.BaseURL != "https://api.featherless.ai/v1" {
+		t.Fatalf("base_url = %q", cfg.Adapters.OpenAICompatible.BaseURL)
+	}
+	if cfg.Adapters.OpenAICompatible.APIKeyEnv != "FEATHERLESS_API_KEY" {
+		t.Fatalf("api_key_env = %q", cfg.Adapters.OpenAICompatible.APIKeyEnv)
+	}
+	if cfg.Adapters.OpenAICompatible.ExtraHeaders["X-Test"] != "yes" {
+		t.Fatalf("headers = %#v", cfg.Adapters.OpenAICompatible.ExtraHeaders)
+	}
+}
+
+func TestLoadConfig_LoadsDotEnvIntoOverlayAndConfig(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dotEnv := []byte("TAGTEAM_TEST_DOTENV_KEY=\"dotenv-key\"\nTAGTEAM_OPENAI_COMPATIBLE_BASE_URL=https://api.featherless.ai/v1\n")
+	if err := os.WriteFile(filepath.Join(repo, ".env"), dotEnv, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, sources, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := os.Getenv("TAGTEAM_TEST_DOTENV_KEY"); got != "" {
+		t.Fatalf("TAGTEAM_TEST_DOTENV_KEY leaked into process env: %q", got)
+	}
+	if got := cfg.EnvOverlay["TAGTEAM_TEST_DOTENV_KEY"]; got != "dotenv-key" {
+		t.Fatalf("overlay TAGTEAM_TEST_DOTENV_KEY = %q", got)
+	}
+	if got := cfg.Adapters.OpenAICompatible.BaseURL; got != "https://api.featherless.ai/v1" {
+		t.Fatalf("base_url = %q", got)
+	}
+	if !containsString(sources, filepath.Join(repo, ".env")) {
+		t.Fatalf("sources = %#v", sources)
+	}
+}
+
+func TestResolveOptions_InvalidContextBudgetConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Adapters.OpenAICompatible.MaxContextTokens = testIntPtr(1024)
+	cfg.Adapters.OpenAICompatible.ReservedOutputTokens = testIntPtr(1024)
+	_, err := ResolveOptions(cfg, nil, FlagInputs{}, nil, "ship it")
+	if err == nil {
+		t.Fatal("expected invalid context budget error")
+	}
+	if !strings.Contains(err.Error(), "usable context must be > 0") {
+		t.Fatalf("error = %v", err)
+	}
+
+	cfg = DefaultConfig()
+	cfg.Adapters.Agy.ReservedOutputTokens = testIntPtr(-1)
+	_, err = ResolveOptions(cfg, nil, FlagInputs{}, nil, "ship it")
+	if err == nil {
+		t.Fatal("expected negative reserved output error")
+	}
+	if !strings.Contains(err.Error(), "reserved_output_tokens must be >= 0") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoadConfig_DotEnvDoesNotOverrideExistingEnv(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("FEATHERLESS_API_KEY=dotenv-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FEATHERLESS_API_KEY", "shell-key")
+
+	if _, _, err := LoadConfig(repo); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := os.Getenv("FEATHERLESS_API_KEY"); got != "shell-key" {
+		t.Fatalf("FEATHERLESS_API_KEY = %q", got)
+	}
+}
+
+func TestLoadConfig_DotEnvParsesCommonForms(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	t.Setenv("XDG_CONFIG_HOME", home)
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dotEnv := []byte(strings.Join([]string{
+		"export TAGTEAM_MODE=adversarial # inline comment",
+		"SINGLE_QUOTED='value # not comment'",
+		`DOUBLE_QUOTED="line1\nline2"`,
+		"UNQUOTED=abc#kept",
+		"",
+	}, "\n"))
+	if err := os.WriteFile(filepath.Join(repo, ".env"), dotEnv, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(repo)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.Defaults.Mode != "adversarial" {
+		t.Fatalf("mode = %q", cfg.Defaults.Mode)
+	}
+	if got := cfg.EnvOverlay["SINGLE_QUOTED"]; got != "value # not comment" {
+		t.Fatalf("single quoted = %q", got)
+	}
+	if got := cfg.EnvOverlay["DOUBLE_QUOTED"]; got != "line1\nline2" {
+		t.Fatalf("double quoted = %q", got)
+	}
+	if got := cfg.EnvOverlay["UNQUOTED"]; got != "abc#kept" {
+		t.Fatalf("unquoted = %q", got)
+	}
+}
+
+func TestMergeEnvConfig_OpenAICompatibleOverrides(t *testing.T) {
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_BASE_URL", "https://openrouter.ai/api/v1")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_API_KEY_ENV", "OPENROUTER_API_KEY")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_MODEL", "openai/gpt-oss-120b")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_MAX_CONTEXT_TOKENS", "32768")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_RESERVED_OUTPUT_TOKENS", "2048")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_HEADERS", "HTTP-Referer=https://github.com/example/repo, X-Title=tagteam")
+	t.Setenv("TAGTEAM_OPENAI_COMPATIBLE_ARGS", "--future value")
+
+	cfg := DefaultConfig()
+	mergeEnvConfig(&cfg, nil)
+
+	got := cfg.Adapters.OpenAICompatible
+	if got.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("base_url = %q", got.BaseURL)
+	}
+	if got.APIKeyEnv != "OPENROUTER_API_KEY" {
+		t.Fatalf("api_key_env = %q", got.APIKeyEnv)
+	}
+	if got.DefaultModel != "openai/gpt-oss-120b" {
+		t.Fatalf("default_model = %q", got.DefaultModel)
+	}
+	if got.MaxContextTokens == nil || *got.MaxContextTokens != 32768 {
+		t.Fatalf("max_context_tokens = %#v", got.MaxContextTokens)
+	}
+	if got.ReservedOutputTokens == nil || *got.ReservedOutputTokens != 2048 {
+		t.Fatalf("reserved_output_tokens = %#v", got.ReservedOutputTokens)
+	}
+	if got.ExtraHeaders["HTTP-Referer"] != "https://github.com/example/repo" || got.ExtraHeaders["X-Title"] != "tagteam" {
+		t.Fatalf("headers = %#v", got.ExtraHeaders)
+	}
+	if len(got.ExtraArgs) != 2 || got.ExtraArgs[0] != "--future" || got.ExtraArgs[1] != "value" {
+		t.Fatalf("extra_args = %#v", got.ExtraArgs)
+	}
+}
+
+func TestResolveOptions_OpenAICompatiblePassthrough(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Adapters.OpenAICompatible.ExtraArgs = []string{"--base"}
+	opts, err := ResolveOptions(cfg, []string{"defaults"}, FlagInputs{
+		OpenAICompatibleArgsRaw: "--flag value",
+		Timeout:                 15 * time.Minute,
+	}, map[string]bool{}, "ship it")
+	if err != nil {
+		t.Fatalf("ResolveOptions() error = %v", err)
+	}
+	want := []string{"--base", "--flag", "value"}
+	if len(opts.OpenAICompatibleArgs) != len(want) {
+		t.Fatalf("openai-compatible args length = %d, want %d: %#v", len(opts.OpenAICompatibleArgs), len(want), opts.OpenAICompatibleArgs)
+	}
+	for i := range want {
+		if opts.OpenAICompatibleArgs[i] != want[i] {
+			t.Fatalf("openai-compatible args[%d] = %q, want %q", i, opts.OpenAICompatibleArgs[i], want[i])
+		}
+	}
+}

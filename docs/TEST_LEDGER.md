@@ -1,7 +1,8 @@
 # Test Ledger
 
-Derived from the current test files and a local validation run on 2026-07-09.
-250 test functions across 14 files.
+Derived from the current test files and a local validation run on 2026-07-10.
+301 test functions across 30 files (large suites are mechanically split to
+keep every Go source file within the 800-line gate).
 
 | Test Area | Command / Evidence | Last Known Result | Source | Coverage Meaning | Gaps |
 |---|---|---|---|---|---|
@@ -9,7 +10,9 @@ Derived from the current test files and a local validation run on 2026-07-09.
 | Config resolution | `go test ./internal/tagteam/` (`config_test.go`, 61 tests) | pass | `config_test.go` | Layered precedence, profiles, `ResolveOptions`, JSON repair/fallback config, per-role policy | — |
 | Adapters | `go test ./internal/tagteam/` (`adapters_test.go`, 35 tests) | pass | `adapters_test.go` | argv construction, capabilities, schema wiring, per-role env/sandbox | — |
 | Run state / reasons | `go test ./internal/tagteam/` (`run_state_test.go`, 5 tests) | pass | `run_state_test.go` | Failure classification, exit→reason, budget wiring, overlay redaction | — |
-| Active run lifecycle | `go test ./internal/tagteam/` (`active_run_test.go`, 8 tests) | pass | `active_run_test.go` | `.tagteam/active.json` creation, cleanup, stale-pointer safety, post-failure inspection | — |
+| External state / lifecycle | `go test ./internal/tagteam/` | pass | `artifact_store.go`, `active_run_test.go`, `testmain_test.go` | Repository identity, isolated external state, active/latest lifecycle, legacy compatibility | Migration fault-injection coverage can grow |
+| Resilience / integrity | `go test ./internal/tagteam/` | pass | `integrity_test.go`, runner tests | Read-only mutation rejection, protected pointer restoration, durable streams/contracts, recovery/state paths | Real vendor timeout behavior remains adapter-dependent |
+| Quality gates / findings | `go test ./internal/tagteam/` | pass | `findings_test.go`, runner tests | Persistent major findings, evidence disposition, operator deferral, scope/churn/regression wiring | Transfer uses host-only Git fixtures rather than vendor agents |
 | Snapshot / live status | `go test ./internal/tagteam/` (`snapshot_test.go`, 9 tests) | pass | `snapshot_test.go` | `RunSnapshot` assembly from `active.json`, `state.json`, `final.json`, `plan.json`; compatibility regressions | — |
 | TUI | `go test ./internal/tui/` (`render_test.go`, 9 tests; `state_test.go`, 10 tests; `tui_test.go`, 5 tests) | pass | `internal/tui/*_test.go` | Compose/config resolution, profiles, mode defaults, bounded overlays, detail scrolling, command completion, split terminal input, non-interactive behavior, and missing-run handling | Automated coverage does not execute a full vendor-backed launch in a real terminal |
 | CLI | `go test ./internal/cli/` (`root_test.go`, 1 test; `tui_test.go`, 6 tests) | pass | `internal/cli/*_test.go` | Command wiring, TUI run resolution, completed-run command behavior | General CLI layer coverage remains thinner than runner coverage |

@@ -12,7 +12,8 @@ flowchart TD
     cli --> app["internal/tagteam App (runner.go)"]
     app --> config["config.go (layered resolution)"]
     app --> adapters["adapters.go (codex/claude/agy/gosling/openai)"]
-    app --> active["active_run.go (.tagteam/active.json)"]
+    app --> store["artifact_store.go (external authoritative state)"]
+    app --> active["active_run.go (external active.json)"]
     app --> snapshot["snapshot.go (RunSnapshot assembly)"]
     app --> runstate["run_state.go (reasons, status, budgets)"]
     app --> orch["orchestration.go (host decision)"]
@@ -21,7 +22,7 @@ flowchart TD
     app --> redact["redact.go (persist-time redaction)"]
     snapshot --> tui
     active --> snapshot
-    app --> artifacts[".tagteam/runs/&lt;run-id&gt;/ (final.json, state.json, plan.json, diffs, reviews)"]
+    app --> artifacts["~/.local/state/tagteam/&lt;repo-id&gt;/runs/&lt;run-id&gt;/"]
     artifacts --> snapshot
 ```
 
@@ -35,7 +36,8 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    runner["runner.go"] --> active[".tagteam/active.json"]
+    pointer[".tagteam/repo.json"] --> runner["runner.go"]
+    runner --> active["external active.json"]
     runner --> state["run state.json"]
     runner --> final["run final.json"]
     runner --> plan["run plan.json"]
@@ -99,6 +101,26 @@ flowchart LR
 **Evidence:** `internal/tagteam/run_state.go`
 (`classifyRoleFailure`, `reasonForExit`), `internal/tagteam/types.go`
 (`ReasonCode`, `Exit*`), `context_budget.go` (`errScoutContextTooSmall`).
+
+## Failed invocation recovery and transfer
+
+```mermaid
+flowchart LR
+    invoke[Worker invocation] --> failure{timeout / stall / nonzero / invalid contract?}
+    failure -- yes --> checkpoint[Sync streams + capture partial patch + isolated tests]
+    checkpoint --> decision{Recovery supervisor}
+    decision --> repair[Resume same worker]
+    decision --> fallback[Continue configured fallback]
+    decision --> quarantine[Quarantine without reverting]
+    repair --> gates[Tests + scope/churn + independent review]
+    fallback --> gates
+    gates --> transfer{Explicit transfer command}
+    transfer --> verify[Patch hash + clean matching target + lint/regression/findings]
+    verify --> apply[git apply --check then git apply]
+```
+
+**Evidence:** `internal/tagteam/recovery.go`, `invocation_stream.go`,
+`timeout_calibration.go`, `quality_gates.go`, `findings.go`, `transfer.go`.
 
 ## Notes
 

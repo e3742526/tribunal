@@ -33,6 +33,11 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 		snapshot.Mode = state.Mode
 		snapshot.Status = state.Status
 		snapshot.Phase = state.Phase
+		snapshot.CompletedPhase = state.CompletedPhase
+		snapshot.RepoID = state.RepoID
+		snapshot.InvocationID = state.InvocationID
+		snapshot.DiffHash = state.DiffHash
+		snapshot.RecoveryStatus = state.RecoveryStatus
 		snapshot.Degraded = state.Degraded
 		snapshot.DegradedReason = state.DegradedReason
 		snapshot.BlockingReason = state.BlockingReason
@@ -42,6 +47,12 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 		snapshot.LatestReviewPath = state.LatestReviewPath
 		snapshot.ExitCode = state.ExitCode
 		snapshot.UpdatedAt = state.UpdatedAt
+	}
+	if locator, err := locatorFromPointer(workdir); err == nil {
+		snapshot.StateRoot = locator.StateRoot
+		if snapshot.RepoID == "" {
+			snapshot.RepoID = locator.RepoID
+		}
 	}
 
 	// active.json is kept current by the same run-lifecycle defer on every
@@ -93,6 +104,7 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 			snapshot.LatestReviewPath = final.LatestReviewPath
 		}
 		finalReview = final.Review
+		snapshot.OpenMajorCount = final.Findings.OpenBlockerOrMajor
 		if !final.FinishedAt.IsZero() && final.FinishedAt.After(snapshot.UpdatedAt) {
 			snapshot.UpdatedAt = final.FinishedAt
 		}
@@ -100,6 +112,9 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 
 	if plan, err := readExecutionPlan(runDir); err == nil && plan.RunID != "" {
 		snapshot.PlanSummary = summarizeExecutionPlan(runDir, &plan)
+	}
+	if ledger, err := loadFindingsLedger(runDir); err == nil {
+		snapshot.OpenMajorCount = summarizeFindings(filepath.Join(runDir, findingsLedgerFilename), ledger).OpenBlockerOrMajor
 	}
 
 	if len(snapshot.ChangedFiles) == 0 && snapshot.LatestDiffPath != "" {
