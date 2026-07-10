@@ -289,8 +289,12 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	req.ProgressStdout = stdout
 	req.ProgressStderr = stderr
 	req.ProgressLastActivity = &lastActivity
+	progressRole := role
+	if req.ProgressRole != "" {
+		progressRole = req.ProgressRole
+	}
 	logRequestProgress(req, "%s process starting output=%s", phase, spec.Output)
-	initialProgress, _ := writeLiveProgress(runCtx, req, role, phase, started, "running")
+	initialProgress, _ := writeLiveProgress(runCtx, req, progressRole, phase, started, "running")
 	lastFingerprint := fmt.Sprintf("%s:%d:%d:%s", initialProgress.DiffHash, initialProgress.StdoutBytes, initialProgress.StderrBytes, outputArtifactFingerprint(req.OutputPath))
 	watchdogTimeout := req.WatchdogTimeout
 	if watchdogTimeout <= 0 {
@@ -316,12 +320,12 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 			case <-ticker.C:
 				_ = stdout.Sync()
 				_ = stderr.Sync()
-				progress, err := writeLiveProgress(runCtx, req, role, phase, started, "running")
+				progress, err := writeLiveProgress(runCtx, req, progressRole, phase, started, "running")
 				fingerprint := fmt.Sprintf("%s:%d:%d:%s", progress.DiffHash, progress.StdoutBytes, progress.StderrBytes, outputArtifactFingerprint(req.OutputPath))
 				if fingerprint != lastFingerprint {
 					lastFingerprint = fingerprint
 					lastActivity = time.Now()
-					progress, err = writeLiveProgress(runCtx, req, role, phase, started, "running")
+					progress, err = writeLiveProgress(runCtx, req, progressRole, phase, started, "running")
 				}
 				if !req.Quiet {
 					if err != nil {
@@ -345,7 +349,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 					case stalled <- struct{}{}:
 					default:
 					}
-					_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "stalled")
+					_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, "stalled")
 					cancel()
 					return
 				}
@@ -357,7 +361,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	if err := cmd.Run(); err != nil {
 		close(done)
 		finishInvocationStreams(&record, stdout, stderr)
-		_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "failed")
+		_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, "failed")
 		if stdout.Exceeded() || stderr.Exceeded() {
 			limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
 			finishDeliveryRecord(recordPath, record, "failed", limitErr)
@@ -373,6 +377,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 		if msg == "" {
 			msg = redactSecretsWithOverlay(err.Error(), req.EnvOverlay)
 		}
+		msg = conciseAdapterError(msg, record.StderrPath)
 		logRequestProgress(req, "%s failed elapsed=%s", phase, shortDuration(time.Since(started)))
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			record.ProcessExitCode = exitErr.ExitCode()
@@ -394,7 +399,7 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	}
 	close(done)
 	finishInvocationStreams(&record, stdout, stderr)
-	_, _ = writeLiveProgress(context.Background(), req, role, phase, started, "completed")
+	_, _ = writeLiveProgress(context.Background(), req, progressRole, phase, started, "completed")
 	logRequestProgress(req, "%s process completed elapsed=%s", phase, shortDuration(time.Since(started)))
 	if stdout.Exceeded() || stderr.Exceeded() {
 		limitErr := &ExitError{Code: ExitAdapterFailure, Err: outputLimitError(adapter.ID(), maxOutputBytes(req))}
@@ -468,6 +473,23 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	result.Command = spec.Argv
 	finishDeliveryRecord(recordPath, record, "completed", nil)
 	return result, nil
+}
+
+func conciseAdapterError(message, artifactPath string) string {
+	const headBytes = 2048
+	const tailBytes = 1024
+	message = strings.TrimSpace(message)
+	if len(message) <= headBytes+tailBytes {
+		return message
+	}
+	omitted := len(message) - headBytes - tailBytes
+	head := strings.ToValidUTF8(message[:headBytes], "")
+	tail := strings.ToValidUTF8(message[len(message)-tailBytes:], "")
+	summary := fmt.Sprintf("%s\n... %d bytes omitted ...\n%s", head, omitted, tail)
+	if artifactPath != "" {
+		summary += "\nfull stderr: " + artifactPath
+	}
+	return summary
 }
 
 func outputArtifactFingerprint(path string) string {

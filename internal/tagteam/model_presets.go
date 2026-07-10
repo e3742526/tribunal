@@ -1,9 +1,9 @@
 package tagteam
 
 const (
-	defaultSupervisorTarget       = "codex:gpt-5.6-terra"
+	defaultSupervisorTarget       = "codex:gpt-5.6-sol"
 	defaultWorkerTarget           = "agy:Gemini 3.5 Flash (Medium)"
-	defaultRelayCoderTarget       = "agy:gemini-5.3-medium"
+	defaultRelayCoderTarget       = defaultWorkerTarget
 	defaultRelayScoutTarget       = "openai-compatible:gemma4:latest"
 	defaultAdversarialCoderTarget = "codex:gpt-5.6-terra"
 	defaultAdversaryTarget        = "claude:claude-opus-4-8"

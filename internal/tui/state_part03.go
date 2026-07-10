@@ -250,6 +250,9 @@ func (m *model) applyCommand(ctx context.Context, raw string) {
 		}
 		m.compose.AllowDirty = value
 		m.compose.AllowDirtySet = true
+		if value {
+			m.statusMessage = "allow-dirty enabled: review and gates use the cumulative diff against HEAD"
+		}
 	case "repair-json":
 		value, err := parseBoolWord(rest)
 		if err != nil {
@@ -608,6 +611,17 @@ func (m *model) detailLines() []string {
 		fmt.Sprintf("Verdict: %s", dashIfEmpty(s.Verdict)),
 		fmt.Sprintf("Updated: %s", formatTime(s.UpdatedAt)),
 		fmt.Sprintf("Rounds: %d/%d current=%d", s.RoundsCompleted, s.RoundsRequested, s.CurrentRound),
+	}
+	if live := s.LiveProgress; live != nil && (s.Status == "running" || live.Status == "stalled") {
+		activity := fmt.Sprintf("Activity: %s · %s · elapsed %s", dashIfEmpty(string(live.Role)), dashIfEmpty(live.Status), dashIfEmpty(live.Elapsed))
+		if live.NoProgressFor != "" {
+			activity += " · idle " + live.NoProgressFor
+		}
+		lines = append(lines, activity)
+		lines = append(lines, fmt.Sprintf("Working diff: %d files (+%d -%d)", live.FilesChanged, live.Additions, live.Deletions))
+	}
+	if len(s.PreexistingFiles) > 0 {
+		lines = append(lines, fmt.Sprintf("Baseline: cumulative dirty worktree (%d pre-existing files)", len(s.PreexistingFiles)))
 	}
 	if s.RecoveryStatus != "" {
 		lines = append(lines, fmt.Sprintf("Recovery: %s", s.RecoveryStatus))

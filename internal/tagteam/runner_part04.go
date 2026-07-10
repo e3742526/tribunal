@@ -30,6 +30,12 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	if opts.AllowDirty || opts.GitSafety == "allow-dirty" {
+		logProgress(opts, "warning: allow-dirty reviews the cumulative worktree diff against HEAD")
+		if err := writePreexistingWorktree(ctx, opts.Workdir, runDir, baseline); err != nil {
+			return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("capture pre-existing worktree: %w", err)}
+		}
+	}
 	lock, err := acquireRunLock(runDir, false)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
@@ -657,6 +663,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			Timeout:               opts.Timeout,
 			WatchdogTimeout:       opts.WatchdogTimeout,
 			Phase:                 fmt.Sprintf("round %d %s %s", round, editorLabel, editor.ID()),
+			ProgressRole:          Role(editorLabel),
 			Quiet:                 opts.Quiet,
 			Verbose:               opts.Verbose,
 			Budget:                opts.InvocationBudget,
@@ -670,7 +677,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				final.BlockingReason = string(ReasonQuarantined)
 				return final, err
 			}
-			recovered, selectedTarget, selectedAdapter, recoveryErr := a.recoverEditorFailure(ctx, opts, round, runDir, baseline, workerSchemaPath, sessionID, opts.Coder, editor, reviewer, registry, err, beforeEditor, &final)
+			recovered, selectedTarget, selectedAdapter, recoveryErr := a.recoverEditorFailure(ctx, opts, round, runDir, baseline, workerSchemaPath, sessionID, editorRequest, opts.Coder, editor, reviewer, registry, err, beforeEditor, &final)
 			if recoveryErr != nil {
 				return final, recoveryErr
 			}

@@ -33,6 +33,13 @@ func TestBuildRunSnapshot_RunningStateOnly(t *testing.T) {
 	if err := writeJSONWithNewline(filepath.Join(runDir, "state.json"), state); err != nil {
 		t.Fatal(err)
 	}
+	live := LiveProgress{SchemaVersion: ArtifactSchemaVersion, Role: RoleSupervisor, Status: "running", FilesChanged: 2, Additions: 8, Deletions: 1, DiffHash: "live-hash", UpdatedAt: time.Now().UTC()}
+	if err := writeJSONWithNewline(filepath.Join(runDir, liveProgressArtifact), live); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONWithNewline(filepath.Join(runDir, preexistingWorktreeArtifact), PreexistingWorktree{SchemaVersion: ArtifactSchemaVersion, Files: []string{"already-dirty.go"}}); err != nil {
+		t.Fatal(err)
+	}
 
 	snapshot, err := BuildRunSnapshot(workdir, runDir)
 	if err != nil {
@@ -55,6 +62,12 @@ func TestBuildRunSnapshot_RunningStateOnly(t *testing.T) {
 	}
 	if snapshot.SchemaVersion != ArtifactSchemaVersion {
 		t.Fatalf("schema_version = %d, want %d", snapshot.SchemaVersion, ArtifactSchemaVersion)
+	}
+	if snapshot.LiveProgress == nil || snapshot.LiveProgress.Role != RoleSupervisor || snapshot.DiffHash != "live-hash" {
+		t.Fatalf("live progress not projected into snapshot: %#v", snapshot)
+	}
+	if len(snapshot.PreexistingFiles) != 1 || snapshot.PreexistingFiles[0] != "already-dirty.go" {
+		t.Fatalf("pre-existing files not projected into snapshot: %#v", snapshot.PreexistingFiles)
 	}
 }
 

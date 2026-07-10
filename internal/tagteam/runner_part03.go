@@ -28,6 +28,12 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
 	}
+	if opts.AllowDirty || opts.GitSafety == "allow-dirty" {
+		logProgress(opts, "warning: allow-dirty reviews the cumulative worktree diff against HEAD")
+		if err := writePreexistingWorktree(ctx, opts.Workdir, runDir, baseline); err != nil {
+			return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("capture pre-existing worktree: %w", err)}
+		}
+	}
 	lock, err := acquireRunLock(runDir, false)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitAdapterFailure, Err: err}
@@ -123,7 +129,7 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 	if snapshotErr != nil {
 		return final, &ExitError{Code: ExitAdapterFailure, Err: snapshotErr}
 	}
-	editorResult, err := a.runAdapter(ctx, editor, RoleCoder, Request{
+	editorRequest := Request{
 		Context:               ctx,
 		Prompt:                workerContractPrompt(withRepoInstructions(BuildSoloPrompt(opts.Workdir, opts.Prompt), repoInstructions)),
 		SystemPrompt:          "",
@@ -136,11 +142,13 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 		Timeout:               opts.Timeout,
 		WatchdogTimeout:       opts.WatchdogTimeout,
 		Phase:                 fmt.Sprintf("solo %s", editor.ID()),
+		ProgressRole:          Role(editorLabel),
 		Quiet:                 opts.Quiet,
 		Verbose:               opts.Verbose,
 		Budget:                opts.InvocationBudget,
 		RequireWorkerContract: true,
-	}, opts.DryRun)
+	}
+	editorResult, err := a.runEditorWithContractRetry(ctx, opts, editor, editorRequest, beforeEditor)
 	if err != nil {
 		reason := classifyRoleFailure(editorLabel, err)
 		setRoleStatus(&final, editorLabel, opts.Coder, "failed", reason, err.Error())
@@ -150,7 +158,7 @@ func (a *App) runSolo(ctx context.Context, opts RunOptions) (FinalRun, error) {
 			final.Status = RunStatusQuarantined
 			final.BlockingReason = string(ReasonQuarantined)
 		} else {
-			_, _, _, err = a.recoverEditorFailure(ctx, opts, 1, runDir, baseline, workerSchemaPath, "", opts.Coder, editor, nil, registry, err, beforeEditor, &final)
+			_, _, _, err = a.recoverEditorFailure(ctx, opts, 1, runDir, baseline, workerSchemaPath, "", editorRequest, opts.Coder, editor, nil, registry, err, beforeEditor, &final)
 			if final.Status == RunStatusQuarantined {
 				status = string(RunStatusQuarantined)
 			}

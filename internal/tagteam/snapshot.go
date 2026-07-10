@@ -54,6 +54,24 @@ func BuildRunSnapshot(workdir, runDir string) (RunSnapshot, error) {
 			snapshot.RepoID = locator.RepoID
 		}
 	}
+	if data, err := os.ReadFile(filepath.Join(runDir, liveProgressArtifact)); err == nil {
+		var live LiveProgress
+		if json.Unmarshal(data, &live) == nil {
+			snapshot.LiveProgress = &live
+			if live.DiffHash != "" {
+				snapshot.DiffHash = live.DiffHash
+			}
+			if live.UpdatedAt.After(snapshot.UpdatedAt) {
+				snapshot.UpdatedAt = live.UpdatedAt
+			}
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(runDir, preexistingWorktreeArtifact)); err == nil {
+		var preexisting PreexistingWorktree
+		if json.Unmarshal(data, &preexisting) == nil {
+			snapshot.PreexistingFiles = preexisting.Files
+		}
+	}
 
 	// active.json is kept current by the same run-lifecycle defer on every
 	// entrypoint, including ones (like solo runs) that do not rewrite

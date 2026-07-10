@@ -48,7 +48,8 @@ func DefaultConfig() Config {
 			ScoutMode:               "recon",
 			PostScoutMode:           "polish",
 			ScoutFailurePolicy:      "continue",
-			LossPolicy:              RoleLossPolicies{Worker: LossPolicyBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
+			LossPolicy:              RoleLossPolicies{Worker: LossPolicyReplaceThenBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
+			Fallbacks:               RoleFallbacks{Worker: []string{defaultAdversarialCoderTarget}},
 			ScoutRetrieval:          &scoutRetrieval,
 			ScoutContextPolicy:      "warn",
 			SupervisorSlicing:       &supervisorSlicing,
@@ -92,7 +93,7 @@ func DefaultConfig() Config {
 				ScoutMode:          "recon",
 				PostScoutMode:      "polish",
 				ScoutFailurePolicy: "continue",
-				LossPolicy:         RoleLossPolicies{Worker: LossPolicyBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
+				LossPolicy:         RoleLossPolicies{Worker: LossPolicyReplaceThenBlock, Reviewer: LossPolicyBlock, Supervisor: LossPolicyBlock, Scout: LossPolicyDegrade},
 				ScoutRetrieval:     &scoutRetrieval,
 				ScoutContextPolicy: "warn",
 				Rounds:             2,
@@ -118,7 +119,7 @@ func DefaultConfig() Config {
 		},
 		Adapters: AdapterConfigSet{
 			Codex: CodexConfig{
-				DefaultModel:    "gpt-5.6-terra",
+				DefaultModel:    "gpt-5.6-sol",
 				ReasoningEffort: "high",
 			},
 			Claude: ClaudeConfig{

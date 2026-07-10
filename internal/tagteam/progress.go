@@ -2,14 +2,23 @@ package tagteam
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 )
 
-const liveProgressArtifact = "live-progress.json"
+const (
+	liveProgressArtifact        = "live-progress.json"
+	preexistingWorktreeArtifact = "preexisting-worktree.json"
+)
+
+type PreexistingWorktree struct {
+	SchemaVersion int       `json:"schema_version"`
+	Baseline      string    `json:"baseline"`
+	Files         []string  `json:"files"`
+	CapturedAt    time.Time `json:"captured_at"`
+}
 
 // LiveProgress is host-owned runtime evidence collected while an adapter is
 // active. Agents never write this artifact.
@@ -60,21 +69,15 @@ func writeLiveProgress(
 		progress.NoProgressFor = shortDuration(time.Since(*req.ProgressLastActivity))
 	}
 	if req.Workdir != "" {
-		files, err := liveChangedFiles(ctx, req.Workdir)
+		diff, err := captureLiveDiff(ctx, req.Workdir)
 		if err != nil {
 			return progress, err
 		}
-		progress.ChangedFiles = files
-		progress.FilesChanged = len(files)
-		additions, deletions, err := liveNumstat(ctx, req.Workdir)
-		if err != nil {
-			return progress, err
-		}
-		progress.Additions = additions
-		progress.Deletions = deletions
-		if patch, patchErr := runGitCommandBytes(ctx, req.Workdir, []string{"LC_ALL=C"}, "diff", "--no-ext-diff", "--no-color", "--binary", "HEAD", "--", ".", ":(exclude).tagteam"); patchErr == nil {
-			progress.DiffHash = sha256Sum(patch)
-		}
+		progress.ChangedFiles = diff.files
+		progress.FilesChanged = len(diff.files)
+		progress.Additions = diff.additions
+		progress.Deletions = diff.deletions
+		progress.DiffHash = sha256Sum(diff.patch)
 	}
 	if req.RunDir == "" {
 		return progress, nil
@@ -85,55 +88,50 @@ func writeLiveProgress(
 	return progress, nil
 }
 
-func liveChangedFiles(ctx context.Context, workdir string) ([]string, error) {
-	out, err := runCommand(ctx, workdir, "git", "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]struct{}{}
-	for _, line := range strings.Split(out, "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		path := strings.TrimSpace(line[3:])
-		if _, renamed, ok := strings.Cut(path, " -> "); ok {
-			path = renamed
-		}
-		if path == ".tagteam" || strings.HasPrefix(path, ".tagteam/") {
-			continue
-		}
-		seen[path] = struct{}{}
-	}
-	files := make([]string, 0, len(seen))
-	for path := range seen {
-		files = append(files, path)
-	}
-	sort.Strings(files)
-	return files, nil
+type liveDiff struct {
+	patch     []byte
+	files     []string
+	additions int
+	deletions int
 }
 
-func liveNumstat(ctx context.Context, workdir string) (int, int, error) {
-	out, err := runCommand(ctx, workdir, "git", "diff", "--numstat", "HEAD", "--", ".", ":(exclude).tagteam")
+func captureLiveDiff(ctx context.Context, workdir string) (liveDiff, error) {
+	tempDir, err := os.MkdirTemp("", "tagteam-live-diff-*")
 	if err != nil {
-		return 0, 0, err
+		return liveDiff{}, err
 	}
-	additions := 0
-	deletions := 0
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		if value, err := strconv.Atoi(parts[0]); err == nil {
-			additions += value
-		}
-		if value, err := strconv.Atoi(parts[1]); err == nil {
-			deletions += value
-		}
+	defer os.RemoveAll(tempDir)
+	patch, _, statusZ, numstatZ, err := deterministicDiffOutputs(ctx, workdir, "HEAD", filepath.Join(tempDir, "index"))
+	if err != nil {
+		return liveDiff{}, err
 	}
-	return additions, deletions, nil
+	diff := liveDiff{patch: patch}
+	for _, file := range buildDiffFiles(statusZ, numstatZ) {
+		diff.files = append(diff.files, file.Path)
+		diff.additions += file.Additions
+		diff.deletions += file.Deletions
+	}
+	return diff, nil
 }
 
 func writeJSONAtomic(path string, value any) error {
 	return writeJSONDurable(path, value, true, true)
+}
+
+func writePreexistingWorktree(ctx context.Context, workdir, runDir, baseline string) error {
+	snapshot, err := captureWorktreeSnapshot(ctx, workdir)
+	if err != nil {
+		return err
+	}
+	files := make([]string, 0, len(snapshot))
+	for path := range snapshot {
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return writeJSONWithNewline(filepath.Join(runDir, preexistingWorktreeArtifact), PreexistingWorktree{
+		SchemaVersion: ArtifactSchemaVersion,
+		Baseline:      baseline,
+		Files:         files,
+		CapturedAt:    time.Now().UTC(),
+	})
 }

@@ -102,6 +102,7 @@ func (a *App) recoverEditorFailure(
 	opts RunOptions,
 	round int,
 	runDir, baseline, workerSchemaPath, sessionID string,
+	originalRequest Request,
 	originalTarget RoleTarget,
 	originalAdapter, reviewer Adapter,
 	registry map[string]Adapter,
@@ -110,8 +111,11 @@ func (a *App) recoverEditorFailure(
 	final *FinalRun,
 ) (Result, RoleTarget, Adapter, error) {
 	after, snapshotErr := captureWorktreeSnapshot(context.Background(), opts.Workdir)
-	if snapshotErr != nil || len(worktreeDelta(before, after)) == 0 {
+	if snapshotErr != nil {
 		return Result{}, originalTarget, originalAdapter, failure
+	}
+	if len(worktreeDelta(before, after)) == 0 {
+		return a.retryZeroDeltaEditorWithFallback(ctx, opts, round, runDir, baseline, workerSchemaPath, originalRequest, originalTarget, originalAdapter, registry, failure, after, final)
 	}
 	_ = writeRunState(runDir, RunState{RunID: final.RunID, Mode: opts.Mode, Status: "running", Phase: string(PhaseRepairing), CurrentRound: round, RecoveryStatus: "checkpointing", RoleStatuses: final.RoleStatuses})
 	diff, err := captureDiffArtifact(context.Background(), opts.Workdir, baseline, runDir, round)
@@ -197,27 +201,29 @@ func (a *App) recoverEditorFailure(
 		return Result{}, selectedTarget, selectedAdapter, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("partial work quarantined: %s", decision.Reason)}
 	}
 
-	retryPrompt := workerContractPrompt(fmt.Sprintf("Preserve the existing partial diff at %s. %s the requested work, address the failure and focused-test evidence, and return a valid worker result envelope.", diff.PatchPath, map[bool]string{true: "Repair", false: "Continue"}[decision.Decision == "repair"]))
+	recoveryContext := fmt.Sprintf("Recovery context: preserve the existing partial diff at %s. %s the requested work and address the recorded failure and focused-test evidence.", diff.PatchPath, map[bool]string{true: "Repair", false: "Continue"}[decision.Decision == "repair"])
+	retryPrompt := prependRecoveryContext(originalRequest.Prompt, recoveryContext)
 	retryOutput := filepath.Join(runDir, fmt.Sprintf("worker-recovery-round-%d.json", round))
-	result, retryErr := a.runAdapter(ctx, selectedAdapter, RoleCoder, Request{
-		Context:               ctx,
-		Prompt:                retryPrompt,
-		EnvOverlay:            opts.EnvOverlay,
-		Model:                 selectedTarget.Model,
-		Workdir:               opts.Workdir,
-		RunDir:                runDir,
-		OutputPath:            retryOutput,
-		SchemaPath:            workerSchemaPath,
-		ResumeID:              map[bool]string{true: sessionID, false: ""}[decision.Decision == "repair"],
-		Timeout:               opts.Timeout,
-		WatchdogTimeout:       opts.WatchdogTimeout,
-		Phase:                 "repairing worker continuation",
-		Quiet:                 opts.Quiet,
-		Verbose:               opts.Verbose,
-		Budget:                opts.InvocationBudget,
-		MaxOutputBytes:        opts.MaxOutputBytes,
-		RequireWorkerContract: true,
-	}, opts.DryRun)
+	retryRequest := originalRequest
+	retryRequest.Context = ctx
+	retryRequest.Prompt = retryPrompt
+	retryRequest.EnvOverlay = opts.EnvOverlay
+	retryRequest.Model = selectedTarget.Model
+	retryRequest.Workdir = opts.Workdir
+	retryRequest.RunDir = runDir
+	retryRequest.OutputPath = retryOutput
+	retryRequest.SchemaPath = workerSchemaPath
+	retryRequest.ResumeID = map[bool]string{true: sessionID, false: ""}[decision.Decision == "repair"]
+	retryRequest.Timeout = opts.Timeout
+	retryRequest.WatchdogTimeout = opts.WatchdogTimeout
+	retryRequest.Phase = "repairing worker continuation"
+	retryRequest.ProgressRole = Role(roleLabelsEditor(opts.Mode))
+	retryRequest.Quiet = opts.Quiet
+	retryRequest.Verbose = opts.Verbose
+	retryRequest.Budget = opts.InvocationBudget
+	retryRequest.MaxOutputBytes = opts.MaxOutputBytes
+	retryRequest.RequireWorkerContract = true
+	result, retryErr := a.runAdapter(ctx, selectedAdapter, RoleCoder, retryRequest, opts.DryRun)
 	if retryErr != nil {
 		artifact.Status = "quarantined"
 		artifact.UpdatedAt = time.Now().UTC()
@@ -230,6 +236,102 @@ func (a *App) recoverEditorFailure(
 	artifact.UpdatedAt = time.Now().UTC()
 	_ = writeJSONWithNewline(filepath.Join(runDir, fmt.Sprintf("recovery-round-%d.json", round)), artifact)
 	return result, selectedTarget, selectedAdapter, nil
+}
+
+func (a *App) retryZeroDeltaEditorWithFallback(
+	ctx context.Context,
+	opts RunOptions,
+	round int,
+	runDir, baseline, workerSchemaPath string,
+	originalRequest Request,
+	originalTarget RoleTarget,
+	originalAdapter Adapter,
+	registry map[string]Adapter,
+	failure error,
+	beforeFallback worktreeSnapshot,
+	final *FinalRun,
+) (Result, RoleTarget, Adapter, error) {
+	if !policyAttemptsReplacement(opts.LossPolicy.Worker) || len(fallbackTargetsForRole(opts, roleLabelsEditor(opts.Mode), originalTarget)) == 0 {
+		return Result{}, originalTarget, originalAdapter, failure
+	}
+	selectedTarget, selectedAdapter, err := selectRuntimeWorkerFallback(ctx, opts, registry, originalTarget)
+	if err != nil {
+		return Result{}, originalTarget, originalAdapter, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("%v; worker fallback unavailable: %w", failure, err)}
+	}
+	now := time.Now().UTC()
+	decision := RecoveryDecision{
+		SchemaVersion: ArtifactSchemaVersion,
+		Decision:      "continue_with_fallback",
+		Reason:        "primary editor failed before changing the worktree",
+		Evidence:      []string{redactSecretsWithOverlay(failure.Error(), opts.EnvOverlay)},
+	}
+	artifact := RecoveryArtifact{
+		SchemaVersion: ArtifactSchemaVersion,
+		Round:         round,
+		Failure:       redactSecretsWithOverlay(failure.Error(), opts.EnvOverlay),
+		PartialDiff: DiffFilesMetadata{
+			SchemaVersion: ArtifactSchemaVersion,
+			Baseline:      baseline,
+			GeneratedAt:   now,
+			Files:         []DiffFile{},
+		},
+		Decision:  decision,
+		Original:  originalTarget,
+		Selected:  selectedTarget,
+		Status:    "retrying_without_partial_diff",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	artifactPath := filepath.Join(runDir, fmt.Sprintf("recovery-round-%d.json", round))
+	_ = writeJSONWithNewline(artifactPath, artifact)
+
+	retryRequest := originalRequest
+	retryRequest.Context = ctx
+	retryRequest.Prompt = prependRecoveryContext(originalRequest.Prompt, "Recovery context: the primary editor failed before making repository changes. Execute the original task with the configured fallback editor.")
+	retryRequest.EnvOverlay = opts.EnvOverlay
+	retryRequest.Model = selectedTarget.Model
+	retryRequest.Workdir = opts.Workdir
+	retryRequest.RunDir = runDir
+	retryRequest.OutputPath = filepath.Join(runDir, fmt.Sprintf("worker-fallback-round-%d.json", round))
+	retryRequest.SchemaPath = workerSchemaPath
+	retryRequest.ResumeID = ""
+	retryRequest.Timeout = opts.Timeout
+	retryRequest.WatchdogTimeout = opts.WatchdogTimeout
+	retryRequest.Phase = fmt.Sprintf("round %d %s fallback %s", round, roleLabelsEditor(opts.Mode), selectedAdapter.ID())
+	retryRequest.ProgressRole = Role(roleLabelsEditor(opts.Mode))
+	retryRequest.Quiet = opts.Quiet
+	retryRequest.Verbose = opts.Verbose
+	retryRequest.Budget = opts.InvocationBudget
+	retryRequest.MaxOutputBytes = opts.MaxOutputBytes
+	retryRequest.RequireWorkerContract = true
+	result, retryErr := a.runEditorWithContractRetry(ctx, opts, selectedAdapter, retryRequest, beforeFallback)
+	if retryErr != nil {
+		afterFallback, snapshotErr := captureWorktreeSnapshot(context.Background(), opts.Workdir)
+		if snapshotErr == nil && len(worktreeDelta(beforeFallback, afterFallback)) > 0 {
+			artifact.Status = "quarantined"
+			artifact.UpdatedAt = time.Now().UTC()
+			_ = writeJSONWithNewline(artifactPath, artifact)
+			final.Status = RunStatusQuarantined
+			setFinalBlocking(final, ReasonQuarantined, "fallback editor failed after changing the worktree")
+			return Result{}, selectedTarget, selectedAdapter, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("fallback partial work quarantined: %w", retryErr)}
+		}
+		artifact.Status = "failed"
+		artifact.UpdatedAt = time.Now().UTC()
+		_ = writeJSONWithNewline(artifactPath, artifact)
+		return Result{}, selectedTarget, selectedAdapter, retryErr
+	}
+	artifact.Status = "recovered"
+	artifact.UpdatedAt = time.Now().UTC()
+	_ = writeJSONWithNewline(artifactPath, artifact)
+	return result, selectedTarget, selectedAdapter, nil
+}
+
+func prependRecoveryContext(originalPrompt, recoveryContext string) string {
+	originalPrompt = strings.TrimSpace(originalPrompt)
+	if originalPrompt == "" {
+		return workerContractPrompt(recoveryContext)
+	}
+	return strings.TrimSpace(recoveryContext) + "\n\n" + originalPrompt
 }
 
 func roleLabelsEditor(mode Mode) string {

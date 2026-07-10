@@ -491,11 +491,13 @@ type RunSnapshot struct {
 	RoundsCompleted  int                   `json:"rounds_completed,omitempty"`
 	RoundsRequested  int                   `json:"rounds_requested,omitempty"`
 	RoleStatuses     map[string]RoleStatus `json:"role_statuses,omitempty"`
+	LiveProgress     *LiveProgress         `json:"live_progress,omitempty"`
 	PlanSummary      *PlanSummary          `json:"plan_summary,omitempty"`
 	LatestDiffPath   string                `json:"latest_diff_path,omitempty"`
 	LatestReviewPath string                `json:"latest_review_path,omitempty"`
 	LatestTestPath   string                `json:"latest_test_path,omitempty"`
 	ChangedFiles     []string              `json:"changed_files,omitempty"`
+	PreexistingFiles []string              `json:"preexisting_files,omitempty"`
 	FindingsCount    int                   `json:"findings_count"`
 	OpenMajorCount   int                   `json:"open_major_count"`
 	UpdatedAt        time.Time             `json:"updated_at"`

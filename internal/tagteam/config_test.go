@@ -66,6 +66,9 @@ func TestDefaultConfig_SupervisorDefaults(t *testing.T) {
 	if cfg.Defaults.LossPolicy.Scout != LossPolicyDegrade || cfg.Defaults.LossPolicy.Supervisor != LossPolicyBlock {
 		t.Fatalf("loss policy = %#v", cfg.Defaults.LossPolicy)
 	}
+	if cfg.Defaults.LossPolicy.Worker != LossPolicyReplaceThenBlock || len(cfg.Defaults.Fallbacks.Worker) != 1 || cfg.Defaults.Fallbacks.Worker[0] != defaultAdversarialCoderTarget {
+		t.Fatalf("worker fallback policy = policy:%q fallbacks:%#v", cfg.Defaults.LossPolicy.Worker, cfg.Defaults.Fallbacks.Worker)
+	}
 	if cfg.Defaults.ScoutContextPolicy != "warn" {
 		t.Fatalf("scout context policy = %q", cfg.Defaults.ScoutContextPolicy)
 	}
@@ -355,7 +358,7 @@ func TestResolveOptions_DefaultsToSupervisorMode(t *testing.T) {
 	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (Medium)" {
 		t.Fatalf("worker target = %#v", opts.Coder)
 	}
-	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-terra" {
+	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-sol" {
 		t.Fatalf("supervisor target = %#v", opts.Adversary)
 	}
 	if opts.Rounds != 2 {
@@ -537,10 +540,10 @@ func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
 	if opts.Scout.Adapter != "openai-compatible" || opts.Scout.Model != "gemma4:latest" {
 		t.Fatalf("scout = %#v", opts.Scout)
 	}
-	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "gemini-5.3-medium" {
+	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (Medium)" {
 		t.Fatalf("coder = %#v", opts.Coder)
 	}
-	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-terra" {
+	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-sol" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
 	}
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
@@ -569,10 +572,10 @@ func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
 	if opts.Scout.Adapter != "openai-compatible" || opts.Scout.Model != "gemma4:latest" {
 		t.Fatalf("scout = %#v", opts.Scout)
 	}
-	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "gemini-5.3-medium" {
+	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (Medium)" {
 		t.Fatalf("coder = %#v", opts.Coder)
 	}
-	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-terra" {
+	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-sol" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
 	}
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {

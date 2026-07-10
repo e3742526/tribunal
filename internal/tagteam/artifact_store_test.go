@@ -1,9 +1,11 @@
 package tagteam
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStateLocatorPreparePreservesLegacyGitignore(t *testing.T) {
@@ -36,5 +38,159 @@ func TestStateLocatorPreparePreservesLegacyGitignore(t *testing.T) {
 	}
 	if !fileExists(locator.PointerPath) {
 		t.Fatal("repository pointer was not written")
+	}
+}
+
+func TestStateLocatorPrepareReconcilesDivergentLegacyPointers(t *testing.T) {
+	workdir := t.TempDir()
+	stateRoot := t.TempDir()
+	t.Setenv("TAGTEAM_STATE_ROOT", stateRoot)
+	runGit(t, workdir, "init")
+	locator, err := resolveStateLocator(workdir, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacyRunDir := filepath.Join(locator.LegacyRoot, "runs", "legacy-run")
+	currentRunDir := filepath.Join(locator.RunsRoot, "current-run")
+	for _, runDir := range []string{legacyRunDir, currentRunDir} {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "final.json"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	older := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	newer := older.Add(48 * time.Hour)
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.LegacyRoot, "latest.json"), LatestRun{
+		RunID:     "legacy-run",
+		RunDir:    legacyRunDir,
+		FinalPath: filepath.Join(legacyRunDir, "final.json"),
+		UpdatedAt: older,
+	})
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.RepoRoot, "latest.json"), LatestRun{
+		RunID:     "current-run",
+		RunDir:    currentRunDir,
+		FinalPath: filepath.Join(currentRunDir, "final.json"),
+		UpdatedAt: newer,
+	})
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.LegacyRoot, "active.json"), ActiveRun{
+		RunID:     "legacy-run",
+		RunDir:    legacyRunDir,
+		Status:    "failed",
+		UpdatedAt: older,
+	})
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.RepoRoot, "active.json"), ActiveRun{
+		RunID:     "current-run",
+		RunDir:    currentRunDir,
+		Status:    "running",
+		UpdatedAt: newer,
+	})
+
+	// Read-only commands should discover an existing external store before the
+	// first successful migration writes repo.json.
+	if got := statePathForWorkdir(workdir, "latest.json"); got != filepath.Join(locator.RepoRoot, "latest.json") {
+		t.Fatalf("state path = %q, want external store", got)
+	}
+	if err := locator.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+
+	var latest LatestRun
+	readJSONFile(t, filepath.Join(locator.RepoRoot, "latest.json"), &latest)
+	if latest.RunID != "current-run" || latest.RunDir != currentRunDir || latest.FinalPath != filepath.Join(currentRunDir, "final.json") {
+		t.Fatalf("reconciled latest pointer = %#v", latest)
+	}
+	var active ActiveRun
+	readJSONFile(t, filepath.Join(locator.RepoRoot, "active.json"), &active)
+	if active.RunID != "current-run" || active.Status != "running" || active.RunDir != currentRunDir {
+		t.Fatalf("reconciled active pointer = %#v", active)
+	}
+	if !fileExists(filepath.Join(locator.RunsRoot, "legacy-run", "final.json")) {
+		t.Fatal("legacy run was not merged into the external store")
+	}
+	for _, path := range []string{
+		filepath.Join(locator.LegacyRoot, "runs"),
+		filepath.Join(locator.LegacyRoot, "latest.json"),
+		filepath.Join(locator.LegacyRoot, "active.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy runtime path still exists after verified migration: %s", path)
+		}
+	}
+}
+
+func TestStateLocatorPrepareUsesNewerLegacyPointerAndNormalizesPaths(t *testing.T) {
+	workdir := t.TempDir()
+	stateRoot := t.TempDir()
+	runGit(t, workdir, "init")
+	locator, err := resolveStateLocator(workdir, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRunDir := filepath.Join(locator.LegacyRoot, "runs", "newer-legacy")
+	currentRunDir := filepath.Join(locator.RunsRoot, "older-current")
+	for _, runDir := range []string{legacyRunDir, currentRunDir} {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "final.json"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.RepoRoot, "latest.json"), LatestRun{RunID: "older-current", UpdatedAt: now.Add(-time.Hour)})
+	writeArtifactStoreTestJSON(t, filepath.Join(locator.LegacyRoot, "latest.json"), LatestRun{RunID: "newer-legacy", RunDir: legacyRunDir, UpdatedAt: now})
+
+	if err := locator.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	var latest LatestRun
+	readJSONFile(t, filepath.Join(locator.RepoRoot, "latest.json"), &latest)
+	wantRunDir := filepath.Join(locator.RunsRoot, "newer-legacy")
+	if latest.RunID != "newer-legacy" || latest.RunDir != wantRunDir || latest.FinalPath != filepath.Join(wantRunDir, "final.json") {
+		t.Fatalf("newer legacy pointer was not normalized: %#v", latest)
+	}
+}
+
+func TestStateLocatorPrepareRejectsConflictingRunArtifact(t *testing.T) {
+	workdir := t.TempDir()
+	stateRoot := t.TempDir()
+	runGit(t, workdir, "init")
+	locator, err := resolveStateLocator(workdir, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(locator.LegacyRoot, "runs", "same-run", "final.json")
+	currentPath := filepath.Join(locator.RunsRoot, "same-run", "final.json")
+	for path, contents := range map[string]string{legacyPath: "legacy\n", currentPath: "current\n"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := locator.Prepare(); err == nil {
+		t.Fatal("expected conflicting same-run artifact to block migration")
+	}
+	if !fileExists(legacyPath) {
+		t.Fatal("conflicting legacy artifact must remain available for manual recovery")
+	}
+}
+
+func writeArtifactStoreTestJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -66,9 +66,9 @@ Operational behavior
 `,
 		Example: `tagteam "add OAuth login"
 tagteam run -m 'agy:Gemini 3.5 Flash (Medium)' "add OAuth login"
-tagteam --worker 'agy:Gemini 3.5 Flash (Medium)' --supervisor codex:gpt-5.6-terra "refactor billing flow"
+tagteam --worker 'agy:Gemini 3.5 Flash (Medium)' --supervisor codex:gpt-5.6-sol "refactor billing flow"
 tagteam --solo codex:gpt-5.6-terra "rename UserSvc to UserService"
-tagteam --relay --scout openai-compatible:gemma4:latest --worker agy:gemini-5.3-medium --supervisor codex:gpt-5.6-terra "add OAuth login"
+tagteam --relay --scout openai-compatible:gemma4:latest --worker 'agy:Gemini 3.5 Flash (Medium)' --supervisor codex:gpt-5.6-sol "add OAuth login"
 tagteam --mode adversarial -mc codex:gpt-5.6-terra -ma claude:claude-opus-4-8 "refactor billing flow"`,
 		SilenceUsage:  true,
 		SilenceErrors: true,

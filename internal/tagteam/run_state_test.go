@@ -58,6 +58,29 @@ func TestFinalizeRunStateWiresBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestFinalizeRunStateMakesHostGateFailureAuthoritative(t *testing.T) {
+	final := &FinalRun{
+		ExitCode: ExitBlockingFindings,
+		Verdict:  "pass",
+		Review:   &Review{Verdict: "pass", Summary: "reviewer approved"},
+	}
+	finalizeRunState(final)
+	if final.Status != RunStatusBlocked || final.Verdict != "needs_changes" {
+		t.Fatalf("host gate result not reflected in final status: %#v", final)
+	}
+	if final.Review.Verdict != "pass" {
+		t.Fatalf("reviewer verdict should remain separately inspectable: %#v", final.Review)
+	}
+}
+
+func TestFinalizeRunStateNormalizesFailedDoneVerdict(t *testing.T) {
+	final := &FinalRun{ExitCode: ExitTestsFailed, Verdict: "done"}
+	finalizeRunState(final)
+	if final.Status != RunStatusFailed || final.Verdict != "error" {
+		t.Fatalf("failed run retained success-like verdict: %#v", final)
+	}
+}
+
 func TestSetRoleStatusRedactsOverlaySecret(t *testing.T) {
 	final := &FinalRun{}
 	initFinalState(final, RunOptions{EnvOverlay: map[string]string{"PROVIDER_API_KEY": "super-secret-value"}})

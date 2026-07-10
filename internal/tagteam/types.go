@@ -232,6 +232,7 @@ type Request struct {
 	Stdin                 []byte
 	InputMode             string
 	Phase                 string
+	ProgressRole          Role
 	Quiet                 bool
 	Verbose               bool
 	Budget                *InvocationBudget

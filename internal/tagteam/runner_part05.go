@@ -381,6 +381,7 @@ func (a *App) runAdversary(ctx context.Context, opts RunOptions, round int, runD
 			WatchdogTimeout: opts.WatchdogTimeout,
 			MaxOutputBytes:  opts.MaxOutputBytes,
 			Phase:           fmt.Sprintf("round %d %s %s", round, reviewerLabel, roleTargetString(target)),
+			ProgressRole:    Role(reviewerLabel),
 			InputMode:       input.Mode,
 			Quiet:           opts.Quiet,
 			Verbose:         opts.Verbose,

@@ -174,14 +174,34 @@ func worktreeDelta(before, after worktreeSnapshot) []string {
 	return paths
 }
 
-func validateWorkerGitClaim(result *WorkerResult, before, after worktreeSnapshot) error {
+func validateWorkerGitClaim(ctx context.Context, workdir string, result *WorkerResult, before, after worktreeSnapshot) error {
 	actual := worktreeDelta(before, after)
 	claimed := append([]string(nil), result.FilesChanged...)
 	sort.Strings(claimed)
 	if strings.Join(actual, "\x00") != strings.Join(claimed, "\x00") {
+		if ignored := ignoredMissingWorkerClaims(ctx, workdir, claimed, actual); len(ignored) > 0 {
+			return &OutputContractError{Err: fmt.Errorf("worker files_changed includes ignored paths that Tagteam cannot safely include in review artifacts: %v; track them or explicitly stage them with git add -f before the run (claimed=%v actual=%v)", ignored, claimed, actual)}
+		}
 		return &OutputContractError{Err: fmt.Errorf("worker files_changed inconsistent with Git: claimed=%v actual=%v", claimed, actual)}
 	}
 	return nil
+}
+
+func ignoredMissingWorkerClaims(ctx context.Context, workdir string, claimed, actual []string) []string {
+	actualSet := make(map[string]bool, len(actual))
+	for _, path := range actual {
+		actualSet[path] = true
+	}
+	ignored := []string{}
+	for _, path := range claimed {
+		if actualSet[path] {
+			continue
+		}
+		if _, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "check-ignore", "-q", "--", path); err == nil {
+			ignored = append(ignored, path)
+		}
+	}
+	return ignored
 }
 
 func validateWorkerResultForRequest(ctx context.Context, req Request, result *Result, before worktreeSnapshot) error {
@@ -196,7 +216,7 @@ func validateWorkerResultForRequest(ctx context.Context, req Request, result *Re
 	if err != nil {
 		return err
 	}
-	if err := validateWorkerGitClaim(worker, before, after); err != nil {
+	if err := validateWorkerGitClaim(ctx, req.Workdir, worker, before, after); err != nil {
 		return err
 	}
 	result.Worker = worker

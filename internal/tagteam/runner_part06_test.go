@@ -316,3 +316,19 @@ func readJSONFile(t *testing.T, path string, out any) {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 }
+
+func TestConciseAdapterErrorPreservesHeadTailAndArtifactPath(t *testing.T) {
+	message := "HEAD-MARKER\n" + strings.Repeat("x", 6000) + "\nTAIL-MARKER"
+	got := conciseAdapterError(message, "/tmp/run/stderr.log")
+	for _, want := range []string{"HEAD-MARKER", "TAIL-MARKER", "bytes omitted", "full stderr: /tmp/run/stderr.log"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("concise error missing %q: %q", want, got)
+		}
+	}
+	if len(got) >= len(message) {
+		t.Fatalf("adapter error was not reduced: got=%d original=%d", len(got), len(message))
+	}
+	if small := conciseAdapterError("small failure", "/tmp/stderr.log"); small != "small failure" {
+		t.Fatalf("small error changed: %q", small)
+	}
+}

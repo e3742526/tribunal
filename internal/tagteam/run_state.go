@@ -25,6 +25,7 @@ func initFinalState(final *FinalRun, opts RunOptions) {
 
 func finalizeRunState(final *FinalRun) {
 	if final.Status == RunStatusCancelled || final.Status == RunStatusQuarantined {
+		normalizeFinalVerdict(final)
 		return
 	}
 	if final.ExitCode == ExitSuccess {
@@ -36,17 +37,38 @@ func finalizeRunState(final *FinalRun) {
 		}
 		return
 	}
-	if final.Review != nil && final.Review.HasBlockingFindings() || final.RoundLimitReached {
+	if final.ExitCode == ExitBlockingFindings || final.Review != nil && final.Review.HasBlockingFindings() || final.RoundLimitReached {
 		final.Status = RunStatusBlocked
 	} else {
 		final.Status = RunStatusFailed
 	}
+	normalizeFinalVerdict(final)
 	if final.BlockingReason == "" {
 		final.BlockingReason = string(reasonForExit(final.ExitCode))
 	}
 	if final.BlockingReason == string(ReasonBudgetExceeded) {
 		final.Budgets.Exhausted = true
 		final.Budgets.ReasonCode = ReasonBudgetExceeded
+	}
+}
+
+func normalizeFinalVerdict(final *FinalRun) {
+	if final.ExitCode == ExitSuccess {
+		return
+	}
+	switch final.Status {
+	case RunStatusCancelled:
+		if final.Verdict == "" || final.Verdict == "pass" || final.Verdict == "done" {
+			final.Verdict = "cancelled"
+		}
+	case RunStatusBlocked:
+		if final.Verdict == "" || final.Verdict == "pass" || final.Verdict == "done" {
+			final.Verdict = "needs_changes"
+		}
+	default:
+		if final.Verdict == "" || final.Verdict == "pass" || final.Verdict == "done" {
+			final.Verdict = "error"
+		}
 	}
 }
 

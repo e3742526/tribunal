@@ -50,7 +50,14 @@ func renderTopCard(model *model) []string {
 	lines = append(lines, roleSummaryLines(model, model.width)...)
 	lines = append(lines, pathLine)
 	if model.currentSnapshot != nil {
-		lines = append(lines, fmt.Sprintf("watching %s [%s]", shortRunLabel(model.currentSnapshot.RunID), statusBadge(model.currentSnapshot.Status)))
+		watching := fmt.Sprintf("watching %s [%s]", shortRunLabel(model.currentSnapshot.RunID), statusBadge(model.currentSnapshot.Status))
+		if live := model.currentSnapshot.LiveProgress; live != nil && model.currentSnapshot.Status == "running" {
+			watching += fmt.Sprintf(" · %s %s", dashIfEmpty(string(live.Role)), dashIfEmpty(live.Status))
+			if live.NoProgressFor != "" {
+				watching += " · idle " + live.NoProgressFor
+			}
+		}
+		lines = append(lines, watching)
 	} else if len(model.runs) > 0 {
 		lines = append(lines, fmt.Sprintf("latest %s [%s] | press u for recent runs", shortRunLabel(model.runs[0].RunID), statusBadge(model.runs[0].Status)))
 	}
@@ -248,7 +255,7 @@ func slashCommands() []slashCommand {
 		{Name: "/test <cmd>", Description: "Set the test command"},
 		{Name: "/no-test on|off", Description: "Enable or disable tests"},
 		{Name: "/slice on|off", Description: "Enable or disable supervisor slicing"},
-		{Name: "/allow-dirty on|off", Description: "Allow launching with a dirty worktree"},
+		{Name: "/allow-dirty on|off", Description: "Review the cumulative dirty diff against HEAD"},
 		{Name: "/repair-json on|off", Description: "Enable worker JSON repair fallback"},
 		{Name: "/prompt <text>", Description: "Set the draft prompt directly"},
 		{Name: "/profiles", Description: "List available named profiles"},

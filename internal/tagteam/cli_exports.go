@@ -38,7 +38,7 @@ func RunDirForCLI(workdir, runID string) (string, error) {
 }
 
 func RunsRootForCLI(workdir string) string {
-	if locator, err := locatorFromPointer(workdir); err == nil {
+	if locator, ok := existingStateLocator(workdir); ok {
 		return locator.RunsRoot
 	}
 	return filepath.Join(workdir, ".tagteam", "runs")
