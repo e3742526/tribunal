@@ -19,6 +19,63 @@ func newRunDirForSnapshotTest(t *testing.T) (workdir, runDir, runID string) {
 	return workdir, runDir, runID
 }
 
+func TestCurrentRunSnapshotPrefersActiveRunBeforeLatestExists(t *testing.T) {
+	workdir, runDir, runID := newRunDirForSnapshotTest(t)
+	state := RunState{
+		RunID:        runID,
+		Mode:         ModeAdversarial,
+		Status:       "running",
+		Phase:        string(PhaseReviewing),
+		CurrentRound: 1,
+	}
+	if err := writeJSONWithNewline(filepath.Join(runDir, "state.json"), state); err != nil {
+		t.Fatal(err)
+	}
+	activateRun(workdir, runID, runDir, ModeAdversarial)
+
+	snapshot, err := CurrentRunSnapshot(workdir)
+	if err != nil {
+		t.Fatalf("CurrentRunSnapshot() error = %v", err)
+	}
+	if snapshot.RunID != runID || snapshot.Status != "running" {
+		t.Fatalf("active snapshot = %#v", snapshot)
+	}
+	if snapshot.Phase != string(PhaseReviewing) {
+		t.Fatalf("phase = %q, want %q", snapshot.Phase, PhaseReviewing)
+	}
+}
+
+func TestCurrentRunSnapshotFallsBackToLatestCompletedRun(t *testing.T) {
+	workdir, runDir, runID := newRunDirForSnapshotTest(t)
+	final := FinalRun{
+		SchemaVersion: ArtifactSchemaVersion,
+		RunID:         runID,
+		RunDir:        runDir,
+		Mode:          ModeSupervisor,
+		Status:        RunStatusPassed,
+		Verdict:       "pass",
+	}
+	finalPath := filepath.Join(runDir, "final.json")
+	if err := writeJSONWithNewline(finalPath, final); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONWithNewline(statePathForWorkdir(workdir, "latest.json"), LatestRun{
+		RunID:     runID,
+		RunDir:    runDir,
+		FinalPath: finalPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := CurrentRunSnapshot(workdir)
+	if err != nil {
+		t.Fatalf("CurrentRunSnapshot() error = %v", err)
+	}
+	if snapshot.RunID != runID || snapshot.Status != string(RunStatusPassed) || snapshot.Verdict != "pass" {
+		t.Fatalf("completed snapshot = %#v", snapshot)
+	}
+}
+
 func TestBuildRunSnapshot_RunningStateOnly(t *testing.T) {
 	workdir, runDir, runID := newRunDirForSnapshotTest(t)
 	state := RunState{

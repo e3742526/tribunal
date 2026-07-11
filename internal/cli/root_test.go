@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/cephalopod-ai/tagteam/internal/tagteam"
 )
 
 func TestNewRootCommandHelpIncludesModeModelAndFlags(t *testing.T) {
@@ -95,4 +97,40 @@ func TestVersionCommandAndFlag(t *testing.T) {
 			t.Errorf("version flag output got %q, should contain %q", got, Version)
 		}
 	})
+}
+
+func TestRenderRunSnapshotIncludesLiveProgress(t *testing.T) {
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	renderRunSnapshot(cmd, tagteam.RunSnapshot{
+		RunID:        "run-active",
+		RunDir:       "/tmp/run-active",
+		Mode:         tagteam.ModeAdversarial,
+		Status:       "running",
+		Phase:        "reviewing",
+		CurrentRound: 1,
+		LiveProgress: &tagteam.LiveProgress{
+			Role:          tagteam.RoleAdversary,
+			Status:        "running",
+			Elapsed:       "2m0s",
+			NoProgressFor: "1m30s",
+			FilesChanged:  3,
+			Additions:     12,
+			Deletions:     4,
+		},
+	}, false)
+
+	got := out.String()
+	for _, want := range []string{
+		"run=run-active",
+		"status=running",
+		"phase=reviewing round=1",
+		"progress role=adversary status=running elapsed=2m0s idle=1m30s files=3 +12 -4",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status output missing %q\nfull output:\n%s", want, got)
+		}
+	}
 }

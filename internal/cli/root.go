@@ -390,26 +390,48 @@ func newTransferCommand(shared *flagState) *cobra.Command {
 func newStatusCommand(shared *flagState) *cobra.Command {
 	return &cobra.Command{
 		Use:          "status",
-		Short:        "Show the latest run summary",
+		Short:        "Show the active or latest run summary",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			workdir, _ := filepath.Abs(shared.Workdir)
-			latest, err := tagteam.ReadLatestForCLI(workdir)
+			snapshot, err := tagteam.CurrentRunSnapshot(workdir)
 			if err != nil {
 				return err
 			}
-			final, err := tagteam.ReadFinalForCLI(latest.FinalPath)
-			if err != nil {
-				return err
-			}
-			renderFinal(cmd, final, tagteam.RunOptions{JSON: shared.JSON, ShowReview: shared.ShowReview})
+			renderRunSnapshot(cmd, snapshot, shared.JSON)
 			if !shared.JSON {
-				if plan, err := tagteam.ReadPlanForCLI(latest.RunDir); err == nil {
+				if plan, err := tagteam.ReadPlanForCLI(snapshot.RunDir); err == nil {
 					renderPlan(cmd, plan)
 				}
 			}
 			return nil
 		},
+	}
+}
+
+func renderRunSnapshot(cmd *cobra.Command, snapshot tagteam.RunSnapshot, asJSON bool) {
+	if asJSON {
+		payload, _ := json.MarshalIndent(snapshot, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+		return
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "run=%s verdict=%s status=%s exit=%d rounds=%d/%d\n", snapshot.RunID, snapshot.Verdict, snapshot.Status, snapshot.ExitCode, snapshot.RoundsCompleted, snapshot.RoundsRequested)
+	if snapshot.Phase != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "phase=%s round=%d\n", snapshot.Phase, snapshot.CurrentRound)
+	}
+	if snapshot.LiveProgress != nil {
+		progress := snapshot.LiveProgress
+		fmt.Fprintf(cmd.OutOrStdout(), "progress role=%s status=%s elapsed=%s idle=%s files=%d +%d -%d\n", progress.Role, progress.Status, progress.Elapsed, progress.NoProgressFor, progress.FilesChanged, progress.Additions, progress.Deletions)
+	}
+	if snapshot.Degraded {
+		fmt.Fprintf(cmd.OutOrStdout(), "degraded=true reason=%s\n", snapshot.DegradedReason)
+	}
+	if snapshot.BlockingReason != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "blocking_reason=%s\n", snapshot.BlockingReason)
+	}
+	if snapshot.RunDir != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), snapshot.RunDir)
 	}
 }
 

@@ -86,7 +86,9 @@ as the TUI. See the README
    `status = "failed"` for postmortem inspection.
 4. `BuildRunSnapshot` merges `active.json`, `state.json`, `final.json`, and
    `plan.json` into one read-only `RunSnapshot`.
-5. `tagteam tui` polls that snapshot once a second while the run is active and
+5. `tagteam status` resolves the active run before the latest completed run and
+   renders the same snapshot, including live progress when present.
+6. `tagteam tui` polls that snapshot once a second while the run is active and
    renders it in a scrollable detail pane alongside recent runs and a compose
    pane.
 

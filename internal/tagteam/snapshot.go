@@ -9,6 +9,21 @@ import (
 	"strings"
 )
 
+// CurrentRunSnapshot resolves the active run before falling back to the most
+// recently completed run. latest.json is only written at finalization, so a
+// status reader that starts there cannot observe work in progress.
+func CurrentRunSnapshot(workdir string) (RunSnapshot, error) {
+	if active, err := readActiveRun(workdir); err == nil && active.RunDir != "" {
+		return BuildRunSnapshot(workdir, active.RunDir)
+	}
+
+	latest, err := readLatest(workdir)
+	if err != nil {
+		return RunSnapshot{}, err
+	}
+	return BuildRunSnapshot(workdir, latest.RunDir)
+}
+
 // BuildRunSnapshot assembles a RunSnapshot for runDir by reading whichever of
 // active.json (in workdir), state.json, final.json, and plan.json exist. Only
 // runDir itself must exist; every artifact inside it is optional, and a
