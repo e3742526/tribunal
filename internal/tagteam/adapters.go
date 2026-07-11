@@ -407,7 +407,11 @@ func (a *AgyAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	case RoleCoder:
 		argv = append(argv, "--dangerously-skip-permissions")
 	case RoleAdversary, RoleSupervisor, RoleReporter, RoleScout:
-		argv = append(argv, "--sandbox")
+		// Agy's sandbox still permits workspace mutations in some CLI
+		// configurations. Plan mode is the adapter-level read-only guard for
+		// supervisory and scout roles; TagTeam's integrity checks remain the
+		// second line of defense.
+		argv = append(argv, "--sandbox", "--mode", "plan")
 	default:
 		return nil, fmt.Errorf("unsupported role %q", role)
 	}
