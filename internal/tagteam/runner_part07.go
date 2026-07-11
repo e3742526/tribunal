@@ -275,7 +275,7 @@ func deterministicDiffOutputs(ctx context.Context, workdir, baseline, indexPath 
 	if _, err := runGitCommandBytes(ctx, workdir, env, "add", "-u", "--", "."); err != nil {
 		return nil, nil, nil, nil, err
 	}
-	pathspec, err := deterministicUntrackedPathspec(ctx, workdir)
+	pathspec, err := deterministicAdditionalPathspec(ctx, workdir, baseline)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -306,20 +306,33 @@ func deterministicDiffOutputs(ctx context.Context, workdir, baseline, indexPath 
 	return patch, numstat, statusZ, numstatZ, nil
 }
 
-func deterministicUntrackedPathspec(ctx context.Context, workdir string) ([]byte, error) {
-	currentFiles, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
+func deterministicAdditionalPathspec(ctx context.Context, workdir, baseline string) ([]byte, error) {
+	untracked, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
+	if err != nil {
+		return nil, err
+	}
+	// A staged new file is no longer reported by ls-files --others. Rebuilding
+	// the temporary index from the baseline must therefore include additions
+	// from the real index as well, or review artifacts silently omit them.
+	stagedAdds, err := runGitCommandBytes(ctx, workdir, []string{"LC_ALL=C"}, "diff", "--cached", "--name-only", "--diff-filter=ACR", "-z", "--find-renames=50%", baseline, "--", ".")
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
 	paths := []string{}
-	for _, raw := range splitNULTokens(currentFiles) {
+	for _, raw := range append(splitNULTokens(untracked), splitNULTokens(stagedAdds)...) {
 		path := strings.TrimPrefix(raw, "./")
 		if path == "" || path == ".tagteam" || strings.HasPrefix(path, ".tagteam/") {
 			continue
 		}
 		if seen[path] {
 			continue
+		}
+		if _, err := os.Lstat(filepath.Join(workdir, filepath.FromSlash(path))); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
 		seen[path] = true
 		paths = append(paths, path)

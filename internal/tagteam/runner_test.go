@@ -574,6 +574,10 @@ func TestDeterministicDiffIgnoresTagteamRunDirButIncludesUntrackedFiles(t *testi
 	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "staged.txt"), []byte("already staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "staged.txt")
 
 	patch, _, _, _, err := deterministicDiffOutputs(context.Background(), repo, baseline, filepath.Join(repo, ".tagteam", "tmp.index"))
 	if err != nil {
@@ -585,6 +589,9 @@ func TestDeterministicDiffIgnoresTagteamRunDirButIncludesUntrackedFiles(t *testi
 	}
 	if !strings.Contains(text, "diff --git a/notes.txt b/notes.txt") {
 		t.Fatalf("patch missing untracked file:\n%s", text)
+	}
+	if !strings.Contains(text, "diff --git a/staged.txt b/staged.txt") {
+		t.Fatalf("patch missing staged addition:\n%s", text)
 	}
 	if !strings.Contains(text, "diff --git a/internal/tagteam/tracked.go b/internal/tagteam/tracked.go") {
 		t.Fatalf("patch missing tracked ignored-path change:\n%s", text)
