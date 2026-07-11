@@ -74,7 +74,10 @@ func extractJSONObject(raw []byte) ([]byte, error) {
 	return nil, fmt.Errorf("unterminated JSON object")
 }
 
-const maxEmbeddedJSONCandidates = 8
+const (
+	maxEmbeddedJSONCandidates   = 8
+	maxEmbeddedJSONScanAttempts = 64
+)
 
 // jsonObjectCandidates returns balanced top-level JSON objects embedded in
 // raw. Fenced code blocks are scanned first because they are the strongest
@@ -116,14 +119,17 @@ func jsonObjectCandidates(raw []byte) [][]byte {
 		rest = rest[bodyStart+end+3:]
 	}
 	offset := 0
-	for offset < len(text) {
+	for attempts := 0; offset < len(text) && attempts < maxEmbeddedJSONScanAttempts; attempts++ {
 		idx := strings.IndexByte(text[offset:], '{')
 		if idx < 0 {
 			break
 		}
 		object, err := extractJSONObject([]byte(text[offset+idx:]))
 		if err != nil {
-			break
+			// An unbalanced opener (prose like "replace {name with ...")
+			// must not hide later valid objects; resume at the next brace.
+			offset += idx + 1
+			continue
 		}
 		if add(object) {
 			return candidates

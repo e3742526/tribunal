@@ -11,93 +11,96 @@ import (
 
 // The invocation lock serializes subprocess invocations for adapters whose
 // CLIs misbehave when several copies run concurrently (claude can stall or
-// remain pending). It is a cross-process PID lock below the user-level state
-// root, so concurrent tagteam runs take turns instead of overlapping.
+// remain pending). It is a cross-process lock below the run-state root, so
+// concurrent tagteam runs take turns instead of overlapping. On Unix the
+// kernel flock is the lock, so a crashed holder releases automatically; the
+// file content only records the holder PID for diagnostics and the file
+// intentionally persists after release (unlinking a locked path would race
+// with waiters that already opened the old inode).
 
 type invocationLock struct {
+	file *os.File
 	path string
 	pid  int
 }
 
-func invocationLockPath(adapterID string) (string, error) {
-	root, err := defaultStateRoot()
-	if err != nil {
-		return "", err
+func invocationLockPath(adapterID string, req Request) (string, error) {
+	root := stateRootFromRunDir(req.RunDir)
+	if root == "" {
+		var err error
+		root, err = defaultStateRoot()
+		if err != nil {
+			return "", err
+		}
 	}
 	return filepath.Join(root, "locks", adapterID+"-invocation.lock"), nil
 }
 
-// tryAcquireInvocationLock attempts one non-blocking acquisition. It returns
-// the held lock, or the live holder PID when the lock is busy. Records whose
-// process is gone are treated as stale and removed.
-func tryAcquireInvocationLock(path string) (*invocationLock, int, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		var existing runLockRecord
-		if json.Unmarshal(data, &existing) == nil && existing.PID > 0 && existing.PID != os.Getpid() && processAlive(existing.PID) {
-			return nil, existing.PID, nil
-		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return nil, 0, err
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, 0, err
+// stateRootFromRunDir recovers the resolved state root from the canonical
+// run directory layout <state-root>/<repo-id>/runs/<run-id>, so the lock
+// honors --state-root / profile overrides applied when the run was created.
+// The legacy in-worktree layout <workdir>/.tagteam/runs/<run-id> is rejected:
+// a lock inside the worktree would dirty it and trip the integrity gate.
+func stateRootFromRunDir(runDir string) string {
+	if runDir == "" {
+		return ""
 	}
-	record := runLockRecord{PID: os.Getpid(), CreatedAt: time.Now().UTC()}
-	data, err := marshalJSON(record, true)
-	if err != nil {
-		return nil, 0, err
+	runsDir := filepath.Dir(filepath.Clean(runDir))
+	if filepath.Base(runsDir) != "runs" {
+		return ""
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, 0, nil
-		}
-		return nil, 0, err
+	repoDir := filepath.Dir(runsDir)
+	if filepath.Base(repoDir) == ".tagteam" {
+		return ""
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return nil, 0, err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return nil, 0, err
-	}
-	return &invocationLock{path: path, pid: os.Getpid()}, 0, nil
+	return filepath.Dir(repoDir)
 }
 
-func (l *invocationLock) Release() error {
-	if l == nil || l.path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(l.path)
-	if os.IsNotExist(err) {
-		return nil
-	}
+func readInvocationHolderPID(path string) int {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return 0
 	}
-	var existing runLockRecord
-	if json.Unmarshal(data, &existing) != nil || existing.PID != l.pid {
-		return nil
+	var record runLockRecord
+	if json.Unmarshal(data, &record) != nil {
+		return 0
 	}
-	return os.Remove(l.path)
+	return record.PID
+}
+
+func (l *invocationLock) recordHolder() {
+	if l == nil || l.file == nil {
+		return
+	}
+	data, err := marshalJSON(runLockRecord{PID: l.pid, CreatedAt: time.Now().UTC()}, true)
+	if err != nil {
+		return
+	}
+	if err := l.file.Truncate(0); err != nil {
+		return
+	}
+	if _, err := l.file.Seek(0, 0); err != nil {
+		return
+	}
+	_, _ = l.file.Write(data)
+	_ = l.file.Sync()
 }
 
 // acquireInvocationSlot blocks until the adapter's cross-process lock is
-// free, the context is cancelled, or maxWait elapses. Lock infrastructure
-// failures and a wait timeout degrade to running unlocked (current behavior
-// without serialization) and are reported through the request progress log;
-// only context cancellation aborts the invocation.
+// held, the context is cancelled, or maxWait elapses. Every failure path is
+// fail-closed: a timeout or lock-infrastructure error returns a classified
+// adapter failure (so role fallback policies can engage) instead of running
+// unlocked and reintroducing the concurrency this lock exists to prevent.
 func acquireInvocationSlot(ctx context.Context, adapterID string, req Request, maxWait time.Duration) (func(), error) {
-	unlocked := func() {}
-	path, err := invocationLockPath(adapterID)
+	failure := func(err error) (func(), error) {
+		return func() {}, &ExitError{Code: ExitAdapterFailure, Err: err}
+	}
+	path, err := invocationLockPath(adapterID, req)
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err != nil {
-		logRequestProgress(req, "%s invocation serialization unavailable (%v); continuing without it", adapterID, err)
-		return unlocked, nil
+		return failure(fmt.Errorf("%s invocation lock unavailable: %w", adapterID, err))
 	}
 	if maxWait <= 0 {
 		maxWait = 15 * time.Minute
@@ -106,12 +109,12 @@ func acquireInvocationSlot(ctx context.Context, adapterID string, req Request, m
 	deadline := start.Add(maxWait)
 	nextLog := start
 	for {
-		lock, holder, tryErr := tryAcquireInvocationLock(path)
+		lock, holder, tryErr := tryLockInvocationFile(path)
 		if tryErr != nil {
-			logRequestProgress(req, "%s invocation serialization unavailable (%v); continuing without it", adapterID, tryErr)
-			return unlocked, nil
+			return failure(fmt.Errorf("%s invocation lock unavailable: %w", adapterID, tryErr))
 		}
 		if lock != nil {
+			lock.recordHolder()
 			if waited := time.Since(start); waited >= time.Second {
 				logRequestProgress(req, "%s invocation lock acquired after %s", adapterID, shortDuration(waited))
 			}
@@ -119,8 +122,7 @@ func acquireInvocationSlot(ctx context.Context, adapterID string, req Request, m
 		}
 		now := time.Now()
 		if now.After(deadline) {
-			logRequestProgress(req, "%s invocation lock still held by pid %d after %s; continuing without serialization", adapterID, holder, shortDuration(maxWait))
-			return unlocked, nil
+			return failure(fmt.Errorf("timed out after %s waiting for the %s invocation lock held by pid %d; another process is running %s (stagger runs or set adapters.%s.serialize = false)", shortDuration(maxWait), adapterID, holder, adapterID, adapterID))
 		}
 		if !now.Before(nextLog) {
 			logRequestProgress(req, "waiting for concurrent %s invocation (pid %d) to finish before starting", adapterID, holder)
@@ -128,7 +130,7 @@ func acquireInvocationSlot(ctx context.Context, adapterID string, req Request, m
 		}
 		select {
 		case <-ctx.Done():
-			return unlocked, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("cancelled while waiting for %s invocation lock held by pid %d: %w", adapterID, holder, ctx.Err())}
+			return failure(fmt.Errorf("cancelled while waiting for %s invocation lock held by pid %d: %w", adapterID, holder, ctx.Err()))
 		case <-time.After(500 * time.Millisecond):
 		}
 	}

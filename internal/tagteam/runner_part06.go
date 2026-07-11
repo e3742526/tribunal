@@ -308,7 +308,8 @@ func (a *App) runAdapter(ctx context.Context, adapter Adapter, role Role, req Re
 	}
 	if adapter.Capabilities().SerializeInvocations {
 		// Serialize before starting the invocation timer so lock wait does
-		// not consume the subprocess budget.
+		// not consume the subprocess budget. Lock failures are fail-closed
+		// adapter failures, so role fallback policies can engage.
 		release, lockErr := acquireInvocationSlot(runCtx, adapter.ID(), req, req.Timeout)
 		if lockErr != nil {
 			finishDeliveryRecord(recordPath, record, "failed", lockErr)

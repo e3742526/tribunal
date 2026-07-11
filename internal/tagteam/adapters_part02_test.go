@@ -95,6 +95,19 @@ func TestParseWorkerResultKeepsValidationErrorWhenNoCandidateMatches(t *testing.
 	}
 }
 
+func TestParseWorkerResultRecoversAfterUnmatchedBrace(t *testing.T) {
+	raw := []byte(`First replace {name with the user value.
+
+{"schema_version":1,"status":"completed","summary":"replaced placeholder","files_changed":[],"checks_run":[],"remaining_risks":[]}`)
+	result, err := parseWorkerResult(raw)
+	if err != nil {
+		t.Fatalf("parseWorkerResult() error = %v", err)
+	}
+	if result.Summary != "replaced placeholder" {
+		t.Fatalf("summary = %q", result.Summary)
+	}
+}
+
 func TestParseReviewPayloadSkipsInvalidCandidates(t *testing.T) {
 	raw := []byte(`Review notes reference {"file": "main.go"} and conclude:
 {"schema_version":1,"verdict":"pass","summary":"looks good","findings":[],"test_suggestions":[]}`)
