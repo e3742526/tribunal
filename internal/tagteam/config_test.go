@@ -19,7 +19,7 @@ func TestResolveOptions_ProfileAndFlags(t *testing.T) {
 	if opts.Coder.Adapter != "codex" {
 		t.Fatalf("coder adapter = %q", opts.Coder.Adapter)
 	}
-	if opts.Adversary.Adapter != "agy" || opts.Adversary.Model != "Gemini 3.5 Flash (Medium)" {
+	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-terra" {
 		t.Fatalf("adversary target = %#v", opts.Adversary)
 	}
 	if opts.Rounds != 3 {
@@ -170,7 +170,7 @@ func TestResolveOptions_ClaudeFailoverProfile(t *testing.T) {
 		primary RoleTarget
 		want    string
 	}{
-		{RoleTarget{Adapter: "claude", Model: "opus-4.8"}, defaultSupervisorTarget},
+		{RoleTarget{Adapter: "claude", Model: "opus-4.8"}, defaultSupervisorFallback},
 		{RoleTarget{Adapter: "claude", Model: "sonnet-5"}, "codex:gpt-5.6-terra"},
 		{RoleTarget{Adapter: "claude", Model: "haiku"}, "codex:gpt-5.6-terra"},
 	} {
@@ -578,10 +578,10 @@ func TestResolveOptions_RelayFlagSelectsRelayDefaults(t *testing.T) {
 	if opts.Scout.Adapter != "openai-compatible" || opts.Scout.Model != "gemma4:latest" {
 		t.Fatalf("scout = %#v", opts.Scout)
 	}
-	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (Medium)" {
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5.6-terra" {
 		t.Fatalf("coder = %#v", opts.Coder)
 	}
-	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-sol" {
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "claude-opus-4-8" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
 	}
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {
@@ -610,10 +610,10 @@ func TestResolveOptions_RelayProfileResolvesRoles(t *testing.T) {
 	if opts.Scout.Adapter != "openai-compatible" || opts.Scout.Model != "gemma4:latest" {
 		t.Fatalf("scout = %#v", opts.Scout)
 	}
-	if opts.Coder.Adapter != "agy" || opts.Coder.Model != "Gemini 3.5 Flash (Medium)" {
+	if opts.Coder.Adapter != "codex" || opts.Coder.Model != "gpt-5.6-terra" {
 		t.Fatalf("coder = %#v", opts.Coder)
 	}
-	if opts.Adversary.Adapter != "codex" || opts.Adversary.Model != "gpt-5.6-sol" {
+	if opts.Adversary.Adapter != "claude" || opts.Adversary.Model != "claude-opus-4-8" {
 		t.Fatalf("supervisor = %#v", opts.Adversary)
 	}
 	if opts.ScoutMode != "recon" || opts.PostScoutMode != "polish" {

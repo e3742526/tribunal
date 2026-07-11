@@ -386,14 +386,14 @@ It maps the current Opus target to `codex:gpt-5.6-sol` and the current Sonnet ta
 
 </details>
 
-### Adversarial mode (backward compatible)
+### Adversarial mode
 
-The original coder/adversary loop is still available via `--mode adversarial`. The legacy `-mc`/`-ma` flags keep working and map onto the active mode's roles: `-mc` selects the worker in supervisor mode and the coder in adversarial mode; `-ma` selects the supervisor in supervisor mode and the adversary in adversarial mode.
+Adversarial mode keeps implementation and independent audit/review explicitly separated. It is useful when the reviewer should challenge the coder without also owning the plan. The `-mc`/`-ma` slot flags map onto the active mode's roles: `-mc` selects the worker in supervisor mode and the coder in adversarial mode; `-ma` selects the supervisor in supervisor mode and the adversary in adversarial mode.
 
 ```bash
 tagteam --mode adversarial \
   -mc codex:gpt-5.6-terra \
-  -ma codex:gpt-5.6-sol \
+  -ma claude:claude-opus-4-8 \
   -r 3 \
   -t "go test ./..." \
   "refactor billing flow"
@@ -402,7 +402,7 @@ tagteam --mode adversarial \
 `--reviewer` is an adversarial-mode-flavored alias for `-ma`/`--supervisor`:
 
 ```bash
-tagteam --mode supervisor --worker agy --supervisor claude:claude-sonnet-5 "clean up the CLI help"
+tagteam --mode adversarial -mc codex:gpt-5.6-terra --reviewer claude:claude-opus-4-8 "audit the CLI cleanup"
 ```
 
 Use Agy with its configured default Gemini model:

@@ -292,7 +292,7 @@ func TestRunLoop_SupervisorEscalatesToRelayWhenBothAgentsAgree(t *testing.T) {
 	cfg := DefaultConfig()
 	// Keep this orchestration transition test hermetic; the built-in relay scout
 	// may use a local HTTP adapter that is covered separately.
-	cfg.Defaults.Scout = defaultWorkerTarget
+	cfg.Defaults.Scout = "agy:Gemini 3.5 Flash (Medium)"
 	app := NewApp(cfg)
 	final, err := app.Run(context.Background(), RunOptions{
 		Prompt:             "map this unfamiliar repo and fix the bug",

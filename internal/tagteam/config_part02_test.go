@@ -287,8 +287,9 @@ func TestResolveOptions_SupervisorCanEdit(t *testing.T) {
 	cfg := DefaultConfig()
 	opts, err := ResolveOptions(cfg, nil, FlagInputs{
 		SupervisorCanEdit: true,
+		Supervisor:        "codex:gpt-5.6-sol",
 		Timeout:           15 * time.Minute,
-	}, map[string]bool{}, "ship it")
+	}, map[string]bool{"supervisor": true}, "ship it")
 	if err != nil {
 		t.Fatalf("ResolveOptions() error = %v", err)
 	}

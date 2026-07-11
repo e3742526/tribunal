@@ -244,7 +244,7 @@ func TestCommandPaletteCompletesModelArgumentAndAppliesSelection(t *testing.T) {
 		t.Fatalf("role completion = %q", m.commandBuffer)
 	}
 	matches = m.matchingSlashCommands()
-	if len(matches) != 3 {
+	if len(matches) != 2 {
 		t.Fatalf("worker target suggestions = %#v", matches)
 	}
 	want := "codex:gpt-5.6-terra"

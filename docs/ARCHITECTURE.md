@@ -47,7 +47,7 @@ orchestration logic lives in `internal/tagteam`; the TUI lives in `internal/tui`
 - **relay**: read-only scout recon → coder implements → read-only supervisor
   reviews/arbitrates.
 - **solo**: one implementation agent, no reviewer.
-- **adversarial** (legacy): coder implements, adversary reviews.
+- **adversarial**: coder implements, independent adversary audits and reviews.
 
 ## Execution flow (reviewed modes)
 
