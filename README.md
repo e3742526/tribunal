@@ -695,6 +695,27 @@ tagteam tui [RUN_ID]
 
 `tagteam tui` is an interactive dashboard. It opens in a sparse compose-first state by default, surfaces the latest known run as context, and lets you explicitly open saved run details when you want them.
 
+![Tagteam TUI compose screen](docs/images/tui-compose.png)
+
+Enter the task directly from the compose screen. Press `m` when you need to assign models by role, or `/` when you need a command; configuration stays out of the way otherwise.
+
+<details>
+<summary><strong>Team selection and slash-command examples</strong></summary>
+
+![Tagteam TUI role-aware team selection](docs/images/tui-team.png)
+
+The Team panel describes what each role does and whether it writes code or remains read-only. Model selection is role-first so a multi-agent run does not hide which model is responsible for implementation, supervision, review, or scouting.
+
+![Tagteam TUI contextual slash commands](docs/images/tui-commands.png)
+
+Slash commands provide the same model, profile, mode, effort, scope, timeout, test, and lint controls as the interactive panels. The palette opens only on demand and supports keyboard selection and completion.
+
+</details>
+
+![Tagteam TUI queued Claude invocation](docs/images/tui-queued-run.png)
+
+Active runs open directly in the detail view. A Claude invocation waiting on Tagteam's cross-process lock is shown as queued, including queue elapsed time and the diagnostic holder PID, rather than appearing hung.
+
 The dashboard has four main surfaces:
 
 - a compose surface for prompt entry and run launch

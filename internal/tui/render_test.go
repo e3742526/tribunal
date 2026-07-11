@@ -107,8 +107,9 @@ func TestRenderDashboardIncludesCorePanels(t *testing.T) {
 func TestRenderDashboardShowsSerializedInvocationWait(t *testing.T) {
 	m := fixtureModel()
 	m.currentSnapshot.Phase = "implementing"
+	m.currentSnapshot.RoundsRequested = 0
 	m.currentSnapshot.LiveProgress = &tagteam.LiveProgress{
-		Role:       tagteam.RoleCoder,
+		Role:       tagteam.Role("worker"),
 		Status:     "waiting",
 		WaitingFor: "claude",
 		HolderPID:  4242,
@@ -116,12 +117,17 @@ func TestRenderDashboardShowsSerializedInvocationWait(t *testing.T) {
 	}
 	out := renderDashboard(m)
 	for _, want := range []string{
-		"coder queued for claude (pid 4242)",
-		"Activity: coder · queued for claude (pid 4242) · elapsed 42s",
+		"worker queued for claude (pid 4242)",
+		"Activity: worker · queued for claude (pid 4242) · elapsed 42s",
+		"status=waiting",
+		"Round: 1",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render output missing %q\nfull output:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Rounds: 0/0") {
+		t.Fatalf("active run rendered an unknown round budget as 0/0:\n%s", out)
 	}
 }
 

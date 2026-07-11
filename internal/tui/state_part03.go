@@ -641,7 +641,11 @@ func (m *model) detailLines() []string {
 		fmt.Sprintf("Completed phase: %s", dashIfEmpty(string(s.CompletedPhase))),
 		fmt.Sprintf("Verdict: %s", dashIfEmpty(s.Verdict)),
 		fmt.Sprintf("Updated: %s", formatTime(s.UpdatedAt)),
-		fmt.Sprintf("Rounds: %d/%d current=%d", s.RoundsCompleted, s.RoundsRequested, s.CurrentRound),
+	}
+	if s.RoundsRequested > 0 || s.RoundsCompleted > 0 {
+		lines = append(lines, fmt.Sprintf("Rounds: %d/%d current=%d", s.RoundsCompleted, s.RoundsRequested, s.CurrentRound))
+	} else if s.CurrentRound > 0 {
+		lines = append(lines, fmt.Sprintf("Round: %d", s.CurrentRound))
 	}
 	if live := s.LiveProgress; live != nil && (s.Status == "running" || live.Status == "stalled") {
 		activity := fmt.Sprintf("Activity: %s · %s · elapsed %s", dashIfEmpty(string(live.Role)), liveStatusLabel(live), dashIfEmpty(live.Elapsed))
@@ -667,7 +671,11 @@ func (m *model) detailLines() []string {
 		lines = append(lines, fmt.Sprintf("Blocking reason: %s", s.BlockingReason))
 	}
 	lines = append(lines, "", "Roles:")
-	lines = append(lines, renderRoleDetailLines(s.RoleStatuses)...)
+	roles := s.RoleStatuses
+	if live := s.LiveProgress; live != nil && live.Status == "waiting" {
+		roles = roleStatusesWithLiveState(roles, live)
+	}
+	lines = append(lines, renderRoleDetailLines(roles)...)
 
 	if m.showPlan && m.currentPlan != nil {
 		lines = append(lines, "", fmt.Sprintf("Plan (%s, %d items):", m.currentPlan.Status, len(m.currentPlan.Items)))
@@ -711,4 +719,15 @@ func (m *model) detailLines() []string {
 	}
 
 	return lines
+}
+
+func roleStatusesWithLiveState(roles map[string]tagteam.RoleStatus, live *tagteam.LiveProgress) map[string]tagteam.RoleStatus {
+	copyRoles := make(map[string]tagteam.RoleStatus, len(roles))
+	for name, role := range roles {
+		if role.Role == string(live.Role) || name == string(live.Role) {
+			role.Status = live.Status
+		}
+		copyRoles[name] = role
+	}
+	return copyRoles
 }
