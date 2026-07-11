@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,60 @@ func TestStateLocatorPreparePreservesLegacyGitignore(t *testing.T) {
 	}
 	if !fileExists(locator.PointerPath) {
 		t.Fatal("repository pointer was not written")
+	}
+}
+
+func TestStateLocatorPrepareSelfIgnoresFreshPointer(t *testing.T) {
+	workdir := t.TempDir()
+	runGit(t, workdir, "init")
+	runGit(t, workdir, "config", "user.email", "tagteam@example.com")
+	runGit(t, workdir, "config", "user.name", "Tagteam Test")
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workdir, "add", "README.md")
+	runGit(t, workdir, "commit", "-m", "baseline")
+	locator, err := resolveStateLocator(workdir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := locator.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if status := strings.TrimSpace(runGit(t, workdir, "status", "--porcelain=v1", "--untracked-files=all")); status != "" {
+		t.Fatalf("runtime pointer dirtied fresh repository: %q", status)
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, ".tagteam", ".gitignore"))
+	if err != nil || string(data) != "*\n" {
+		t.Fatalf("runtime self-ignore = %q err=%v", data, err)
+	}
+}
+
+func TestPreflightRepairsUnignoredRuntimePointer(t *testing.T) {
+	workdir := t.TempDir()
+	runGit(t, workdir, "init")
+	runGit(t, workdir, "config", "user.email", "tagteam@example.com")
+	runGit(t, workdir, "config", "user.name", "Tagteam Test")
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workdir, "add", "README.md")
+	runGit(t, workdir, "commit", "-m", "baseline")
+	pointer := filepath.Join(workdir, ".tagteam", repositoryPointerName)
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pointer, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status := strings.TrimSpace(runGit(t, workdir, "status", "--porcelain=v1", "--untracked-files=all")); status == "" {
+		t.Fatal("fixture pointer should initially be untracked")
+	}
+	if _, _, err := preflight(RunOptions{Workdir: workdir, GitSafety: "clean"}, "runtime-ignore"); err != nil {
+		t.Fatalf("preflight did not repair runtime ignore: %v", err)
+	}
+	if status := strings.TrimSpace(runGit(t, workdir, "status", "--porcelain=v1", "--untracked-files=all")); status != "" {
+		t.Fatalf("worktree remains dirty after runtime ignore repair: %q", status)
 	}
 }
 

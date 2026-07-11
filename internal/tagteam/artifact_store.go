@@ -223,6 +223,9 @@ func directoryHasEntries(path string) bool {
 }
 
 func (l StateLocator) Prepare() error {
+	if err := ensureRepositoryRuntimeIgnored(l.Workdir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(l.RunsRoot, 0o700); err != nil {
 		return err
 	}
@@ -239,6 +242,32 @@ func (l StateLocator) Prepare() error {
 		return err
 	}
 	return l.removeLegacyRuntimeState()
+}
+
+func ensureRepositoryRuntimeIgnored(workdir string) error {
+	runtimeRoot := filepath.Join(workdir, ".tagteam")
+	if info, err := os.Lstat(runtimeRoot); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("repository runtime path must be a directory, not a symlink or file: %s", runtimeRoot)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+		return err
+	}
+
+	ignorePath := filepath.Join(runtimeRoot, ".gitignore")
+	if info, err := os.Lstat(ignorePath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("repository runtime ignore must be a regular file: %s", ignorePath)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	// Ignore the runtime directory and this file itself without modifying the
+	// repository's tracked root .gitignore.
+	return writeFileDurable(ignorePath, []byte("*\n"), 0o644, false)
 }
 
 func (l StateLocator) RunDir(runID string) (string, error) {
