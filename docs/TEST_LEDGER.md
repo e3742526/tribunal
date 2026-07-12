@@ -21,7 +21,7 @@ keep every Go source file within the 800-line gate).
 | Redaction | `go test ./internal/tagteam/` (`redact_test.go`, 6 tests) | pass | `redact_test.go` | Overlay-aware secret scrubbing | — |
 | Scout context budget | `go test ./internal/tagteam/` (`context_budget_test.go`, 4 tests) | pass | `context_budget_test.go` | Deterministic estimate + policy | — |
 | Scout retrieval | `go test ./internal/tagteam/` (`retrieval_test.go`, 6 tests) | pass | `retrieval_test.go` | Bounded local retrieval evidence | — |
-| Code-intelligence sensor | `GOCACHE=/tmp/team-cli-code-sensor-gocache go test ./...` (`codeintel_test.go`) | pass | `codeintel_test.go` | Revision/staleness classification, contract bounds and round-trip, freshness-gated prompt compaction, real subprocess success/invalid/timeout/missing-provider paths, and degraded artifact persistence | Vendor/provider-specific semantics remain outside scope |
+| Code-intelligence sensor and bridges | `GOCACHE=/tmp/tagteam-go-cache go test ./internal/tagteam ./internal/cli` (`codeintel*_test.go`, `integration_config_test.go`) | pass | `codeintel_test.go`, `codeintel_roadmap_test.go`, `integration_config_test.go` | Revision/dirty snapshot identity, bounded provider aggregation with partial failure, opt-in Dory/Alexandria/Muninn contracts, idempotency, truthful gateway degradation, and marker/JSON integration preservation | Live providers, external endpoints, and downstream promotion are not exercised |
 | Formatting | `gofmt -l .` | pass (empty) | CI | CI gate | — |
 | Vet | `go vet ./...` | pass | CI | CI gate | — |
 | Build | `go build ./...` | pass | local validation | Buildability across packages | — |

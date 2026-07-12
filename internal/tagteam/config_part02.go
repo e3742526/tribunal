@@ -75,6 +75,9 @@ func hasTagteamEnv(overlay map[string]string) bool {
 		"TAGTEAM_SUPERVISOR_LOSS_POLICY",
 		"TAGTEAM_SCOUT_RETRIEVAL",
 		"TAGTEAM_CODE_INTEL_COMMAND",
+		"TAGTEAM_CODE_INTEL_COMMAND_CODEBASE_MEMORY",
+		"TAGTEAM_CODE_INTEL_COMMAND_GITNEXUS",
+		"TAGTEAM_CODE_INTEL_TIMEOUT",
 		"TAGTEAM_SCOUT_CONTEXT_POLICY",
 		"TAGTEAM_SUPERVISOR",
 		"TAGTEAM_SUPERVISOR_SLICING",
@@ -176,6 +179,21 @@ func mergeEnvConfig(cfg *Config, overlay map[string]string) {
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODE_INTEL_COMMAND"); ok {
 		cfg.Defaults.CodeIntelCommand = value
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODE_INTEL_COMMAND_CODEBASE_MEMORY"); ok {
+		if cfg.CodeIntel.Providers == nil {
+			cfg.CodeIntel.Providers = map[string]CodeIntelProviderConfig{}
+		}
+		cfg.CodeIntel.Providers["codebase-memory"] = CodeIntelProviderConfig{Command: value}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODE_INTEL_COMMAND_GITNEXUS"); ok {
+		if cfg.CodeIntel.Providers == nil {
+			cfg.CodeIntel.Providers = map[string]CodeIntelProviderConfig{}
+		}
+		cfg.CodeIntel.Providers["gitnexus"] = CodeIntelProviderConfig{Command: value}
+	}
+	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_CODE_INTEL_TIMEOUT"); ok {
+		cfg.CodeIntel.Timeout = value
 	}
 	if value, ok := envLookupNonEmpty(overlay, "TAGTEAM_SCOUT_CONTEXT_POLICY"); ok {
 		cfg.Defaults.ScoutContextPolicy = value

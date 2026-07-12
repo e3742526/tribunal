@@ -141,6 +141,30 @@ type OpenAICompatibleConfig struct {
 	ExtraArgs            []string          `toml:"extra_args"`
 }
 
+// CodeIntelConfig contains only local subprocess and file-contract settings.
+// It deliberately has no endpoint or credential value fields.
+type CodeIntelConfig struct {
+	Providers    map[string]CodeIntelProviderConfig `toml:"providers"`
+	AllowedRepos []string                           `toml:"allowed_repos"`
+	ExcludePaths []string                           `toml:"exclude_paths"`
+	Timeout      string                             `toml:"timeout"`
+	Dory         CodeIntelFileBridgeConfig          `toml:"dory"`
+	Alexandria   CodeIntelFileBridgeConfig          `toml:"alexandria"`
+	Muninn       CodeIntelFileBridgeConfig          `toml:"muninn"`
+}
+
+type CodeIntelProviderConfig struct {
+	Command string `toml:"command"`
+}
+
+// CodeIntelFileBridgeConfig is opt-in. APIKeyEnv is an environment variable
+// name for an out-of-repo transport, never a secret consumed by Tagteam.
+type CodeIntelFileBridgeConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	Path      string `toml:"path"`
+	APIKeyEnv string `toml:"api_key_env"`
+}
+
 type FlagInputs struct {
 	Mode                    string
 	Solo                    string
@@ -237,6 +261,7 @@ type RunOptions struct {
 	FallbacksByTarget         TargetFallbacks
 	ScoutRetrieval            bool
 	CodeIntelCommand          string
+	CodeIntel                 CodeIntelConfig
 	ScoutContextPolicy        string
 	TrustRepoConfig           bool
 	SupervisorCanEdit         bool

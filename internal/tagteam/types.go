@@ -624,5 +624,6 @@ type Config struct {
 	Defaults   DefaultsConfig           `toml:"defaults"`
 	Profiles   map[string]ProfileConfig `toml:"profiles"`
 	Adapters   AdapterConfigSet         `toml:"adapters"`
+	CodeIntel  CodeIntelConfig          `toml:"code_intel"`
 	EnvOverlay map[string]string        `toml:"-"`
 }

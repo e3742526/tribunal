@@ -112,6 +112,17 @@ as the TUI. See the README
 - New live status consumer: prefer reading `RunSnapshot` instead of reverse-
   engineering `final.json` / `state.json` directly.
 
+## Code-intelligence contracts
+
+Code intelligence remains advisory evidence. `CodeIntelProvider` adapters are
+bounded subprocesses selected from resolved, trusted configuration; they do not
+download tools or modify editor/agent settings. The gateway exposes versioned
+JSON suitable for an MCP wrapper and returns explicit `disabled` or
+`provider_unavailable` outcomes. Dory, Alexandria, and Muninn are local,
+versioned envelope contracts: Dory checkpoint/handoff, Alexandria observations
+and consumption events with idempotency, and Muninn candidate evidence only.
+No bridge performs a network request or promotes evidence to memory.
+
 ## Known architecture risks
 
 - `internal/tagteam` remains a broad package, but runner, config, type, adapter,

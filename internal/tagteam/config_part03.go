@@ -42,6 +42,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		scoutRetrieval = *cfg.Defaults.ScoutRetrieval
 	}
 	codeIntelCommand := cfg.Defaults.CodeIntelCommand
+	codeIntel := cfg.CodeIntel
 	scoutContextPolicy := cfg.Defaults.ScoutContextPolicy
 	supervisorSlicing := true
 	if cfg.Defaults.SupervisorSlicing != nil {
@@ -72,6 +73,11 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse max_wall_time: %w", err)}
 		}
 		maxWallTime = parsed
+	}
+	if strings.TrimSpace(codeIntel.Timeout) != "" {
+		if _, err := time.ParseDuration(codeIntel.Timeout); err != nil {
+			return RunOptions{}, &ExitError{Code: ExitInvalidArguments, Err: fmt.Errorf("parse code_intel.timeout: %w", err)}
+		}
 	}
 
 	var profile ProfileConfig
@@ -599,6 +605,7 @@ func ResolveOptions(cfg Config, sources []string, flags FlagInputs, changed map[
 		FallbacksByTarget:         normalizeTargetFallbacks(fallbacksByTarget),
 		ScoutRetrieval:            scoutRetrieval,
 		CodeIntelCommand:          strings.TrimSpace(codeIntelCommand),
+		CodeIntel:                 codeIntel,
 		ScoutContextPolicy:        scoutContextPolicy,
 		TrustRepoConfig:           flags.TrustRepoConfig && changed["trust-repo-config"],
 		SupervisorCanEdit:         flags.SupervisorCanEdit,

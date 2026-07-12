@@ -402,6 +402,9 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Adapters.OpenAICompatible.APIKeyEnv = ""
 	src.Adapters.OpenAICompatible.ExtraHeaders = nil
 	src.Adapters.OpenAICompatible.ExtraArgs = nil
+	// Repo-local subprocesses and external bridge paths are authority-bearing.
+	// They are accepted only with --trust-repo-config.
+	src.CodeIntel = CodeIntelConfig{}
 	return src
 }
 
@@ -462,6 +465,7 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Defaults.CodeIntelCommand != "" {
 		dst.Defaults.CodeIntelCommand = src.Defaults.CodeIntelCommand
 	}
+	mergeCodeIntelConfig(&dst.CodeIntel, src.CodeIntel)
 	if src.Defaults.ScoutContextPolicy != "" {
 		dst.Defaults.ScoutContextPolicy = src.Defaults.ScoutContextPolicy
 	}

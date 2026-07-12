@@ -415,7 +415,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		codeIntelContext := ""
 		var retrieval RetrievalArtifact
 		var codeIntel CodeIntelArtifact
-		if opts.CodeIntelCommand != "" && !opts.DryRun {
+		if (opts.CodeIntelCommand != "" || len(opts.CodeIntel.Providers) > 0) && !opts.DryRun {
 			codeIntel, _ = runConfiguredCodeIntel(ctx, opts, runDir)
 			codeIntelContext = CompactCodeIntelForPrompt(codeIntel)
 		}
