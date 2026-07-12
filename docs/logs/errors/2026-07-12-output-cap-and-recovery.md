@@ -27,6 +27,15 @@ The repaired runtime now carries the run-level limit in the invocation context,
 so both fresh runs and resumed runs inherit it unless a request explicitly sets
 its own stricter limit.
 
+## Resume follow-up
+
+After the output-cap repair, an explicit `resume` of this quarantined run was
+rejected with `resume quarantined: recovery decision already exists for round
+1`. This is an intentional idempotency guard in the current recovery flow: it
+prevents silently re-running a prior recovery decision. It does, however, mean
+that an operator must start a new `--allow-dirty` continuation to preserve the
+captured patch as a checkpointed baseline.
+
 ## Resolution status
 
 The propagation fix is tracked in the active repair branch. The quarantined

@@ -11,4 +11,6 @@
 - [ ] Harden recovery-decision parsing for Claude envelope output so a valid
   embedded decision can continue with the configured fallback rather than
   unnecessarily quarantining an otherwise verified patch.
-
+- [ ] Design an explicit, operator-approved retry path for a quarantined
+  recovery decision. Preserve the current idempotency guard unless the retry
+  records a new recovery attempt and its relationship to the original.
