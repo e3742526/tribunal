@@ -14,3 +14,7 @@
 - [ ] Design an explicit, operator-approved retry path for a quarantined
   recovery decision. Preserve the current idempotency guard unless the retry
   records a new recovery attempt and its relationship to the original.
+- [ ] Add a contract-only repair path for a worker result whose repository
+  edits are complete but whose `files_changed` claim includes a gitignored,
+  repo-required local log. The repair must not permit further edits or include
+  ignored contents in review artifacts.

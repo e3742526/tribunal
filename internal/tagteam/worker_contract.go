@@ -115,6 +115,12 @@ Your final response MUST be JSON only and match this envelope exactly:
   "remaining_risks": ["honest unresolved risks"]
 }
 Use empty arrays when appropriate. Do not return identity text, Markdown fences, or prose outside the JSON object.
+The files_changed array MUST exactly match Git's tracked and ordinary untracked
+worktree changes for this invocation. Do not list gitignored local artifacts in
+files_changed, even when repository instructions require writing them; report
+those local-only writes in remaining_risks instead. If an ignored artifact must
+be reviewed and transferred, explicitly stage it with git add -f before the
+final response so Git and files_changed agree.
 Validation commands must be non-interactive and must not modify files outside the task's allowed scope. Do not run setup or configuration commands such as pnpm approve-builds as validation.`
 }
 

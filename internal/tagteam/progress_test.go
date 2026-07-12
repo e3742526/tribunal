@@ -186,7 +186,7 @@ func TestWorkerPromptsProtectHostArtifacts(t *testing.T) {
 		}
 	}
 	contractPrompt := workerContractPrompt("implement")
-	if !strings.Contains(contractPrompt, "must not modify files outside") || !strings.Contains(contractPrompt, "pnpm approve-builds") {
+	if !strings.Contains(contractPrompt, "must not modify files outside") || !strings.Contains(contractPrompt, "pnpm approve-builds") || !strings.Contains(contractPrompt, "Do not list gitignored local artifacts") || !strings.Contains(contractPrompt, "git add -f") {
 		t.Fatalf("worker contract does not prohibit mutating validation commands:\n%s", contractPrompt)
 	}
 }
