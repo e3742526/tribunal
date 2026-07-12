@@ -23,9 +23,12 @@ primary editor request in `runner_part04.go` did not copy
 `opts.MaxOutputBytes` into its `Request`. The adapter consequently used its
 2 MiB fallback. Several non-editor relay requests had the same omission.
 
+The repaired runtime now carries the run-level limit in the invocation context,
+so both fresh runs and resumed runs inherit it unless a request explicitly sets
+its own stricter limit.
+
 ## Resolution status
 
 The propagation fix is tracked in the active repair branch. The quarantined
 feature patch is intentionally left untouched until the repair is validated
 and a fresh relay/recovery decision can safely use the configured limit.
-

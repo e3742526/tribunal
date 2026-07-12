@@ -26,6 +26,7 @@ type ResumeRecord struct {
 // Resume verifies an interrupted run and continues the first incomplete phase
 // in the same authoritative run directory.
 func (a *App) Resume(ctx context.Context, opts RunOptions, runID string) (FinalRun, error) {
+	ctx = context.WithValue(ctx, maxOutputBytesContextKey{}, opts.MaxOutputBytes)
 	locator, err := resolveStateLocator(opts.Workdir, opts.StateRoot)
 	if err != nil {
 		return FinalRun{}, &ExitError{Code: ExitPreflightFailed, Err: err}
