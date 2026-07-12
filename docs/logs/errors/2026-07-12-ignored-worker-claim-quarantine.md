@@ -31,3 +31,18 @@ artifact intended for review must be explicitly staged with `git add -f`.
 
 A future contract-only repair path is tracked in `docs/TODO.md`; it must allow
 metadata correction without reopening repository editing after a partial patch.
+
+## Round-two cumulative claim
+
+Continuation run `2026-07-12T134431.865173000Z` exposed a separate semantic
+case. The round-two worker listed twelve files from the cumulative task patch;
+Git showed that only five changed during round two. The seven extras already
+existed in the pre-round dirty snapshot and their fingerprints were unchanged.
+Tagteam nevertheless treated the truthful cumulative superset as an invalid
+contract and quarantined the otherwise tested repair.
+
+Validation now normalizes only this provable case: every extra claimed path must
+exist in both the pre- and post-invocation snapshots with the same fingerprint,
+and the remaining claimed paths must exactly equal the Git-derived round delta.
+The normalization is disclosed in `remaining_risks`. Ignored, unknown, deleted,
+or fingerprint-mismatched extras continue to fail closed.

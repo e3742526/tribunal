@@ -742,6 +742,33 @@ func TestValidateWorkerResultExplainsIgnoredClaim(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerResultNormalizesUnchangedCumulativeClaims(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	mustWriteFile(t, filepath.Join(repo, "previous.txt"), "baseline\n")
+	mustWriteFile(t, filepath.Join(repo, "current.txt"), "baseline\n")
+	runGit(t, repo, "add", "previous.txt", "current.txt")
+	runGit(t, repo, "commit", "-m", "init")
+	mustWriteFile(t, filepath.Join(repo, "previous.txt"), "changed in round one\n")
+	before, err := captureWorktreeSnapshot(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(repo, "current.txt"), "changed in round two\n")
+	result := Result{Text: `{"schema_version":1,"status":"completed","summary":"fixed review","files_changed":["previous.txt","current.txt"],"checks_run":[],"remaining_risks":[]}`}
+	if err := validateWorkerResultForRequest(context.Background(), Request{Workdir: repo, RequireWorkerContract: true}, &result, before); err != nil {
+		t.Fatalf("validateWorkerResultForRequest() error = %v", err)
+	}
+	if result.Worker == nil || strings.Join(result.Worker.FilesChanged, ",") != "current.txt" {
+		t.Fatalf("normalized worker = %#v", result.Worker)
+	}
+	if len(result.Worker.RemainingRisks) != 1 || !strings.Contains(result.Worker.RemainingRisks[0], "normalized files_changed") {
+		t.Fatalf("normalization disclosure = %#v", result.Worker.RemainingRisks)
+	}
+}
+
 func (f fakeDirectAdapter) ID() string { return "fake-direct" }
 func (f fakeDirectAdapter) Detect(ctx context.Context) (VersionInfo, error) {
 	return VersionInfo{Found: true, Runnable: true}, nil

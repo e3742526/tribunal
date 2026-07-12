@@ -193,9 +193,37 @@ func validateWorkerGitClaim(ctx context.Context, workdir string, result *WorkerR
 		if ignored := ignoredMissingWorkerClaims(ctx, workdir, claimed, actual); len(ignored) > 0 {
 			return &OutputContractError{Err: fmt.Errorf("worker files_changed includes ignored paths that Tagteam cannot safely include in review artifacts: %v; track them or explicitly stage them with git add -f before the run (claimed=%v actual=%v)", ignored, claimed, actual)}
 		}
+		if normalized, cumulative := normalizeCumulativeWorkerClaims(claimed, actual, before, after); cumulative {
+			result.FilesChanged = normalized
+			result.RemainingRisks = append(result.RemainingRisks, "Tagteam normalized files_changed by removing cumulative paths unchanged during this invocation")
+			return nil
+		}
 		return &OutputContractError{Err: fmt.Errorf("worker files_changed inconsistent with Git: claimed=%v actual=%v", claimed, actual)}
 	}
 	return nil
+}
+
+func normalizeCumulativeWorkerClaims(claimed, actual []string, before, after worktreeSnapshot) ([]string, bool) {
+	actualSet := make(map[string]bool, len(actual))
+	for _, path := range actual {
+		actualSet[path] = true
+	}
+	normalized := make([]string, 0, len(claimed))
+	removed := false
+	for _, path := range claimed {
+		if actualSet[path] {
+			normalized = append(normalized, path)
+			continue
+		}
+		beforeFingerprint, existedBefore := before[path]
+		afterFingerprint, existsAfter := after[path]
+		if !existedBefore || !existsAfter || beforeFingerprint != afterFingerprint {
+			return nil, false
+		}
+		removed = true
+	}
+	sort.Strings(normalized)
+	return normalized, removed && strings.Join(normalized, "\x00") == strings.Join(actual, "\x00")
 }
 
 func ignoredMissingWorkerClaims(ctx context.Context, workdir string, claimed, actual []string) []string {
