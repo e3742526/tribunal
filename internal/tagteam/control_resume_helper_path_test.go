@@ -362,6 +362,14 @@ func TestControlResumeHelpersUngatedCLIBehaviorUnchanged(t *testing.T) {
 	if err != nil || bt == nil || !bt.Passed {
 		t.Fatalf("baseline %#v %v", bt, err)
 	}
+	if _, err := os.Stat(filepath.Join(fx.runDir, "baseline-test.txt")); err != nil {
+		t.Fatalf("ungated baseline output was not persisted: %v", err)
+	}
+	for _, path := range []string{bt.StateRoot, bt.TempDir} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("ungated isolation directory %q: %v", path, err)
+		}
+	}
 	nested := filepath.Join(fx.runDir, "nested", "out", "advisory.json")
 	if rebuildControlResumeArtifactPath(fx.runDir, fx.runDir, nested) != nested || controlResumeGateFrom(ctx) != nil {
 		t.Fatal("ungated nested path or gate regression")
@@ -377,5 +385,36 @@ func TestControlResumeHelpersUngatedCLIBehaviorUnchanged(t *testing.T) {
 	plan, err := readControlExecutionPlanOptional(ctx, fx.runDir)
 	if err != nil || plan == nil || plan.RunID != fx.runID {
 		t.Fatalf("plan %#v %v", plan, err)
+	}
+}
+
+func TestControlResumeTestIsolationRejectsSymlinksBeforeDispatch(t *testing.T) {
+	for _, path := range []string{
+		"test-isolation",
+		filepath.Join("test-isolation", "baseline-test", "state"),
+		filepath.Join("test-isolation", "baseline-test", "tmp"),
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			fx := newHelperFX(t, "isolation-"+strings.NewReplacer("/", "-", "\\", "-").Replace(path), false)
+			external := t.TempDir()
+			target := filepath.Join(fx.runDir, path)
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, target); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			marker := filepath.Join(fx.repo, "test-dispatched")
+			_, err := runTestCommand(fx.ctx, fx.repo, "printf dispatched > "+marker, 5*time.Second,
+				filepath.Join(fx.runDir, "baseline-test.txt"), false, nil, 0, "")
+			assertPreflight(t, err)
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("test command dispatched: %v", err)
+			}
+			if entries, err := os.ReadDir(external); err != nil || len(entries) != 0 {
+				t.Fatalf("external isolation directory was used: %v", err)
+			}
+		})
 	}
 }

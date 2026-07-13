@@ -95,6 +95,130 @@ func isolatedTestDirectories(outputPath string) (string, string, error) {
 	return state, temp, nil
 }
 
+// isolatedTestDirectoriesForControlResume preserves the CLI isolation behavior
+// while requiring each control-resume directory mutation to use a freshly
+// resolved run directory. The individual mkdir steps make every parent
+// canonical before it becomes a descendant used by a later step.
+func isolatedTestDirectoriesForControlResume(gate *controlResumePathGate, outputPath string) (string, string, error) {
+	if gate == nil {
+		return isolatedTestDirectories(outputPath)
+	}
+	var state, temp string
+	for _, name := range []string{"test-isolation", "root", "state", "tmp"} {
+		target, err := makeControlResumeIsolationDirectory(gate, outputPath, name)
+		if err != nil {
+			return "", "", err
+		}
+		switch name {
+		case "state":
+			state = target
+		case "tmp":
+			temp = target
+		}
+	}
+	if err := validateControlResumeTestIsolationDirectories(gate, outputPath, state, temp); err != nil {
+		return "", "", err
+	}
+	return state, temp, nil
+}
+
+func makeControlResumeIsolationDirectory(gate *controlResumePathGate, outputPath, name string) (string, error) {
+	runDir, err := gate.ready()
+	if err != nil {
+		return "", err
+	}
+	outputPath = rebuildControlResumeArtifactPath(gate.runDir, runDir, outputPath)
+	base := strings.TrimSuffix(filepath.Base(outputPath), filepath.Ext(outputPath))
+	isolation := filepath.Join(filepath.Dir(outputPath), "test-isolation")
+	root := filepath.Join(isolation, sanitizeArtifactName(base))
+	targets := map[string]string{
+		"test-isolation": isolation,
+		"root":           root,
+		"state":          filepath.Join(root, "state"),
+		"tmp":            filepath.Join(root, "tmp"),
+	}
+	target := targets[name]
+	if err := validateControlPathWithinBoundary(gate.runsRoot, filepath.Dir(target), "resolved state root"); err != nil {
+		return "", err
+	}
+	if err := validateControlWritablePath(runDir, filepath.Dir(target)); err != nil {
+		return "", err
+	}
+	if err := validateControlPathWithinBoundary(gate.runsRoot, target, "resolved state root"); err != nil {
+		return "", err
+	}
+	if err := validateControlWritablePath(runDir, target); err != nil {
+		return "", err
+	}
+	if err := validateControlIsolationDirectories(false, isolation, root, target); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		return "", err
+	}
+	// Re-resolve after mkdir so a replacement between validation and mutation
+	// cannot leave a symlinked directory for the test subprocess to use.
+	runDir, err = gate.ready()
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlPathWithinBoundary(gate.runsRoot, target, "resolved state root"); err != nil {
+		return "", err
+	}
+	if err := validateControlWritablePath(runDir, target); err != nil {
+		return "", err
+	}
+	if err := validateControlIsolationDirectories(true, target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func validateControlResumeTestIsolationDirectories(gate *controlResumePathGate, outputPath, state, temp string) error {
+	runDir, err := gate.ready()
+	if err != nil {
+		return err
+	}
+	outputPath = rebuildControlResumeArtifactPath(gate.runDir, runDir, outputPath)
+	base := strings.TrimSuffix(filepath.Base(outputPath), filepath.Ext(outputPath))
+	isolation := filepath.Join(filepath.Dir(outputPath), "test-isolation")
+	root := filepath.Join(isolation, sanitizeArtifactName(base))
+	if state != filepath.Join(root, "state") || temp != filepath.Join(root, "tmp") {
+		return fmt.Errorf("control test isolation paths changed")
+	}
+	for _, path := range []string{isolation, root, state, temp} {
+		if err := validateControlPathWithinBoundary(gate.runsRoot, path, "resolved state root"); err != nil {
+			return err
+		}
+		if err := validateControlWritablePath(runDir, path); err != nil {
+			return err
+		}
+	}
+	return validateControlIsolationDirectories(true, isolation, root, state, temp)
+}
+
+func validateControlIsolationDirectories(required bool, paths ...string) error {
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			if required {
+				return fmt.Errorf("control test isolation directory disappeared: %s", path)
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("control test isolation directory is a symlink: %s", path)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("control test isolation path is not a directory: %s", path)
+		}
+	}
+	return nil
+}
+
 func extractFailureIdentities(output string) []string {
 	return extractFailureIdentitiesWithRegex(output, "")
 }

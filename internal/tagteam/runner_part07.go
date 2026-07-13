@@ -723,8 +723,11 @@ func runTestCommand(ctx context.Context, workdir, testCmd string, timeout time.D
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-lc", testCmd)
 	prepareProcessTree(cmd)
 	cmd.Dir = workdir
-	stateRoot, tempDir, isolationErr := isolatedTestDirectories(outputPath)
+	stateRoot, tempDir, isolationErr := isolatedTestDirectoriesForControlResume(controlResumeGateFrom(ctx), outputPath)
 	if isolationErr != nil {
+		if controlResumeGateFrom(ctx) != nil {
+			return TestRun{}, &ExitError{Code: ExitPreflightFailed, Err: isolationErr}
+		}
 		return TestRun{}, isolationErr
 	}
 	cmd.Env = mergeCommandEnv(envOverlay, []string{
@@ -756,6 +759,8 @@ func runTestCommand(ctx context.Context, workdir, testCmd string, timeout time.D
 			return TestRun{}, &ExitError{Code: ExitPreflightFailed, Err: err}
 		}
 	}
-	_ = writeRedactedBytes(outputPath, output, envOverlay)
+	if err := writeRedactedBytes(outputPath, output, envOverlay); err != nil {
+		return TestRun{}, fmt.Errorf("persist test output: %w", err)
+	}
 	return testRun, nil
 }

@@ -32,6 +32,20 @@ func TestIsolatedTestDirectoriesArePerInvocation(t *testing.T) {
 	}
 }
 
+func TestRunTestCommandPropagatesOutputPersistenceError(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "baseline-test.txt")
+	if err := os.Mkdir(outputPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	test, err := runTestCommand(context.Background(), t.TempDir(), "true", 5*time.Second, outputPath, false, nil, 0, "")
+	if err == nil || !strings.Contains(err.Error(), "persist test output") {
+		t.Fatalf("runTestCommand error = %v, want persisted-output error", err)
+	}
+	if test.Passed {
+		t.Fatalf("runTestCommand reported success after output failure: %#v", test)
+	}
+}
+
 func TestRunBaselineTestRejectsTrackedWorktreeMutation(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")
