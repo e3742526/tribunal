@@ -185,6 +185,35 @@ func worktreeDelta(before, after worktreeSnapshot) []string {
 	return paths
 }
 
+func worktreeContentDelta(before, after worktreeSnapshot) []string {
+	content := func(value string) string {
+		if strings.HasPrefix(value, "deleted:") {
+			return "deleted"
+		}
+		if index := strings.IndexByte(value, ':'); index >= 0 {
+			return value[index+1:]
+		}
+		return value
+	}
+	seen := map[string]bool{}
+	for path, fingerprint := range before {
+		if content(after[path]) != content(fingerprint) {
+			seen[path] = true
+		}
+	}
+	for path, fingerprint := range after {
+		if content(before[path]) != content(fingerprint) {
+			seen[path] = true
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 func validateWorkerGitClaim(ctx context.Context, workdir string, result *WorkerResult, before, after worktreeSnapshot) error {
 	actual := worktreeDelta(before, after)
 	claimed := append([]string(nil), result.FilesChanged...)

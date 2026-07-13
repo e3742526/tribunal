@@ -2,7 +2,6 @@ package tagteam
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,7 +16,10 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		defer cancel()
 	}
 	editorLabel, reviewerLabel := roleLabels(opts.Mode)
-	runID := newRunID()
+	runID, err := runIDForOptions(opts)
+	if err != nil {
+		return FinalRun{}, err
+	}
 	logProgress(opts, "run %s preflight started workdir=%s", runID, opts.Workdir)
 	baseline, cleanup, err := preflight(opts, runID)
 	if err != nil {
@@ -312,37 +314,23 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 					Budget:          opts.InvocationBudget,
 				}, false)
 				if err != nil {
-					if repaired, repairCost, attempted, repairErr := a.repairJSONWithWorker(ctx, opts, registry, runDir, planOutputPath, "supervisor work plan", WorkPlanSchema, readRepairSource(planOutputPath, nil), err); repairErr != nil {
-						_ = writeRedactedBytes(planOutputPath+".repair-failed.txt", []byte(repairErr.Error()+"\n"), opts.EnvOverlay)
-					} else if attempted {
-						repairedPlan, parseErr := parseWorkPlan(repaired, opts.Package, opts.MaxPackages)
-						if parseErr == nil {
-							setFinalDegraded(&final, ReasonJSONRepairUsed, "supervisor work-plan JSON repaired by worker")
-							appendRoleLoss(&final, reviewerLabel, lossPolicyForRole(opts, reviewerLabel), "json-repair", "repaired", ReasonJSONRepairUsed, "worker repaired invalid work-plan JSON")
-							plan = repairedPlan
-							planCost += repairCost
-							planParsed = true
-						}
-						_ = writeRedactedBytes(planOutputPath+".repair-validation-error.txt", []byte(parseErr.Error()+"\n"), opts.EnvOverlay)
+					if repairedPlan, repairCost, ok, rerr := a.tryWorkPlanRepair(ctx, opts, registry, runDir, planOutputPath, nil, true, err, &final, reviewerLabel); rerr != nil {
+						return final, rerr
+					} else if ok {
+						plan = repairedPlan
+						planCost += repairCost
+						planParsed = true
 					}
 					return final, err
 				}
 				if !planParsed {
 					parsed, err := parseWorkPlan([]byte(planResult.Text), opts.Package, opts.MaxPackages)
 					if err != nil {
-						if repaired, repairCost, attempted, repairErr := a.repairJSONWithWorker(ctx, opts, registry, runDir, planOutputPath, "supervisor work plan", WorkPlanSchema, []byte(planResult.Text), err); repairErr != nil {
-							_ = writeRedactedBytes(planOutputPath+".repair-failed.txt", []byte(repairErr.Error()+"\n"), opts.EnvOverlay)
-						} else if attempted {
-							repairedPlan, parseErr := parseWorkPlan(repaired, opts.Package, opts.MaxPackages)
-							if parseErr == nil {
-								setFinalDegraded(&final, ReasonJSONRepairUsed, "supervisor work-plan JSON repaired by worker")
-								appendRoleLoss(&final, reviewerLabel, lossPolicyForRole(opts, reviewerLabel), "json-repair", "repaired", ReasonJSONRepairUsed, "worker repaired invalid work-plan JSON")
-								parsed = repairedPlan
-								planCost += repairCost
-							} else {
-								_ = writeRedactedBytes(planOutputPath+".repair-validation-error.txt", []byte(parseErr.Error()+"\n"), opts.EnvOverlay)
-								return final, err
-							}
+						if repairedPlan, repairCost, ok, rerr := a.tryWorkPlanRepair(ctx, opts, registry, runDir, planOutputPath, []byte(planResult.Text), false, err, &final, reviewerLabel); rerr != nil {
+							return final, rerr
+						} else if ok {
+							parsed = repairedPlan
+							planCost += repairCost
 						} else {
 							return final, err
 						}
@@ -370,7 +358,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			final.SelectedPackage = selectedPackage
 			final.RemainingPackages = plan.RemainingPackageTitles()
 			executionPlan = newExecutionPlanFromWorkPlan(runID, opts.Mode, plan, "supervisor-initial")
-			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+			if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 				return final, err
 			}
 			final.Plan = summarizeExecutionPlan(runDir, executionPlan)
@@ -419,11 +407,11 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			codeIntel, _ = runConfiguredCodeIntel(ctx, opts, runDir)
 			codeIntelContext = CompactCodeIntelForPrompt(codeIntel)
 		}
+		symlinkTopology := collectScopeSymlinkTopology(opts.Workdir, allowedScopeForRound(opts, nil))
 		if opts.ScoutRetrieval && opts.ScoutMode == "recon" && scoutAvailable {
 			logProgress(opts, "scout retrieval started")
 			var err error
-			retrieval, err = runScoutRetrieval(ctx, opts.Workdir, opts.Prompt, runDir, true)
-			if err != nil {
+			if retrieval, err = runScoutRetrieval(ctx, opts.Workdir, opts.Prompt, runDir, true); err != nil {
 				return final, &ExitError{Code: ExitAdapterFailure, Err: fmt.Errorf("write retrieval artifact: %w", err)}
 			}
 			retrievalContext = CompactRetrievalForPrompt(retrieval)
@@ -431,6 +419,9 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			scoutStatus.RetrievalStatus = retrieval.Status
 			scoutStatus.RetrievalDegraded = retrievalStatusIsDegraded(retrieval.Status)
 			logProgress(opts, "scout retrieval completed status=%s evidence=%d", retrieval.Status, len(retrieval.Evidence))
+		}
+		if sc := CompactSymlinkTopologyForPrompt(symlinkTopology); sc != "" {
+			retrievalContext = strings.TrimSpace(sc + "\n" + retrievalContext)
 		}
 		scoutPrompt := withRepoInstructions(BuildScoutPromptWithCodeIntel(opts.Workdir, opts.Prompt, "", opts.ScoutMode, "pre", "", "", retrievalContext, codeIntelContext), repoInstructions)
 		if opts.ScoutMode == "recon" {
@@ -520,18 +511,11 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				Budget:          opts.InvocationBudget,
 			}, opts.DryRun)
 			if err != nil && IsOutputContractError(err) {
-				if repaired, repairCost, attempted, repairErr := a.repairJSONWithWorker(ctx, opts, registry, runDir, scoutOutputPath, "scout", ScoutSchemaForRepair(), readRepairSource(scoutOutputPath, nil), err); repairErr != nil {
-					_ = writeRedactedBytes(scoutOutputPath+".repair-failed.txt", []byte(repairErr.Error()+"\n"), opts.EnvOverlay)
-				} else if attempted {
-					repairedScout, parseErr := parseScout(repaired)
-					if parseErr == nil {
-						setFinalDegraded(&final, ReasonJSONRepairUsed, "scout JSON repaired by worker")
-						appendRoleLoss(&final, "scout", opts.LossPolicy.Scout, "json-repair", "repaired", ReasonJSONRepairUsed, "worker repaired invalid scout JSON")
-						scoutResult = Result{Scout: repairedScout, Text: repairedScout.Summary, CostUSD: repairCost}
-						err = nil
-					} else {
-						_ = writeRedactedBytes(scoutOutputPath+".repair-validation-error.txt", []byte(parseErr.Error()+"\n"), opts.EnvOverlay)
-					}
+				if repaired, ok, rerr := a.tryScoutContractRepair(ctx, opts, registry, runDir, scoutOutputPath, "scout", "scout JSON repaired by worker", err, &final); rerr != nil {
+					return final, rerr
+				} else if ok {
+					scoutResult = repaired
+					err = nil
 				}
 			}
 			if err != nil {
@@ -549,15 +533,13 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 				scoutStatus.ScoutSucceeded = true
 				setRoleStatus(&final, "scout", opts.Scout, "completed", "", "")
 				if scoutResult.Scout != nil {
-					if retrievalContext != "" && scoutResult.Scout.RetrievalStatus == "" {
-						var retrieval RetrievalArtifact
-						if err := json.Unmarshal([]byte(retrievalContext), &retrieval); err == nil {
-							scoutResult.Scout.RetrievalQueries = append([]string{}, retrieval.Queries...)
-							scoutResult.Scout.Evidence = retrievalScoutEvidence(retrieval.Evidence)
-							scoutResult.Scout.RetrievalStatus = retrieval.Status
-							scoutResult.Scout.RetrievalTruncated = retrieval.Truncated
-						}
+					if retrieval.Status != "" && scoutResult.Scout.RetrievalStatus == "" {
+						scoutResult.Scout.RetrievalQueries = append([]string{}, retrieval.Queries...)
+						scoutResult.Scout.Evidence = retrievalScoutEvidence(retrieval.Evidence)
+						scoutResult.Scout.RetrievalStatus = retrieval.Status
+						scoutResult.Scout.RetrievalTruncated = retrieval.Truncated
 					}
+					scoutResult.Scout.Evidence = mergeSymlinkTopologyEvidence(scoutResult.Scout.Evidence, symlinkTopology)
 					relay.Scout = *scoutResult.Scout
 				}
 				final.Costs["scout"] += scoutResult.CostUSD
@@ -649,7 +631,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 		editorOutputPath := filepath.Join(runDir, fmt.Sprintf("%s-round-%d.md", editorLabel, round))
 		if selectedPackage != nil {
 			if setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusInProgress, "runner", fmt.Sprintf("round %d %s started", round, editorLabel)) {
-				if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+				if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 					return final, err
 				}
 			}
@@ -729,7 +711,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 					final.RemainingPackages = workPlan.RemainingPackageTitles()
 					brief = BuildWorkPackageBrief(*workPlan, nextPackage)
 					implementSelectedPackage = true
-					if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+					if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 						return final, err
 					}
 					logProgress(opts, "package %s passed; continuing to %s: %s", reviewPackageID(final.SelectedPackage), nextPackage.ID, nextPackage.Title)
@@ -739,7 +721,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			if selectedPackage != nil && !opts.AutoNextPackage {
 				deferRemainingPlanItems(executionPlan, selectedPackage.ID, "runner", "remaining packages not run without --auto-next-package")
 			}
-			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+			if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 				return final, err
 			}
 			final.Verdict = "pass"
@@ -756,7 +738,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			if selectedPackage != nil && !opts.AutoNextPackage {
 				deferRemainingPlanItems(executionPlan, selectedPackage.ID, "runner", "remaining packages not run without --auto-next-package")
 			}
-			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+			if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 				return final, err
 			}
 			final.Verdict = review.Verdict
@@ -770,7 +752,7 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 			if selectedPackage != nil {
 				setPlanItemStatus(executionPlan, selectedPackage.ID, PlanStatusFailed, reviewerLabel, fmt.Sprintf("round limit reached with %s review", review.Verdict))
 			}
-			if err := persistExecutionPlan(runDir, executionPlan); err != nil {
+			if err := persistExecutionPlan(ctx, runDir, executionPlan); err != nil {
 				return final, err
 			}
 			final.Verdict = review.Verdict
@@ -789,9 +771,6 @@ func (a *App) runLoop(ctx context.Context, opts RunOptions, initialReview *Revie
 	if err := a.finalizeReviewedRun(opts, runDir, budget, latestDiffArtifact, executionPlan, selectedPackage, &final); err != nil {
 		return final, err
 	}
-	// See the equivalent comment in Review: only mark the active-run pointer
-	// completed once every artifact this function persists (execution plan,
-	// then final.json/latest.json) has actually been written.
 	runCompleted = true
 	if final.ExitCode != ExitSuccess {
 		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("run completed with exit code %d", final.ExitCode)}

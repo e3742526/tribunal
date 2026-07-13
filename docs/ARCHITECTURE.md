@@ -20,13 +20,14 @@ orchestration logic lives in `internal/tagteam`; the TUI lives in `internal/tui`
 | CLI surface | `internal/cli/root.go`, `internal/cli/tui.go` | Defines commands including `resume`, `transfer`, `findings defer`, and `verify-install`, flag parsing, output formatting, and TUI run selection. |
 | App / run loop | `internal/tagteam/runner.go` | `App` type; `Run`, `Review`, `Fix`, `Doctor`; the round loop, role dispatch, env policy, artifact writing. |
 | Config resolution | `internal/tagteam/config.go` | Layered config (flags > shell env > `.env` overlay > repo `.tagteam.toml` > user config > defaults), profiles, `ResolveOptions`. |
-| Adapters | `internal/tagteam/adapters.go` | Adapter interface + `codex`, `codex-oss`, `claude`, `agy`, `gosling`, `openai-compatible`; `Registry`, command construction, capability sets. |
+| Adapters | `internal/tagteam/adapters.go`, `internal/tagteam/adapters_part02.go` | Adapter interface + `codex`, `codex-oss`, `claude`, `agy`, `gosling`, `grok`, `openai-compatible`; `Registry`, command construction, capability sets. |
 | Types | `internal/tagteam/types.go` | `Mode`, `Role`, `ReasonCode`, `RunOptions`, `FinalRun`, `RunState`, exit codes, JSON contracts. |
 | Artifact store | `internal/tagteam/artifact_store.go`, `durable_io.go` | Derives repository identity, maintains `.tagteam/repo.json`, migrates legacy state, and atomically persists external artifacts. |
 | Active run pointer | `internal/tagteam/active_run.go` | Persists external `active.json` for in-flight run discovery and failure cleanup. |
 | Resilience | `state_machine.go`, `run_lock.go`, `invocation_lock.go`, `recovery.go`, `resume.go`, `resume_execution.go`, `resume_phases.go`, `timeout_calibration.go`, `invocation_stream.go` | Phase journaling, locks/cancellation, cross-process claude invocation serialization, partial-diff recovery, same-run phase continuation, calibrated deadlines, and durable subprocess streams. |
 | Quality / transfer | `quality_gates.go`, `findings.go`, `test_hardening.go`, `transfer.go`, `integrity.go` | Scope/churn/data-loss/findings/regression gates, isolated tests, structural integrity, and explicit patch transfer. |
 | Snapshot / live status | `internal/tagteam/snapshot.go` | Builds `RunSnapshot` from `active.json`, `state.json`, `final.json`, and `plan.json`. |
+| Control-plane contract | `internal/tagteam/control_contract.go`, `control_runtime.go`, `control_resume_assessment.go`, `mcp_stdio.go`, `internal/cli/mcp.go` | Versioned launch/action types, bounded projections, durable approval/idempotency records, non-mutating resume assessment, and a local MCP stdio transport with approved start. Resume and cancel remain gated. |
 | Run state / reasons | `internal/tagteam/run_state.go` | Failure classification, exit→reason mapping, role status/loss records, budget state, redacted persistence helpers. |
 | Orchestration decision | `internal/tagteam/orchestration.go` | Host-owned single advisory adjustment (relay↔supervisor) before implementation. |
 | Scout retrieval | `internal/tagteam/retrieval.go` | Bounded, local-only pre-scout retrieval evidence for relay `recon`. |
@@ -41,6 +42,14 @@ orchestration logic lives in `internal/tagteam`; the TUI lives in `internal/tui`
 | Process control | `internal/tagteam/process_{unix,windows}.go` | Platform process-group handling. |
 | CLI exports | `internal/tagteam/cli_exports.go` | Symbols surfaced to the `internal/cli` layer. |
 | Interactive TUI | `internal/tui/render.go`, `internal/tui/state.go`, `internal/tui/tui.go` | Dashboard with recent runs, compose/settings, slash commands, and a scrollable detail pane. Reads `RunSnapshot`/`plan.json` for inspection and invokes `App.Run` for TUI-launched runs. |
+
+Grok 0.2.93 is invoked through the root command's positional headless mode:
+`--single`, `--cwd`, `--model`, `--reasoning-effort`, and `--output-format
+json`, with `--json-schema` limited to roles that have a Tagteam output
+contract. `--rules` carries the role system prompt. Coder invocations use
+`acceptEdits` plus the edit-capable tool set; supervisor, adversary, reporter,
+and scout invocations use `dontAsk` plus `read_file,list_dir`. Non-coder roles
+inherit the runner's restricted environment and provider-auth forwarding.
 
 ## Run modes
 
@@ -112,6 +121,8 @@ as the TUI. See the README
   `run_state.go`.
 - New live status consumer: prefer reading `RunSnapshot` instead of reverse-
   engineering `final.json` / `state.json` directly.
+- New control transport: adapt the versioned control-plane operations; do not
+  expose shell construction, raw artifact reads, or a second run state model.
 
 ## Code-intelligence contracts
 

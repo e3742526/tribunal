@@ -113,7 +113,7 @@ Included in the `v1.1.0` surface:
 - adversarial coder/adversary mode supports audits and independent review
 - saved run artifacts include briefs, diffs, reviews, tests, and final summaries
 - active runs publish external `active.json` so live views can discover in-flight work without exposing host state to workers
-- command surface now includes `run`, `review`, `fix`, `resume`, `status`, `plan`, `transcript`, `findings`, `transfer`, `tui`, `doctor`, and `init`
+- command surface now includes `run`, `review`, `fix`, `resume`, `status`, `plan`, `transcript`, `findings`, `transfer`, `tui`, `mcp`, `doctor`, and `init`
 - config layering supports repo config, user config, env overrides, flags, and named profiles
 - explicit JSON repair is available through `--repair-json-with-worker` / `json_repair = "worker"`
 - explicit repo instruction files are loaded by default and appended to role prompts
@@ -134,6 +134,7 @@ tagteam findings [--all]
 tagteam findings defer RUN_ID FINDING_ID --reason "..."
 tagteam transfer RUN_ID --test "..." --lint "..."
 tagteam tui [RUN_ID]
+tagteam mcp
 tagteam doctor
 tagteam init
 ```
@@ -143,6 +144,23 @@ other agent CLIs, Tagteam also accepts `-m` / `--model`; because Tagteam is
 multi-agent, that flag selects only the active implementation role (worker,
 coder, or solo model). Use `--supervisor`, `--reviewer`, or `--scout` for the
 other roles.
+
+`tagteam mcp` is a local stdio MCP server. It exposes bounded tools for
+capabilities, launch validation, start preparation, resume assessment,
+approved/idempotent starts, resumes, and cancels, status, plans, findings, and
+diagnostics.
+`prepare_start` returns the exact action digest that `start` requires after
+user confirmation; `prepare_resume` reports whether an existing run meets
+resume preconditions without changing it. `start` is marked destructive for
+MCP clients and requires an expiring, single-use approval record. `cancel` is
+also destructive and approval-bound; a live run can be cancelled only by the
+MCP runtime that owns its cancellation context. A live run owned by another
+runtime returns a typed `run_not_owned` error.
+
+Released binaries can expose the lifecycle mutation tools normally.
+Development or otherwise unverified builds keep MCP read-only unless the
+operator starts the server with `tagteam mcp --allow-dev-build`; this matches
+Tagteam's existing mutation gate.
 
 ## Requirements
 
@@ -162,11 +180,23 @@ Supported adapters in this repo today:
 | `claude` / Claude Code | read-only supervisor or adversary; worker/coder and scout assignments are rejected |
 | `agy` | full |
 | `gosling` | coder-only |
+| `grok` | full; headless Grok CLI 0.2.93 with structured output and role-scoped tools |
 | `openai-compatible` / `oai` | read-only reviewer/scout (first cut) |
+
+The Grok adapter is verified against Grok Build 0.2.93. It invokes root-level
+headless `grok --single <prompt> --cwd <dir>` with optional `--model` and
+`--reasoning-effort`, `--output-format json`, and explicit role permissions:
+coders use `acceptEdits` with `read_file,list_dir,write_file,search_replace,run_terminal_cmd`;
+all read-only roles use `dontAsk` with `read_file,list_dir`. System prompts use
+the verified `--rules` flag. `--json-schema` is emitted only for coder,
+adversary, and supervisor roles; Grok's JSON mode returns one JSON object at
+the end of the headless run, and Tagteam parses the review/scout contracts
+from that object. The prompt is a positional argument, so Grok receives no
+stdin prompt.
 
 ## Authentication
 
-Each vendor CLI adapter (`codex`, `claude`, `agy`, `gosling`, etc.) must already be logged in on your machine before you run `tagteam`. `tagteam` does not run vendor login flows, store credentials, or proxy/inject API keys for those CLIs. If an adapter is not authenticated, the run will fail with that CLI's own auth error.
+Each vendor CLI adapter (`codex`, `claude`, `agy`, `gosling`, `grok`, etc.) must already be logged in on your machine before you run `tagteam`. `tagteam` does not run vendor login flows, store credentials, or proxy/inject API keys for those CLIs. If an adapter is not authenticated, the run will fail with that CLI's own auth error.
 
 This note applies to the vendor CLI adapters; the separate `openai-compatible` adapter uses its documented `api_key_env` setting.
 
@@ -404,7 +434,7 @@ Relay pre-scout can run configured, read-only `command`, `codebase-memory`, and 
 
 `tagteam intel orient|find|trace|impact|resume|recall|evidence` is the stable JSON/MCP-wrapper command contract. `evidence` writes then validates a Muninn candidate-evidence envelope; `recall` validates a configured Muninn envelope; `resume` validates a configured Dory envelope. `tagteam intel bench` writes deterministic `intel-bench.json` under Tagteam's external runs root by default (use `--run-dir` to override); it intentionally contains no generated timestamp or latency fields. `tagteam intel status` reads sensor artifacts without parsing `final.json`. File contracts for Dory checkpoints, Alexandria observation/consumption events, and Muninn candidate evidence are versioned and require `enabled = true`; they are not network clients, graph dumps, or memory promotion. Dory, Alexandria, and Muninn are not included in this checkout: their operators must consume these versioned JSON file envelopes and own any transport or promotion.
 
-Use `tagteam integrate plan|install|doctor|uninstall --target <codex|claude|cursor|vscode|mcp-json> --path <file>` to manage only Tagteam-owned configuration. `codex` manages a versioned `#` block in the explicit `config.toml` path and `claude` a versioned `#` block in its explicit text/Markdown path. `cursor` (`.cursor/mcp.json`), `vscode` (`.vscode/mcp.json`), and `mcp-json` manage only the versioned `mcpServers.tagteam` entry. `plan` never writes; invalid marker/JSON input is refused; JSON preserves unknown keys but install/uninstall may reformat it.
+Use `tagteam integrate plan|install|doctor|uninstall --target <codex|claude|cursor|vscode|mcp-json> --path <file>` to manage only Tagteam-owned configuration. `codex` manages a versioned `#` block in the explicit `config.toml` path and `claude` a versioned `#` block in its explicit text/Markdown path. `cursor` (`.cursor/mcp.json`), `vscode` (`.vscode/mcp.json`), and `mcp-json` manage only the versioned `mcpServers.tagteam` entry, invoking `tagteam mcp`. `plan` never writes; invalid marker/JSON input is refused; JSON preserves unknown keys but install/uninstall may reformat it.
 
 Scout model failures are explicit and configurable. By default, `scout_failure_policy = "continue"` warns, writes `scout-execution-round-1.json`, and continues without scout context so the coder and supervisor can still run. Use `--strict-scout` or `scout_failure_policy = "fail"` when evaluation or reproducibility should abort before coder edits if the scout invocation, scout JSON contract, or scout context-budget check fails. Retrieval unavailable/timeout/empty/degraded states are separate from scout model failure and continue into the scout pass where possible.
 
@@ -517,7 +547,20 @@ tagteam fix
 
 If a `.env` file exists in the selected workdir, `tagteam` parses it as a small, line-oriented dotenv subset: `KEY=VALUE`, optional `export`, inline comments outside quotes, single-quoted raw values, and double-quoted escape sequences such as `\n`. `.env` is a convenience source for local development; it is not a full shell parser, and explicit shell exports still win.
 
-Repo-local `.tagteam.toml` is loaded in untrusted mode by default. It can set ordinary role/model defaults, but high-authority settings such as `defaults.test`, `git_safety`, `code_intel_command`, adapter `extra_args`, Claude `coder_allowed_tools` / `bare` / `serialize`, and `openai-compatible` `base_url`, `api_key_env`, `extra_headers`, or `extra_args` require `--trust-repo-config`.
+Repo-local `.tagteam.toml` is loaded in untrusted mode by default. It can set ordinary role/model defaults, but high-authority settings such as `defaults.test`, `git_safety`, `code_intel_command`, `[test_presets]`, adapter `extra_args`, Claude `coder_allowed_tools` / `bare` / `serialize`, and `openai-compatible` `base_url`, `api_key_env`, `extra_headers`, or `extra_args` require `--trust-repo-config`. Untrusted repo config never contributes `[test_presets]` entries (they are stripped entirely).
+
+### Trusted test presets (MCP / control plane)
+
+MCP starts may select a test command only by **name** via `test_preset`. Named presets resolve from host-trusted configuration — primarily user config under `[test_presets.<name>]` — never from raw model/MCP command strings. Untrusted repo `.tagteam.toml` cannot inject presets; with `--trust-repo-config`, a trusted repo file may define them the same way as other high-authority keys. Names are exact-match identifiers (no case folding). Empty `test_preset` keeps Tagteam's normal trusted `defaults.test` / profile defaults. Unknown names fail closed with a stable error.
+
+```toml
+[test_presets.go-test]
+command = "go test ./..."
+identity_regex = "FAIL:\\s+(\\S+)"   # optional; must compile with a capture group
+
+[test_presets.unit]
+command = "make unit"
+```
 
 User config path:
 
@@ -611,7 +654,7 @@ max_context_tokens = 32768
 reserved_output_tokens = 2048
 ```
 
-Codex and Claude inference effort is configured separately from model identity, following the same provider/model/settings separation used by mature agent CLIs:
+Codex, Claude, and Grok inference effort is configured separately from model identity, following the same provider/model/settings separation used by mature agent CLIs:
 
 ```toml
 [adapters.codex]
@@ -619,9 +662,20 @@ reasoning_effort = "high"
 
 [adapters.claude]
 effort = "high"
+
+[adapters.grok]
+default_model = "grok-4.5"
+reasoning_effort = "high"
 ```
 
-The equivalent environment variables are `TAGTEAM_CODEX_REASONING_EFFORT` and `TAGTEAM_CLAUDE_EFFORT`.
+The equivalent environment variables are `TAGTEAM_CODEX_REASONING_EFFORT`, `TAGTEAM_CLAUDE_EFFORT`, `TAGTEAM_GROK_MODEL`, and `TAGTEAM_GROK_REASONING_EFFORT`. Grok passthrough arguments can be supplied with `adapters.grok.extra_args`, `TAGTEAM_GROK_ARGS`, or `--grok-args`.
+
+Grok reasoning effort accepts `low`, `medium`, `high`, or `xhigh`; the
+default `grok-4.5` model supports `low`, `medium`, and `high`, while `xhigh`
+is available only on Grok models that advertise it. Set Grok targets as
+`grok:<model>` through `--worker`, `--coder`, `--supervisor`, `--reviewer`,
+or `--scout`; the same targets are available in the TUI `/model` picker and
+named profiles.
 
 Claude invocations are serialized across tagteam processes by default because concurrent Claude Code processes can stall or remain pending. Disable this (for example when every run uses isolated Claude configuration) with:
 

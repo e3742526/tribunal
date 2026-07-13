@@ -141,6 +141,11 @@ func DefaultConfig() Config {
 				DefaultModel: "",
 				ExtraArgs:    []string{},
 			},
+			Grok: GrokConfig{
+				DefaultModel:    "grok-4.5",
+				ReasoningEffort: "high",
+				ExtraArgs:       []string{},
+			},
 			OpenAICompatible: OpenAICompatibleConfig{
 				BaseURL:      "http://127.0.0.1:11434/v1",
 				DefaultModel: "gemma4:latest",
@@ -195,6 +200,9 @@ func LoadConfigWithOptions(workdir string, opts LoadConfigOptions) (Config, []st
 	}
 
 	mergeEnvConfig(&cfg, cfg.EnvOverlay)
+	if err := normalizeTestPresets(&cfg); err != nil {
+		return Config{}, nil, err
+	}
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, nil, err
 	}
@@ -398,6 +406,7 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	src.Adapters.CodexOSS.ExtraArgs = nil
 	src.Adapters.Agy.ExtraArgs = nil
 	src.Adapters.Gosling.ExtraArgs = nil
+	src.Adapters.Grok.ExtraArgs = nil
 	src.Adapters.OpenAICompatible.BaseURL = ""
 	src.Adapters.OpenAICompatible.APIKeyEnv = ""
 	src.Adapters.OpenAICompatible.ExtraHeaders = nil
@@ -405,6 +414,9 @@ func sanitizeUntrustedRepoConfig(src Config) Config {
 	// Repo-local subprocesses and external bridge paths are authority-bearing.
 	// They are accepted only with --trust-repo-config.
 	src.CodeIntel = CodeIntelConfig{}
+	// Named test presets resolve shell commands; never accept them from
+	// untrusted repo config even when the name matches a trusted preset.
+	src.TestPresets = nil
 	return src
 }
 
@@ -669,6 +681,16 @@ func mergeConfig(dst *Config, src Config) {
 		dst.Adapters.Gosling.ExtraArgs = append([]string{}, src.Adapters.Gosling.ExtraArgs...)
 	}
 	mergeContextBudget(&dst.Adapters.Gosling.MaxContextTokens, &dst.Adapters.Gosling.ReservedOutputTokens, src.Adapters.Gosling.MaxContextTokens, src.Adapters.Gosling.ReservedOutputTokens)
+	if src.Adapters.Grok.DefaultModel != "" {
+		dst.Adapters.Grok.DefaultModel = src.Adapters.Grok.DefaultModel
+	}
+	if src.Adapters.Grok.ReasoningEffort != "" {
+		dst.Adapters.Grok.ReasoningEffort = src.Adapters.Grok.ReasoningEffort
+	}
+	if len(src.Adapters.Grok.ExtraArgs) > 0 {
+		dst.Adapters.Grok.ExtraArgs = append([]string{}, src.Adapters.Grok.ExtraArgs...)
+	}
+	mergeContextBudget(&dst.Adapters.Grok.MaxContextTokens, &dst.Adapters.Grok.ReservedOutputTokens, src.Adapters.Grok.MaxContextTokens, src.Adapters.Grok.ReservedOutputTokens)
 	if src.Adapters.OpenAICompatible.BaseURL != "" {
 		dst.Adapters.OpenAICompatible.BaseURL = src.Adapters.OpenAICompatible.BaseURL
 	}
@@ -684,6 +706,15 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if len(src.Adapters.OpenAICompatible.ExtraArgs) > 0 {
 		dst.Adapters.OpenAICompatible.ExtraArgs = append([]string{}, src.Adapters.OpenAICompatible.ExtraArgs...)
+	}
+	if src.TestPresets != nil {
+		if dst.TestPresets == nil {
+			dst.TestPresets = map[string]TestPresetConfig{}
+		}
+		for key, preset := range src.TestPresets {
+			// Later trusted layers fully replace an earlier entry with the same key.
+			dst.TestPresets[key] = preset
+		}
 	}
 }
 

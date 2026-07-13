@@ -24,8 +24,9 @@
 
 ## Deferred: MCP control plane and optional Run Steward
 
-**Status:** Deferred architecture plan. This is not committed to the current
-release and must not displace the open recovery work above.
+**Status:** Producer contract, local MCP transport, approved idempotent start,
+resume, and cancel, and non-mutating resume assessment are implemented. The
+remaining lifecycle work is bounded ownership and transport hardening.
 
 The goal is to let any MCP-capable host launch and monitor Tagteam without
 turning model output into shell commands. A deterministic controller remains
@@ -36,18 +37,26 @@ own recovery action.
 
 ### Immediate implementation horizon
 
-- [ ] Define a versioned machine contract for launch specifications, run
+- [x] Define a versioned machine contract for launch specifications, run
   handles, status snapshots, plans, findings, diagnostics, cancellation, and
   resumability. Reuse the existing JSON artifacts and CLI reason/exit codes
   rather than creating a second state model.
-- [ ] Add a local MCP surface with typed, outcome-level operations for start,
-  status, plan, findings, prepare-resume, resume, cancel, and diagnostics.
-  Start must return a run handle promptly; status and findings must be bounded,
+- [x] Add the local MCP resume operation. It verifies the approval-bound
+  action and worktree, reuses `PrepareResume`, persists single-use nonce
+  consumption, and invokes the host-owned `App.Resume` path.
+- [x] Add the local MCP cancel operation with deterministic host-owned process
+  ownership after server restart. Live runs must be owned by the cancelling
+  MCP runtime; stale owners use the durable cancellation request and persisted
+  cancelled status.
+  Start returns a durable handle promptly; status and findings are bounded,
   paginated where necessary, and explicit about truncation.
-- [ ] Keep command construction deterministic: no generic command tool, raw
+- [x] Keep command construction deterministic: no generic command tool, raw
   shell, arbitrary flag passthrough, unrestricted artifact reader, or
   model-controlled working directory. Canonicalize the repository root and
   allowed paths before execution.
+- [x] Add bounded scout evidence for symlink topology where it helps explain
+  scope, while keeping canonical real-path resolution and enforcement in the
+  host controller.
 - [ ] Bind start, resume, and cancel approvals to the normalized action,
   repository identity, selected roles, scope, run identity, and an expiry or
   nonce. A changed action requires a new approval.

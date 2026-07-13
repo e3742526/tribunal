@@ -12,6 +12,10 @@ import (
 	"strings"
 )
 
+// testRegistryOverrides is a test-only seam merged into Registry when non-nil.
+// Production keeps it nil.
+var testRegistryOverrides map[string]Adapter
+
 func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 	openAICompatible := &OpenAICompatibleAdapter{
 		BaseURL:      cfg.Adapters.OpenAICompatible.BaseURL,
@@ -21,7 +25,7 @@ func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 		ExtraArgs:    opts.OpenAICompatibleArgs,
 		EnvOverlay:   opts.EnvOverlay,
 	}
-	return map[string]Adapter{
+	reg := map[string]Adapter{
 		"codex": &CodexAdapter{
 			IDValue:         "codex",
 			DefaultModel:    cfg.Adapters.Codex.DefaultModel,
@@ -50,9 +54,18 @@ func Registry(cfg Config, opts RunOptions) map[string]Adapter {
 			DefaultModel: cfg.Adapters.Gosling.DefaultModel,
 			ExtraArgs:    opts.GoslingArgs,
 		},
+		"grok": &GrokAdapter{
+			DefaultModel:    cfg.Adapters.Grok.DefaultModel,
+			ReasoningEffort: cfg.Adapters.Grok.ReasoningEffort,
+			ExtraArgs:       opts.GrokArgs,
+		},
 		"openai-compatible": openAICompatible,
 		"oai":               openAICompatible,
 	}
+	for id, adapter := range testRegistryOverrides {
+		reg[id] = adapter
+	}
+	return reg
 }
 
 type CodexAdapter struct {
@@ -191,7 +204,7 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	case RoleAdversary:
 		argv = append(argv,
 			"--permission-mode", "dontAsk",
-			"--allowedTools", "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status *)",
+			"--allowedTools", "Read,Glob,Grep",
 		)
 		if req.SchemaPath != "" {
 			schemaBytes, err := osReadFile(req.SchemaPath)
@@ -203,7 +216,7 @@ func (a *ClaudeAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
 	case RoleSupervisor, RoleReporter, RoleScout:
 		argv = append(argv,
 			"--permission-mode", "dontAsk",
-			"--allowedTools", "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status *)",
+			"--allowedTools", "Read,Glob,Grep",
 		)
 		if role == RoleSupervisor && req.SchemaPath != "" {
 			schemaBytes, err := osReadFile(req.SchemaPath)

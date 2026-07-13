@@ -269,3 +269,108 @@ func (a *GoslingAdapter) ParseResult(role Role, raw []byte) (Result, error) {
 
 	return result, nil
 }
+
+// GrokAdapter invokes Grok's root-level single-turn mode. The root command's
+// --single mode is headless and accepts the prompt as an argument, so Grok
+// does not receive a stdin prompt like the other CLI adapters.
+type GrokAdapter struct {
+	DefaultModel    string
+	ReasoningEffort string
+	ExtraArgs       []string
+}
+
+type grokEnvelope struct {
+	Text             string          `json:"text"`
+	StructuredOutput json.RawMessage `json:"structuredOutput"`
+}
+
+func (a *GrokAdapter) ID() string {
+	return "grok"
+}
+
+func (a *GrokAdapter) Capabilities() CapabilitySet {
+	return CapabilitySet{SupportsSchema: true}
+}
+
+func (a *GrokAdapter) Detect(ctx context.Context) (VersionInfo, error) {
+	return detectBinary(ctx, "grok", []string{"--version"}, "install grok / grok login")
+}
+
+func (a *GrokAdapter) BuildCmd(role Role, req Request) (*CommandSpec, error) {
+	model := req.Model
+	if model == "" {
+		model = a.DefaultModel
+	}
+	prompt := strings.TrimSuffix(string(promptStdin(req)), "\n")
+	argv := []string{"grok", "--single", prompt, "--cwd", req.Workdir}
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	if a.ReasoningEffort != "" {
+		argv = append(argv, "--reasoning-effort", a.ReasoningEffort)
+	}
+	// Tagteam owns planning, role orchestration, and run state. Keeping those
+	// Grok features off also avoids inheriting incompatible local agent config.
+	argv = append(argv,
+		"--output-format", "json",
+		"--no-plan", "--no-subagents", "--no-memory",
+		"--max-turns", "100",
+	)
+	switch role {
+	case RoleCoder:
+		// Grok 0.2.93 rejects filtered coder toolsets when its terminal tool has
+		// background execution disabled. Use its complete coder toolset and rely
+		// on Tagteam's write-scope and integrity gates for repository boundaries.
+		argv = append(argv, "--always-approve")
+	case RoleAdversary, RoleSupervisor, RoleReporter, RoleScout:
+		argv = append(argv,
+			"--permission-mode", "dontAsk",
+			"--tools", "read_file,list_dir",
+		)
+	default:
+		return nil, fmt.Errorf("unsupported role %q", role)
+	}
+	// Grok's schema-constrained single-turn mode finalizes before a coder can
+	// complete tool calls. Tagteam validates the coder envelope after execution.
+	if (role == RoleAdversary || role == RoleSupervisor) && req.SchemaPath != "" {
+		schemaBytes, err := osReadFile(req.SchemaPath)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, "--json-schema", string(schemaBytes))
+	}
+	if req.SystemPrompt != "" {
+		argv = append(argv, "--rules", req.SystemPrompt)
+	}
+	argv = append(argv, a.ExtraArgs...)
+	return &CommandSpec{Argv: argv, Dir: req.Workdir, Output: req.OutputPath}, nil
+}
+
+func (a *GrokAdapter) ParseResult(role Role, raw []byte) (Result, error) {
+	payload := raw
+	var envelope grokEnvelope
+	if err := json.Unmarshal(raw, &envelope); err == nil {
+		if structured := bytes.TrimSpace(envelope.StructuredOutput); len(structured) > 0 && !bytes.Equal(structured, []byte("null")) {
+			payload = structured
+		} else if envelope.Text != "" {
+			payload = []byte(envelope.Text)
+		}
+	}
+	result := Result{Raw: raw, Text: strings.TrimSpace(string(payload))}
+	if role == RoleAdversary {
+		review, err := parseReviewPayloadLabeled(payload, "grok")
+		if err != nil {
+			return Result{}, err
+		}
+		result.Review = review
+		result.Text = review.Summary
+	}
+	if role == RoleScout {
+		scout, err := parseScout(payload)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Scout = scout
+	}
+	return result, nil
+}

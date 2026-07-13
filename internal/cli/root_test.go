@@ -2,11 +2,27 @@ package cli
 
 import (
 	"bytes"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/cephalopod-ai/tagteam/internal/tagteam"
 )
+
+func initGitWorktree(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
 
 func TestNewRootCommandHelpIncludesModeModelAndFlags(t *testing.T) {
 	cmd := NewRootCommand()
@@ -60,6 +76,52 @@ func TestRunCommandAndModelFlagUseExistingRunSurface(t *testing.T) {
 	model := cmd.PersistentFlags().Lookup("model")
 	if model == nil || model.Shorthand != "m" {
 		t.Fatalf("model flag = %#v", model)
+	}
+}
+
+func TestMCPCommandUsesLocalStdioSurface(t *testing.T) {
+	cmd := NewRootCommand()
+	mcp, _, err := cmd.Find([]string{"mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mcp == nil || mcp.Use != "mcp" {
+		t.Fatalf("mcp command = %#v", mcp)
+	}
+}
+
+func TestMCPCommandGatesStartOnVerifiedInstallation(t *testing.T) {
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+	}, "\n") + "\n"
+	for _, test := range []struct {
+		name      string
+		args      []string
+		wantStart bool
+	}{
+		{name: "unverified read only", args: []string{"mcp"}, wantStart: false},
+		{name: "explicit development override", args: []string{"mcp", "--allow-dev-build"}, wantStart: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			// MCP binds to a real Git worktree root at server start.
+			initGitWorktree(t, workdir)
+			args := append(append([]string{}, test.args...), "--workdir", workdir)
+			cmd := NewRootCommand()
+			var out bytes.Buffer
+			cmd.SetIn(strings.NewReader(input))
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(out.String(), `"name":"tagteam_start"`); got != test.wantStart {
+				t.Fatalf("start advertisement = %t, want %t; output=%s", got, test.wantStart, out.String())
+			}
+		})
 	}
 }
 
