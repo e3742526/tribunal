@@ -266,11 +266,12 @@ func TestMCPStdioServerSurfacesUnknownTestPresetAsToolError(t *testing.T) {
 		t.Fatalf("unknown preset start result = %#v", result)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	if structured["code"] != "operation_failed" || structured["recoverable"] != true {
-		t.Fatalf("unknown preset error contract = %#v", structured)
+	// Start now surfaces a typed, machine-recoverable error like resume/cancel.
+	if structured["code"] != "start_configuration_invalid" || structured["recoverable"] != true {
+		t.Fatalf("structured start error = %#v", structured)
 	}
 	if got, _ := structured["reason"].(string); !strings.Contains(got, `unknown test_preset "no-such-preset"`) {
-		t.Fatalf("structured error = %#v", structured)
+		t.Fatalf("structured start reason = %#v", structured)
 	}
 }
 
@@ -365,6 +366,7 @@ func TestMCPToolSurfaceExcludesCommandCwdAndArtifactReaders(t *testing.T) {
 		"tagteam_start":           true,
 		"tagteam_resume":          true,
 		"tagteam_cancel":          true,
+		"tagteam_advise":          true,
 	}
 	forbiddenKeys := []string{"command", "argv", "cwd", "workdir", "shell", "artifact_path", "read_artifact", "passthrough"}
 	for _, tool := range tools {
