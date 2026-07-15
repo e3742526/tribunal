@@ -197,5 +197,89 @@ func (r *ControlRuntime) runResume(ctx context.Context, opts RunOptions, runID s
 	defer r.unregisterJob(runID)
 	// MCP-owned resume never uses the generic raw locator path alone: re-resolve
 	// the run directory and artifacts immediately before lock/mutation.
-	_, _ = NewApp(r.config).ResumeControl(ctx, opts, runID)
+	final, err := NewApp(r.config).ResumeControl(ctx, opts, runID)
+	if err == nil || final.RunID != "" {
+		return
+	}
+	// Resume consumes its approval before asynchronous dispatch. If execution
+	// fails before the normal resume path can build a final artifact, preserve a
+	// visible terminal diagnostic without relaxing the MCP run-path gate.
+	r.persistResumeFailure(opts, runID, err)
+}
+
+func (r *ControlRuntime) persistResumeFailure(opts RunOptions, runID string, cause error) {
+	gate, err := newControlResumePathGate(opts.Workdir, opts.StateRoot, runID)
+	if err != nil {
+		return
+	}
+	runDir, err := gate.ready("state.json", "final.json")
+	if err != nil {
+		return
+	}
+
+	state, _ := readControlRunState(runDir)
+	final, present, finalErr := readControlFinalOptional(runDir)
+	if finalErr != nil || !present {
+		final = FinalRun{}
+	}
+	if final.RunID != "" && final.RunID != runID {
+		return
+	}
+	if final.Mode == "" {
+		final.Mode = state.Mode
+	}
+	if final.Mode == "" {
+		final.Mode = opts.Mode
+	}
+	if final.Workdir == "" {
+		final.Workdir = opts.Workdir
+	}
+	if final.Baseline == "" {
+		final.Baseline = state.BaselineSHA
+	}
+	if final.Phase == "" {
+		final.Phase = state.Phase
+	}
+	if final.Phase == "" {
+		final.Phase = "preflight"
+	}
+	now := time.Now().UTC()
+	if final.StartedAt.IsZero() {
+		final.StartedAt = now
+	}
+	final.SchemaVersion = ArtifactSchemaVersion
+	final.RunID = runID
+	final.RunDir = runDir
+	final.ExitCode = ExitCode(cause)
+	final.Verdict = "error"
+	final.Status = RunStatusFailed
+	final.Summary = redactSecretsWithOverlay(cause.Error(), opts.EnvOverlay)
+	final.BlockingReason = string(reasonForExit(final.ExitCode))
+	if final.BlockingReason == "" {
+		final.BlockingReason = string(ReasonWorkerUnavailable)
+	}
+	final.FinishedAt = now
+
+	state = RunState{
+		SchemaVersion:    runStateSchemaVersion,
+		RunID:            runID,
+		Mode:             final.Mode,
+		Status:           string(final.Status),
+		Phase:            final.Phase,
+		CurrentRound:     state.CurrentRound,
+		Workdir:          final.Workdir,
+		BaselineSHA:      final.Baseline,
+		LatestDiffPath:   state.LatestDiffPath,
+		LatestReviewPath: state.LatestReviewPath,
+		BlockingReason:   final.BlockingReason,
+		ExitCode:         final.ExitCode,
+		RecoveryStatus:   "resume_failed",
+	}
+	if err := writeRunState(runDir, state); err != nil {
+		return
+	}
+	if _, err := gate.ready("state.json", "final.json"); err != nil {
+		return
+	}
+	_ = NewApp(r.config).persistFinal(opts.Workdir, final)
 }

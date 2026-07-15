@@ -3,6 +3,7 @@ package tagteam
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -152,6 +153,61 @@ func TestControlRuntimeResumeIsIdempotentAndPersistsNonceAcrossRuntimeRestart(t 
 		t.Fatal("resume nonce replay was accepted for another run")
 	} else {
 		assertControlResumeError(t, err, "approval_nonce_replayed")
+	}
+}
+
+func TestControlRuntimeResumePersistsDiagnosticAfterConsumedApprovalPreflightFailure(t *testing.T) {
+	repo, baseline := createResumeFixtureRepo(t)
+	stateRoot := t.TempDir()
+	runID := "control-resume-consumed-preflight"
+	runDir, err := createRunDir(repo, stateRoot, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeResumeFixture(t, runDir, runID, repo, baseline, RunStatusRunning)
+	repository, err := resolveControlRepository(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ControlResumeRequest{SchemaVersion: ControlContractVersion, Repository: repository, RunID: runID}
+	request.Approval = validResumeApproval(t, request, "resume-preflight-diagnostic")
+
+	controlResumePostLockHook = func() {
+		if err := os.Remove(filepath.Join(runDir, "state.json")); err != nil {
+			t.Errorf("remove state after approval consumption: %v", err)
+		}
+	}
+	t.Cleanup(func() { controlResumePostLockHook = nil })
+	runtime := NewControlRuntime(ControlService{RepositoryRoot: repo, StateRoot: stateRoot, ProducerVersion: "test"}, DefaultConfig(), nil)
+	if _, err := runtime.Resume(context.Background(), request); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	waitForControlResumeJob(t, runtime, runID)
+
+	final, present, err := readControlFinalOptional(runDir)
+	if err != nil || !present {
+		t.Fatalf("terminal diagnostic present=%v err=%v", present, err)
+	}
+	if final.RunID != runID || final.Status != RunStatusFailed || final.ExitCode != ExitPreflightFailed || final.Summary == "" {
+		t.Fatalf("terminal diagnostic = %#v", final)
+	}
+	state, err := readControlRunState(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != string(RunStatusFailed) || state.RecoveryStatus != "resume_failed" {
+		t.Fatalf("terminal resume state = %#v", state)
+	}
+	locator, err := resolveStateLocator(repo, stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := readControlApprovalLedger(filepath.Join(locator.RepoRoot, controlApprovalLedgerName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Resumes) != 1 || ledger.Resumes[0].Nonce != request.Approval.Nonce {
+		t.Fatalf("consumed resume approval = %#v", ledger.Resumes)
 	}
 }
 

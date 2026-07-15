@@ -34,8 +34,11 @@ state model rather than introducing a second run state machine.
   creating runtime state.
 - `Resume` verifies deterministic preconditions, consumes a matching
   short-lived approval nonce, persists the nonce under the resolved state root,
-  and invokes the existing host-owned `App.Resume` path. Exact retries return
-  the persisted run handle; a nonce cannot be reused for another action.
+  and invokes the existing host-owned `App.Resume` path. A failure after nonce
+  consumption but before normal resume finalization persists a terminal
+  diagnostic when the run path remains valid; an escaped path fails closed.
+  Exact retries return the persisted run handle; a nonce cannot be reused for
+  another action.
 - `Start` reserves a durable run ID, consumes a matching short-lived approval
   nonce, launches Tagteam through its normal configuration and runner, and
   persists a terminal artifact if preflight fails before the runner can do so.
