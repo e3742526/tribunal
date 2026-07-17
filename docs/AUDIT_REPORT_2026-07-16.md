@@ -7,6 +7,18 @@ This is a read-only implementation and repository-posture audit. The audit did
 not repair production code or change GitHub settings. Documentation was updated
 to stop claiming behavior that the audited implementation does not provide.
 
+## Repair status
+
+The findings below preserve the evidence and repository posture observed at the
+audited commit. A local repair campaign began on 2026-07-16; its live evidence
+and checkpoints are recorded in
+[Defect Repair Campaign — 2026-07-16](REPAIR_CAMPAIGN_2026-07-16.md).
+All 12 findings have repair implementations. Source changes are locally
+validated on the campaign branch, and the GitHub rulesets and security features
+have live API readback. The next real release tag remains the operational proof
+for OIDC signing, publishing, and attestation; see the campaign report for the
+exact validation boundary.
+
 ## Executive summary
 
 The repository has strong local path-boundary, durable-write, redaction,

@@ -91,15 +91,6 @@ func (m *model) composerLines(width int) []string {
 	return lines
 }
 
-func (m *model) primaryTarget() string {
-	switch m.compose.Mode {
-	case tagteam.ModeSolo, tagteam.ModeSupervisor:
-		return dashIfEmpty(m.compose.EditorTarget)
-	default:
-		return dashIfEmpty(m.compose.EditorTarget)
-	}
-}
-
 func (m *model) composeFieldValue(field composeField) string {
 	switch field {
 	case fieldLaunch:
@@ -527,36 +518,6 @@ func normalizeProfileValue(s string) string {
 		return ""
 	}
 	return s
-}
-
-func wrapText(s string, width int) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return []string{""}
-	}
-	if width <= 1 {
-		return []string{s}
-	}
-
-	words := strings.Fields(s)
-	lines := make([]string, 0, len(words))
-	line := ""
-	for _, word := range words {
-		if line == "" {
-			line = word
-			continue
-		}
-		if len([]rune(line))+1+len([]rune(word)) <= width {
-			line += " " + word
-			continue
-		}
-		lines = append(lines, line)
-		line = word
-	}
-	if line != "" {
-		lines = append(lines, line)
-	}
-	return lines
 }
 
 func formatTime(t time.Time) string {

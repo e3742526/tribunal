@@ -31,6 +31,11 @@ When changing adapters:
 
 ## Pull requests
 
+Changes to `main` land through a pull request. The repository ruleset requires
+the Linux and macOS `Go checks` jobs, resolved review threads, and one code-owner
+approval. The sole-maintainer bypass is limited to pull requests; it does not
+permit direct pushes to `main`.
+
 PRs should include:
 
 - the user-visible behavior change;

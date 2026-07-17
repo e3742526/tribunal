@@ -16,24 +16,11 @@ type AlexandriaObservationExport struct {
 	RunID        string                 `json:"run_id"`
 }
 
-type AlexandriaConsumptionEvent struct {
-	RunID       string   `json:"run_id"`
-	Operation   string   `json:"operation"`
-	ConsumedIDs []string `json:"consumed_ids"`
-}
-
 // ExportAlexandriaObservations writes a bounded, redacted local contract. It
 // does not connect to Alexandria and never exports a graph dump.
 func ExportAlexandriaObservations(ctx context.Context, workdir, runDir, runID string, bridge CodeIntelFileBridgeConfig, artifact CodeIntelArtifact) (string, bool, error) {
 	payload := AlexandriaObservationExport{RunID: runID, Observations: artifact.Observations}
 	return writeIdempotentBridgeEnvelope(ctx, workdir, runDir, bridge, "alexandria.observations", runID, payload)
-}
-
-func ExportAlexandriaConsumption(ctx context.Context, workdir, runDir, runID string, bridge CodeIntelFileBridgeConfig, event AlexandriaConsumptionEvent) (string, bool, error) {
-	if event.RunID == "" {
-		event.RunID = runID
-	}
-	return writeIdempotentBridgeEnvelope(ctx, workdir, runDir, bridge, "alexandria.consumption-event", runID, event)
 }
 
 // MuninnCandidateEvidence is intentionally evidence-only. Promotion to any

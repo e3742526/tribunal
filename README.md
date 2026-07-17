@@ -227,6 +227,12 @@ This note applies to the vendor CLI adapters; the separate `openai-compatible` a
 - Unix/macOS Claude locking is runtime-tested with real multi-process contention. The Windows PID-file fallback is compile-checked but not runtime-tested in CI; ownership-record write failures and same-process concurrent invocations remain residual risks there. Prefer one Claude-backed Tagteam run at a time on Windows until that path has equivalent runtime coverage.
 - Do not launch two Tagteam runs against the same worktree. Run-state locking and integrity checks assume one active writer per worktree; use separate Git worktrees when runs need to proceed concurrently, even when their Claude invocations would otherwise serialize.
 - `--allow-dirty` is isolation, not an integrity bypass: Tagteam creates a `tagteam/<run-id>` branch, commits the pre-existing tracked and untracked changes as a local checkpoint, and uses that clean commit as the run baseline. The source branch remains unchanged. The checkpoint requires a usable local Git author configuration and is intentionally preserved for recovery and review.
+- `--autostash` records the created stash by immutable Git object ID and restores
+  that exact object even if another process pushes a newer stash. A successful
+  apply retains the stash as a recovery point because Git only drops entries by
+  movable reflog position. A conflict fails the run and writes
+  `autostash-recovery.json` with the untouched object ID and safe recovery
+  commands.
 - A stalled or externally interrupted adapter process may leave `state.json` at `status=running` / an early phase without writing `final.json`. Treat that run as interrupted and use `tagteam resume [RUN_ID]`; resume verifies the baseline, diff hash, and required artifacts, then continues the first incomplete phase or quarantines unsafe partial work. Do not treat `active.json` or the TUI alone as evidence of success.
 - Different adapters do not expose identical capabilities. Some support schema-constrained output, stdin, or session resume; others do not. `tagteam` degrades where possible, but behavior is not perfectly uniform.
 - Grok remains buggy in the worker/coder role. In particular, `grok-4.5` with `medium` or `low` reasoning effort has not been reliable; prefer another implementation adapter, or treat Grok worker runs as experimental and validate them closely.
@@ -440,7 +446,7 @@ If an adapter has explicit context limits configured, relay pre-scout `recon` al
 
 Relay pre-scout can run configured, read-only `command`, `codebase-memory`, and `gitnexus` subprocess providers before scout invocation. Each receives bounded JSON stdin and must return a bounded `CodeIntelArtifact`; failures are retained as partial diagnostics. Provider observations are revision-bound to a snapshot identity that includes a dirty-worktree digest. Only fresh observations are compacted into scout context. Missing commands, malformed output, timeouts, stale indexes, and allowlist denials remain visible in the artifact or gateway JSON.
 
-`tagteam intel orient|find|trace|impact|resume|recall|evidence` is the stable JSON/MCP-wrapper command contract. `evidence` writes then validates a Muninn candidate-evidence envelope; `recall` validates a configured Muninn envelope; `resume` validates a configured Dory envelope. `tagteam intel bench` writes deterministic `intel-bench.json` under Tagteam's external runs root by default (use `--run-dir` to override); it intentionally contains no generated timestamp or latency fields. `tagteam intel status` reads sensor artifacts without parsing `final.json`. File contracts for Dory checkpoints, Alexandria observation/consumption events, and Muninn candidate evidence are versioned and require `enabled = true`; they are not network clients, graph dumps, or memory promotion. Dory, Alexandria, and Muninn are not included in this checkout: their operators must consume these versioned JSON file envelopes and own any transport or promotion.
+`tagteam intel orient|find|trace|impact|resume|recall|evidence` is the stable JSON/MCP-wrapper command contract. `evidence` writes then validates a Muninn candidate-evidence envelope; `recall` validates a configured Muninn envelope; `resume` validates a configured Dory envelope. `tagteam intel bench` writes deterministic `intel-bench.json` under Tagteam's external runs root by default (use `--run-dir` to override); it intentionally contains no generated timestamp or latency fields. `tagteam intel status` reads sensor artifacts without parsing `final.json`. File contracts for Dory checkpoints, Alexandria observations, and Muninn candidate evidence are versioned and require `enabled = true`; they are not network clients, graph dumps, or memory promotion. Dory, Alexandria, and Muninn are not included in this checkout: their operators must consume these versioned JSON file envelopes and own any transport or promotion.
 
 Use `tagteam integrate plan|install|doctor|uninstall --target <codex|claude|cursor|vscode|mcp-json> --path <file>` to manage only Tagteam-owned configuration. `codex` manages a versioned `#` block in the explicit `config.toml` path and `claude` a versioned `#` block in its explicit text/Markdown path. `cursor` (`.cursor/mcp.json`), `vscode` (`.vscode/mcp.json`), and `mcp-json` manage only the versioned `mcpServers.tagteam` entry, invoking `tagteam mcp`. `plan` never writes; invalid marker/JSON input is refused; JSON preserves unknown keys but install/uninstall may reformat it.
 
@@ -576,12 +582,11 @@ An optional, local-first **Run Steward** can summarize a run's progress and reco
 
 Hosts read it through the read-only `tagteam_advise` MCP tool. The steward is **disabled by default**; when disabled, missing, slow, invalid, or over budget, a deterministic template steward is the guaranteed fallback, so a run never depends on a model. The intended model tier points at a local OpenAI-compatible endpoint (e.g. Ollama), uses conservative call, timeout, and deduplication budgets, and keeps a single-observer lease. The model request is text-only with no tool/function surface, so the steward cannot invoke Tagteam or inherit MCP/repository-write tools.
 
-> **Known implementation gap (2026-07-16):** the deterministic advisory path is
-> available, but config layering currently discards `[steward]` values and the
-> runtime rebuilds the budget wrapper per request. Until
-> [AUD-003](docs/AUDIT_REPORT_2026-07-16.md#aud-003--steward-configuration-is-discarded-and-per-run-budgets-reset-per-request)
-> is repaired, the model tier is not configurable end to end and its call/dedup
-> limits are not per-run on the real MCP path.
+Trusted user configuration and explicitly trusted repository configuration can
+enable the model tier. Untrusted repository configuration cannot supply its
+endpoint or API-key selector. The control runtime retains one bounded budget
+state per run; after 1,024 cached runs, new runs safely use the deterministic
+fallback instead of growing daemon memory without limit.
 
 ```toml
 [steward]
@@ -745,7 +750,17 @@ Override the root with `--state-root`, `TAGTEAM_STATE_ROOT`, or `state_root` in 
 
 `active.json`, `latest.json`, locks, and all run artifacts are authoritative only in the external repository state directory. On first use, legacy `.tagteam/runs`, `.tagteam/active.json`, and `.tagteam/latest.json` are checksum-copied, verified, and only then removed. Unmigrated legacy artifacts remain readable but are not resumable.
 
-State changes are atomic and journaled through `state.json` plus `events.jsonl`. `tagteam resume [RUN_ID]` verifies repository identity, baseline, artifact hashes, the final journal transition, current diff, and lock ownership before continuing the first incomplete phase in the same authoritative run. Completed implementation and test phases are not repeated. Timeouts, stalls, cancellation, and invalid worker output preserve streams and partial diffs; changed work enters a supervisor recovery decision (`repair`, `continue_with_fallback`, or `quarantine`) instead of being discarded.
+`state.json` is the canonical, atomically replaced run snapshot. Before each
+snapshot transition, Tagteam durably appends its diagnostic event to
+`events.jsonl`; an event failure prevents the canonical snapshot from advancing.
+The journal is rebuildable and may contain an uncommitted final entry if the
+subsequent snapshot replacement fails. `tagteam resume [RUN_ID]` verifies
+repository identity, baseline, artifact hashes, the final journal transition,
+current diff, and lock ownership before continuing the first incomplete phase.
+Completed implementation and test phases are not repeated. Timeouts, stalls,
+cancellation, and invalid worker output preserve streams and partial diffs;
+changed work enters a supervisor recovery decision (`repair`,
+`continue_with_fallback`, or `quarantine`) instead of being discarded.
 
 <details>
 <summary><strong>Typical contents</strong></summary>
@@ -783,6 +798,7 @@ State changes are atomic and journaled through `state.json` plus `events.jsonl`.
 - `final.json`
 - `state.json`
 - `events.jsonl`
+- `autostash-recovery.json` (only when restoring pre-existing changes fails)
 
 </details>
 

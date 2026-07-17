@@ -25,10 +25,17 @@ type ControlRuntime struct {
 	config  Config
 	sources []string
 
-	mu            sync.Mutex
-	jobs          map[string]context.CancelFunc
-	watcherCancel context.CancelFunc
-	watcherDone   chan struct{}
+	lifecycleMu sync.RWMutex
+	closeOnce   sync.Once
+	workers     sync.WaitGroup
+
+	mu             sync.Mutex
+	closed         bool
+	jobs           map[string]context.CancelFunc
+	stewards       map[string]Steward
+	terminalErrors map[string]error
+	watcherCancel  context.CancelFunc
+	watcherDone    chan struct{}
 }
 
 type controlApprovalLedger struct {
@@ -103,61 +110,13 @@ type controlStartRecord struct {
 }
 
 func NewControlRuntime(service ControlService, cfg Config, sources []string) *ControlRuntime {
-	return &ControlRuntime{service: service, config: cfg, sources: append([]string(nil), sources...), jobs: map[string]context.CancelFunc{}}
-}
-
-func (r *ControlRuntime) registerJob(runID string, cancel context.CancelFunc) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.jobs[runID] = cancel
-	if r.watcherCancel != nil {
-		return
-	}
-	watcherContext, watcherCancel := context.WithCancel(context.Background())
-	r.watcherCancel = watcherCancel
-	r.watcherDone = make(chan struct{})
-	go r.watchControlCancellation(watcherContext, r.watcherDone)
-}
-
-func (r *ControlRuntime) unregisterJob(runID string) {
-	r.mu.Lock()
-	delete(r.jobs, runID)
-	if len(r.jobs) != 0 || r.watcherCancel == nil {
-		r.mu.Unlock()
-		return
-	}
-	watcherCancel := r.watcherCancel
-	watcherDone := r.watcherDone
-	r.watcherCancel = nil
-	r.watcherDone = nil
-	r.mu.Unlock()
-
-	watcherCancel()
-	<-watcherDone
-}
-
-// Close cancels every job owned by this local runtime. MCP stdio calls it when
-// the host disconnects so its worker processes are not left running after a
-// normal transport shutdown.
-func (r *ControlRuntime) Close() {
-	r.mu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(r.jobs))
-	for _, cancel := range r.jobs {
-		cancels = append(cancels, cancel)
-	}
-	r.jobs = map[string]context.CancelFunc{}
-	watcherCancel := r.watcherCancel
-	watcherDone := r.watcherDone
-	r.watcherCancel = nil
-	r.watcherDone = nil
-	r.mu.Unlock()
-
-	for _, cancel := range cancels {
-		cancel()
-	}
-	if watcherCancel != nil {
-		watcherCancel()
-		<-watcherDone
+	return &ControlRuntime{
+		service:        service,
+		config:         cfg,
+		sources:        append([]string(nil), sources...),
+		jobs:           map[string]context.CancelFunc{},
+		stewards:       map[string]Steward{},
+		terminalErrors: map[string]error{},
 	}
 }
 
@@ -171,6 +130,9 @@ func (r *ControlRuntime) Status(runID string) (ControlStatus, error) {
 	status, err := r.service.Status(runID)
 	if err == nil {
 		return status, nil
+	}
+	if terminalErr := r.terminalError(runID); terminalErr != nil {
+		return ControlStatus{}, terminalErr
 	}
 	locator, locatorErr := resolveStateLocator(r.service.RepositoryRoot, r.service.StateRoot)
 	if locatorErr != nil {
@@ -199,6 +161,14 @@ func (r *ControlRuntime) Status(runID string) (ControlStatus, error) {
 }
 
 func (r *ControlRuntime) Start(ctx context.Context, request ControlStartRequest) (ControlRunHandle, error) {
+	r.lifecycleMu.RLock()
+	defer r.lifecycleMu.RUnlock()
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
+		return ControlRunHandle{}, newControlStartError("runtime_closed", "control runtime is shutting down", nil)
+	}
 	if request.SchemaVersion != ControlContractVersion {
 		return ControlRunHandle{}, newControlStartError("invalid_request", fmt.Sprintf("unsupported control schema_version %d (want %d)", request.SchemaVersion, ControlContractVersion), nil)
 	}
@@ -300,8 +270,7 @@ func (r *ControlRuntime) Start(ctx context.Context, request ControlStartRequest)
 
 	opts.RunID = runID
 	runContext, cancel := context.WithCancel(ctx)
-	r.registerJob(runID, cancel)
-	go r.runStart(runContext, opts, runID)
+	r.startJob(runID, cancel, func() { r.runStart(runContext, opts, runID) })
 	return ControlRunHandle{SchemaVersion: ControlContractVersion, RunID: runID, ProducerVersion: normalizedProducerVersion(r.service.ProducerVersion)}, nil
 }
 
@@ -523,8 +492,14 @@ func (r *ControlRuntime) persistControlCancellation(repository, runDir, runID st
 	} else if present && final.Status == RunStatusCancelled {
 		return nil
 	}
-	state, _ := readControlRunState(runDir)
-	meta, _ := readControlMeta(runDir)
+	state, err := readControlRunState(runDir)
+	if err != nil {
+		return fmt.Errorf("read cancelled run state: %w", err)
+	}
+	meta, err := readControlMeta(runDir)
+	if err != nil {
+		return fmt.Errorf("read cancelled run metadata: %w", err)
+	}
 	workdir := repository
 	baseline := state.BaselineSHA
 	if meta.Workdir != "" {
@@ -534,13 +509,13 @@ func (r *ControlRuntime) persistControlCancellation(repository, runDir, runID st
 		baseline = meta.Baseline
 	}
 	final := FinalRun{SchemaVersion: ArtifactSchemaVersion, RunID: runID, RunDir: runDir, Workdir: workdir, Baseline: baseline, Mode: state.Mode, Verdict: "cancelled", Summary: "run cancelled by MCP control request", Status: RunStatusCancelled, BlockingReason: string(ReasonCancelled), ExitCode: ExitPreflightFailed, StartedAt: meta.StartedAt, FinishedAt: time.Now().UTC()}
-	if err := writeRunState(runDir, RunState{RunID: runID, Mode: state.Mode, Status: string(RunStatusCancelled), Phase: state.Phase, Workdir: workdir, BaselineSHA: baseline, BlockingReason: string(ReasonCancelled), ExitCode: final.ExitCode}); err != nil {
-		return fmt.Errorf("persist cancelled run state: %w", err)
+	terminalState := RunState{RunID: runID, Mode: state.Mode, Status: string(RunStatusCancelled), Phase: state.Phase, Workdir: workdir, BaselineSHA: baseline, BlockingReason: string(ReasonCancelled), ExitCode: final.ExitCode}
+	if err := NewApp(r.config).persistTerminalRun(workdir, &final, terminalState); err != nil {
+		return err
 	}
-	if err := NewApp(r.config).persistFinal(workdir, final); err != nil {
-		return fmt.Errorf("persist cancelled final result: %w", err)
+	if err := finalizeActiveRun(workdir, runID, string(RunStatusCancelled)); err != nil {
+		return mandatoryPersistenceError("cancelled active run", err)
 	}
-	_ = finalizeActiveRun(workdir, runID, string(RunStatusCancelled))
 	return nil
 }
 
@@ -583,20 +558,21 @@ func (r *ControlRuntime) watchControlCancellation(ctx context.Context, done chan
 }
 
 func (r *ControlRuntime) runStart(ctx context.Context, opts RunOptions, runID string) {
-	defer r.unregisterJob(runID)
 	final, err := NewApp(r.config).Run(ctx, opts)
 	if err == nil || final.RunID != "" {
 		return
 	}
 	// The normal runner creates its directory after preflight. Persist an
 	// observable terminal artifact when preflight itself fails.
-	r.persistStartFailure(opts, runID, err)
+	if persistErr := r.persistStartFailure(opts, runID, err); persistErr != nil {
+		r.recordTerminalError(runID, persistErr)
+	}
 }
 
-func (r *ControlRuntime) persistStartFailure(opts RunOptions, runID string, cause error) {
+func (r *ControlRuntime) persistStartFailure(opts RunOptions, runID string, cause error) error {
 	runDir, err := createRunDir(opts.Workdir, opts.StateRoot, runID)
 	if err != nil {
-		return
+		return mandatoryPersistenceError("MCP start failure directory", err)
 	}
 	message := redactSecretsWithOverlay(cause.Error(), opts.EnvOverlay)
 	final := FinalRun{
@@ -616,8 +592,8 @@ func (r *ControlRuntime) persistStartFailure(opts RunOptions, runID string, caus
 	if final.BlockingReason == "" {
 		final.BlockingReason = string(ReasonWorkerUnavailable)
 	}
-	_ = writeRunState(runDir, RunState{SchemaVersion: runStateSchemaVersion, RunID: runID, Mode: opts.Mode, Status: string(final.Status), Phase: "preflight", BlockingReason: final.BlockingReason, ExitCode: final.ExitCode})
-	_ = NewApp(r.config).persistFinal(opts.Workdir, final)
+	state := runStateForFinal(final, opts.Mode, "preflight", "start_failed")
+	return NewApp(r.config).persistTerminalRun(opts.Workdir, &final, state)
 }
 
 func (r *ControlRuntime) optionsForLaunch(spec ControlLaunchSpec) (RunOptions, error) {

@@ -163,10 +163,6 @@ func policyBlocks(policy LossPolicy) bool {
 	return policy == LossPolicyBlock || policy == LossPolicyReplaceThenBlock
 }
 
-func policyDegrades(policy LossPolicy) bool {
-	return policy == LossPolicyDegrade || policy == LossPolicyReplaceThenDegrade
-}
-
 func policyAttemptsReplacement(policy LossPolicy) bool {
 	return policy == LossPolicyReplaceThenBlock || policy == LossPolicyReplaceThenDegrade
 }
