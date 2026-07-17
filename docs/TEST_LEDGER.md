@@ -37,7 +37,7 @@ historical evidence for AUD-001 until the branch is published and CI executes.
 | Build | `go build ./...` | pass | local validation | Buildability across packages | — |
 | Race suite | `go test -race ./...` plus focused repaired MCP/Steward race run `-count=10` and persistence/autostash race run `-count=5` | pass locally | local validation | Full pre-repair race baseline plus repeated race coverage for socket ownership, runtime drain, permission failure, per-run Steward budget state, immutable stash restoration, and persistence failure handlers | Full post-repair race suite is rerun at the final campaign gate. |
 | Coverage | `go test -cover ./...` | pass | local validation | CLI 42.7%, tagteam 72.6%, TUI 62.7% statement coverage | Percentages predate the repair branch and are rerun at the final campaign gate. |
-| Full suite | `go test ./...` | pass locally on repair branch (`internal/tagteam` 174.653s in the Stage 2 run) | local validation | End-to-end package-level regression signal | Does not exercise real vendor CLIs; repair branch has not been pushed to GitHub CI. |
+| Full suite | `go test ./...` | pass locally on repair branch (`internal/tagteam` 174.653s in the Stage 2 run); focused Stage 3 package suite passed after dead-code removal (`internal/tagteam` 174.757s, `internal/tui` 0.826s) | local validation | End-to-end package-level regression signal plus source-only native/Linux/Windows build proof after artifact cleanup | Does not exercise real vendor CLIs; repair branch has not been pushed to GitHub CI. |
 
 ## Known gaps
 

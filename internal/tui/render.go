@@ -306,25 +306,6 @@ func renderRunPickerLines(model *model) []string {
 	return lines
 }
 
-func sectionPane(title string, width, height int, content []string) []string {
-	if width < 8 {
-		width = 8
-	}
-	if height < 2 {
-		height = 2
-	}
-	lines := make([]string, 0, height)
-	lines = append(lines, padOrTrim(title+" "+strings.Repeat("─", maxInt(0, width-len([]rune(title))-1)), width))
-	for i := 0; i < height-1; i++ {
-		text := ""
-		if i < len(content) {
-			text = content[i]
-		}
-		lines = append(lines, padOrTrim(text, width))
-	}
-	return lines
-}
-
 func box(title string, width, height int, content []string) []string {
 	if width < 8 {
 		width = 8
@@ -344,23 +325,6 @@ func box(title string, width, height int, content []string) []string {
 	}
 	lines = append(lines, "+"+strings.Repeat("-", width-2)+"+")
 	return lines
-}
-
-func overlayBox(base []string, overlay []string, x, y int) []string {
-	out := append([]string(nil), base...)
-	for row := 0; row < len(overlay); row++ {
-		targetRow := y + row
-		if targetRow < 0 || targetRow >= len(out) {
-			continue
-		}
-		line := []rune(padOrTrim(out[targetRow], maxInt(len([]rune(out[targetRow])), x+len([]rune(overlay[row])))))
-		patch := []rune(overlay[row])
-		for col := 0; col < len(patch) && x+col < len(line); col++ {
-			line[x+col] = patch[col]
-		}
-		out[targetRow] = string(line)
-	}
-	return out
 }
 
 func viewport(lines []string, scroll, height int) []string {

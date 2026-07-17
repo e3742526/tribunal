@@ -219,10 +219,6 @@ func validateControlIsolationDirectories(required bool, paths ...string) error {
 	return nil
 }
 
-func extractFailureIdentities(output string) []string {
-	return extractFailureIdentitiesWithRegex(output, "")
-}
-
 func extractFailureIdentitiesWithRegex(output, customPattern string) []string {
 	seen := map[string]bool{}
 	patterns := append([]*regexp.Regexp(nil), failureIdentityPatterns...)

@@ -41,10 +41,10 @@ before closing an item.
   Steward budget state per run with end-to-end tests.
 - [x] **AUD-009:** fail closed if the unix socket cannot be set and verified as
   owner-only; close and safely remove the listener on permission failure.
-- [ ] **AUD-010:** remove the stale tracked `bin/tagteam` and absolute-path TUI
+- [x] **AUD-010:** remove the stale tracked `bin/tagteam` and absolute-path TUI
   launcher in a focused change, ignore local build outputs, and do not rewrite
   history without separate explicit approval.
-- [ ] **AUD-011:** validate and remove the 11 repository-unreferenced internal
+- [x] **AUD-011:** validate and remove the 11 repository-unreferenced internal
   functions identified by the audit; wire a real caller and behavior test only
   where the feature is intentionally retained.
 - [x] **AUD-012:** reject present-but-malformed typed `TAGTEAM_*` values and

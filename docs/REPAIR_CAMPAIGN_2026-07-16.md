@@ -139,8 +139,8 @@ continues to cover that separate restart boundary.
 
 ### Stage 2 — persistence and recovery truth
 
-Status: implemented and locally validated; checkpoint commit follows this
-documentation update.
+Status: implemented and locally validated. Checkpoint: `86763e8`
+(`fix: make recovery and run persistence fail closed`).
 
 - AUD-004: autostash creation uses a unique message and resolves the created
   immutable object ID rather than `stash@{0}`. Cleanup applies that object even
@@ -178,3 +178,33 @@ immutable recovery point instead of risking deletion of unrelated user work.
 The first terminal helper also failed to replace an existing running MCP resume
 diagnostic when `state.json` was removed; the missing-state recovery case was
 restored and regression-tested. No unresolved Stage 2 blocker remains.
+
+### Stage 3 — tracked artifact and dead-code cleanup
+
+Status: implemented and locally validated; checkpoint commit follows this
+documentation update.
+
+- AUD-010: removed the tracked 8.2 MB Mach-O development binary and the
+  workstation-specific launcher containing an absolute checkout path. Root
+  `bin/` is ignored so local build output cannot be recommitted accidentally.
+  Repository history was not rewritten.
+- AUD-011: a repository-wide exact-reference scan confirmed that all 11 audited
+  functions had definitions but no callers. They were deleted with their
+  orphaned Alexandria consumption-event type; the README now describes only
+  the Alexandria observation envelope that remains implemented.
+
+Validation:
+
+- Exact production/reference scan: no audited symbol remains outside the
+  historical audit and campaign records.
+- `go test ./internal/tagteam ./internal/tui`: pass; `internal/tagteam`
+  completed in 174.757s and `internal/tui` in 0.826s.
+- A source-only native build launches `--help`; Linux amd64 and Windows amd64
+  cross-builds also pass with output written outside the repository.
+- `git ls-files bin` is empty in the resulting checkpoint.
+
+Adversarial review disposition: the original README still advertised the dead
+Alexandria consumption-event path after its implementation was removed. That
+claim and its now-orphaned event type were removed. No import, build-tag, test,
+CLI, TUI, or documentation caller was found for any other deleted symbol. No
+unresolved Stage 3 blocker remains.

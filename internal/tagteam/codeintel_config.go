@@ -50,18 +50,3 @@ func codeIntelRepoAllowed(workdir string, allowed []string) bool {
 	}
 	return false
 }
-
-func codeIntelExcluded(path string, excludes []string) bool {
-	path = filepath.ToSlash(path)
-	for _, ignored := range retrievalIgnoredDirs {
-		if path == ignored || strings.HasPrefix(path, ignored+"/") {
-			return true
-		}
-	}
-	for _, pattern := range excludes {
-		if ok, _ := filepath.Match(pattern, path); ok {
-			return true
-		}
-	}
-	return false
-}

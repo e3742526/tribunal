@@ -3,6 +3,7 @@
 .tagteam/
 dist/
 /tagteam
+/bin/
 coverage.out
 .dory/
 

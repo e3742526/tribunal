@@ -9,10 +9,6 @@ func ReadLatestForCLI(workdir string) (LatestRun, error) {
 	return readLatest(workdir)
 }
 
-func ReadFinalForCLI(path string) (FinalRun, error) {
-	return readFinal(path)
-}
-
 func ReadPlanForCLI(runDir string) (ExecutionPlan, error) {
 	return readExecutionPlan(runDir)
 }

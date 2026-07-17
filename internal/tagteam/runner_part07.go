@@ -634,14 +634,6 @@ func prepareReviewInput(adversary Adapter, diff, diffPath string) reviewInput {
 	}
 }
 
-func countExisting(dir, pattern string) int {
-	matches, err := filepath.Glob(filepath.Join(dir, pattern))
-	if err != nil {
-		return 0
-	}
-	return len(matches)
-}
-
 func osReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
@@ -673,21 +665,6 @@ func ensureGitignoreEntry(workdir, entry string) error {
 		contents += "\n" + entry
 	}
 	contents += "\n"
-	return os.WriteFile(gitignorePath, []byte(contents), 0o644)
-}
-
-func ensureRunRootIgnore(rootDir string) error {
-	gitignorePath := filepath.Join(rootDir, ".gitignore")
-	contents := "*\n!.gitignore\n"
-	if fileExists(gitignorePath) {
-		data, err := os.ReadFile(gitignorePath)
-		if err != nil {
-			return err
-		}
-		if string(data) == contents {
-			return nil
-		}
-	}
 	return os.WriteFile(gitignorePath, []byte(contents), 0o644)
 }
 
