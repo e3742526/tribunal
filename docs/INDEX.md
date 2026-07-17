@@ -28,6 +28,8 @@ Canonical entry point for `tagteam` documentation.
   review dispositions, and stage commit checkpoints for AUD-001–AUD-012.
 - [Test Ledger](TEST_LEDGER.md) — test areas, evidence, latest results, and
   known gaps.
+- [Release Security](RELEASE_SECURITY.md) — published checksums, SBOMs,
+  keyless signatures, provenance attestations, and consumer verification.
 - [v0.1.0 to current](V0.1.0_TO_CURRENT.md) — detailed release-to-development
   comparison, default changes, compatibility impact, and upgrade guidance.
 - [TODO](TODO.md) — active engineering follow-ups, including quarantined relay

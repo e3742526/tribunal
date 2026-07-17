@@ -12,7 +12,7 @@ before closing an item.
   `ControlRuntime`; close the socket runtime once, cancel and join all run
   workers on daemon shutdown, and prove client disconnect does not cancel any
   daemon-owned run with repeated and race-enabled tests.
-- [ ] **AUD-002:** protect `main` and release tags with pull-request review,
+- [x] **AUD-002:** protect `main` and release tags with pull-request review,
   stable required Linux/macOS checks, conversation resolution, force-push/delete
   restrictions, and an explicit administrator-bypass policy.
 
@@ -24,13 +24,13 @@ before closing an item.
 - [x] **AUD-004:** restore autostashes by recorded object identity, surface
   restore conflicts in the terminal result, and persist a recovery artifact
   that leaves the original user changes recoverable.
-- [ ] **AUD-006:** pin GitHub Actions to reviewed commit SHAs and scope
+- [x] **AUD-006:** pin GitHub Actions to reviewed commit SHAs and scope
   `contents: write` to the publishing job only; consider a protected release
   environment.
-- [ ] **AUD-007:** enable secret scanning/push protection, CodeQL, and
+- [x] **AUD-007:** enable secret scanning/push protection, CodeQL, and
   Dependabot security updates; add CODEOWNERS/reviewer routing and a tested
   private vulnerability-reporting channel.
-- [ ] **AUD-008:** publish an SBOM, keyless signature, and repository-bound
+- [x] **AUD-008:** publish an SBOM, keyless signature, and repository-bound
   provenance/attestation for each release while retaining checksums and archive
   smoke tests.
 

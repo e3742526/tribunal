@@ -4,14 +4,18 @@
 
 If you find a security issue in `tagteam`, please do not open a public issue with exploit details.
 
-Report it privately to the maintainer with:
+Use GitHub's
+[private vulnerability reporting form](https://github.com/cephalopod-ai/tagteam/security/advisories/new)
+to report it privately to the maintainer with:
 
 - a description of the issue;
 - affected version or commit;
 - reproduction steps or proof of concept;
 - impact assessment.
 
-If no private reporting channel is published yet, open a minimal public issue asking for a contact path without disclosing the exploit.
+Do not include vulnerability details in a public issue. If the private form is
+unavailable, open a minimal public issue asking the maintainer to restore the
+private reporting channel without disclosing the exploit.
 
 ## Scope
 

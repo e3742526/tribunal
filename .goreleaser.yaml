@@ -56,6 +56,31 @@ archives:
 checksum:
   name_template: checksums.txt
 
+sboms:
+  - id: archives
+    artifacts: archive
+    disable: false
+
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+  - id: sboms
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: sbom
+
 changelog:
   use: git
   sort: asc

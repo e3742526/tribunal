@@ -13,9 +13,11 @@ The findings below preserve the evidence and repository posture observed at the
 audited commit. A local repair campaign began on 2026-07-16; its live evidence
 and checkpoints are recorded in
 [Defect Repair Campaign — 2026-07-16](REPAIR_CAMPAIGN_2026-07-16.md).
-AUD-001, AUD-003 through AUD-005, and AUD-009 through AUD-012 are implemented
-and locally validated on the campaign branch. The remaining findings retain
-their original status until their campaign stages pass.
+All 12 findings have repair implementations. Source changes are locally
+validated on the campaign branch, and the GitHub rulesets and security features
+have live API readback. The next real release tag remains the operational proof
+for OIDC signing, publishing, and attestation; see the campaign report for the
+exact validation boundary.
 
 ## Executive summary
 

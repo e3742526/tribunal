@@ -181,8 +181,8 @@ restored and regression-tested. No unresolved Stage 2 blocker remains.
 
 ### Stage 3 — tracked artifact and dead-code cleanup
 
-Status: implemented and locally validated; checkpoint commit follows this
-documentation update.
+Status: implemented and locally validated. Checkpoint: `cbe9df6`
+(`chore: remove stale artifacts and dead internal code`).
 
 - AUD-010: removed the tracked 8.2 MB Mach-O development binary and the
   workstation-specific launcher containing an absolute checkout path. Root
@@ -208,3 +208,65 @@ Alexandria consumption-event path after its implementation was removed. That
 claim and its now-orphaned event type were removed. No import, build-tag, test,
 CLI, TUI, or documentation caller was found for any other deleted symbol. No
 unresolved Stage 3 blocker remains.
+
+### Stage 4 — supply chain and GitHub governance
+
+Status: implemented; local configuration and live GitHub policy are validated.
+Checkpoint commit follows this documentation update.
+
+- AUD-002: active repository ruleset `19084807` protects the default branch
+  with pull requests, one code-owner approval, stale-review dismissal,
+  last-push approval, resolved review threads, strict Linux/macOS checks from
+  GitHub Actions, and deletion/force-push prevention. The sole maintainer's
+  bypass is `pull_request` only, so it cannot authorize a direct push. Separate
+  active rulesets restrict `v*` tag creation to that maintainer (`19084809`)
+  and permit no bypass for tag update, deletion, or force-push rules
+  (`19084810`).
+- AUD-006: every third-party action is pinned to a reviewed 40-character commit
+  SHA with its release version in a comment. Workflow permissions default to
+  `contents: read`; only `Publish signed release` receives `contents: write`,
+  `id-token: write`, and `attestations: write`. GoReleaser, Syft, and Cosign
+  tool versions are pinned as well.
+- AUD-007: secret scanning, push protection, Dependabot alerts/security
+  updates, private vulnerability reporting, and managed CodeQL default setup
+  are enabled. `.github/CODEOWNERS` routes all changes to the sole current
+  maintainer, and `SECURITY.md` links directly to the private advisory form.
+- AUD-008: GoReleaser produces one SPDX JSON SBOM per archive and keylessly
+  signs both `checksums.txt` and every SBOM with Sigstore bundles. The publish
+  job creates repository-bound GitHub attestations for checksummed archives and
+  SBOMs. Archive smoke tests remain and the obsolete `macos-13` x86 runner was
+  replaced by `macos-15-intel`. Consumer verification is documented in
+  `docs/RELEASE_SECURITY.md`.
+
+Validation:
+
+- `actionlint` v1.7.12: pass for all workflows; Ruby YAML parsing and mutable
+  `uses: ...@vN` scan: pass.
+- GoReleaser v2.17.0 `check`: pass.
+- GoReleaser snapshot with Syft v1.48.0: pass in 2m26s, producing four archives
+  and four SPDX JSON SBOMs after the full Go test/vet hooks. Publishing and
+  signing were skipped because GitHub OIDC exists only in the tag workflow.
+- Final `go test ./...`: pass; `internal/tagteam` completed in 122.760s. Final
+  `go test -race ./...`: pass; `internal/tagteam` completed in 123.664s.
+- Final coverage: CLI 42.7%, tagteam 73.0%, and TUI 64.4%. `go vet ./...`,
+  `go build ./...`, `go mod verify`, `go mod tidy -diff`, formatting, shell
+  syntax, Go file line gate, and `git diff --check`: pass.
+- Live readback: default branch reports protected; effective rules include PR,
+  strict status checks, deletion protection, and non-fast-forward protection;
+  all three rulesets are active with the intended bypass modes. Secret scanning
+  and push protection are enabled, Dependabot automated security fixes are
+  enabled and unpaused, private reporting is enabled, and CodeQL default setup
+  is configured for weekly `actions` and Go analysis with the default query
+  suite. Initial setup run `29554541644` passed both analyzers.
+
+Adversarial review disposition: immutable action pins alone still left mutable
+GoReleaser/Syft/Cosign downloads, so the tool versions were pinned. A first
+workflow lint found that GitHub had retired the existing `macos-13` label; the
+replacement preserves the Darwin amd64 smoke path. The release rehearsal was
+intended for a temporary copy but initially ran in the primary checkout and
+replaced ignored `dist/` output. The pre-existing `0.1.0-SNAPSHOT-5263ae2`
+artifact set was regenerated from commit `5263ae2` and restored; tracked files
+were unaffected. A real tag release has not been created, so OIDC signature,
+attestation publication, and consumer verification remain operationally
+unproven until the next release even though the supported configuration and
+non-OIDC release pipeline validate.
