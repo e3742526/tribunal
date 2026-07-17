@@ -1,9 +1,11 @@
 # Test Ledger
 
-Derived from the current test files. 452 test functions across 49 files (large
+Derived from the current test files. 529 test functions across 57 files (large
 suites are mechanically split to keep every Go source file within the 800-line
-gate). The control-plane, MCP, Run Steward, capability-provenance, and MCP
-socket-daemon suites were re-validated on 2026-07-13.
+gate). The full local suite, race suite, coverage, focused MCP socket tests, and
+current GitHub `main` results were re-validated on 2026-07-16. Local checks pass;
+the current and preceding clean GitHub `main` CI runs expose the socket-daemon
+lifecycle defect recorded as AUD-001.
 
 | Test Area | Command / Evidence | Last Known Result | Source | Coverage Meaning | Gaps |
 |---|---|---|---|---|---|
@@ -20,8 +22,8 @@ socket-daemon suites were re-validated on 2026-07-13.
 | Snapshot / live status | `go test ./internal/tagteam/` (`snapshot_test.go`, 11 tests) | pass | `snapshot_test.go` | `RunSnapshot` assembly from `active.json`, `state.json`, `final.json`, `plan.json`; active-before-latest CLI resolution; compatibility regressions | — |
 | Control-plane producer contract | `go test ./internal/tagteam/ -run 'Test(Control\|NormalizeControl\|ControlRuntime\|ResolveControl\|RevalidateControl\|EnsureCanonical\|OptionsForLaunch)'` | pass | `control_contract_test.go`, `control_paths_test.go`, `control_runtime_test.go`, `control_resume_assessment_test.go`, `control_resume_runtime_test.go`, `control_resume_runtime_path_test.go`, `control_resume_helper_path_test.go`, `control_cancel_runtime_test.go`, `control_approval_binding_test.go`, `control_acceptance_test.go`, `control_equivalence_test.go` | Canonical repository/action identity (including symlink alias and subdirectory roots), server-worktree binding, repository-aware allowed-path real-path canonicalization, hostile scope rejection (absolute/traversal/glob/backslash/duplicates including root alias `.`+`root-alias/`/escaping/broken/nested parents), start rejection when an approved scope path is retargeted in-repo after prepare, run-dir escape rejection, host-derived runs-root boundary (escaping `runs` or repo-state parent symlinks rejected for start/resume/cancel with no external I/O), control-safe prepare-resume/resume/cancel artifact reads (escaping `state`/`meta`/`final`/`run.lock`/`events.jsonl`/`input.md`/cancel-request and MCP-resume auxiliary `plan.json`/`supervisor-brief.md`/scout/work-plan fail closed with untouched external sentinels), cancel/resume run-directory replacement rejection under the runs-root boundary, nonce-consumed resume preflight failure persistence, MCP resume continuous runs-root gate (post-lock, post-state-read, and pre-adapter run-dir symlink replacement fail closed before external meta/diff/review reads or adapter dispatch; delivery/progress/output paths revalidated under the original runs root; external prompt markers unobserved; external sentinels/output targets unchanged), helper-level control-resume path-gate regressions for JSON-repair read/write/mkdir/dispatch (including external/non-descendant artifact-base rejection so `MkdirAll` cannot create outside the run dir; nested-symlink bases fail closed), repair side-artifacts (broken-symlink targets and all typed `ExitPreflightFailed` values propagate without message matching), repo-instruction/plan persistence, baseline host-activity/test-output, multi-artifact prompt/relay/plan reads (including gated meta.json fail-closed with missing input.md; individual optional relay/plan artifact escaping symlinks require `errors.As(*ExitError)` + `ExitPreflightFailed`), coder/reviewer contract-retry prompt rebind (run-dir replacement or durable write failure after first contract failure leaves external `*.retry-prompt.md`/`*.retry` untouched with no second adapter dispatch), replacement/symlink-sentinel (external content unobserved; path-change/`ExitPreflightFailed`), and ungated CLI helper behavior unchanged (including nested output path preservation when no gate is present), approval invalidation when canonical scope changes, mode-role validation, bounded status, durable start IDs, approval binding, nonce replay, idempotency, trusted `test_preset` resolution, read-only resume assessment, single-use approval nonces across every action (start/resume/cancel reject a nonce consumed by any other action; each cross-action pair regression-tested), typed `ControlStartError` recovery, start-digest binding of roles/scope/prompt/rounds/budget/preset/idempotency key and approval expiry, malformed persisted JSON (approval ledger and run `state`/`meta`/`final`) surfaced as typed recoverable errors, concurrent-start safety (idempotent single run and single nonce consumption), hostile run identities rejected at the lifecycle entry points, weak/failed-adapter typed terminal records, and equivalence of the normalized launch and terminal records between the direct CLI and MCP paths, capability/version provenance quarantine (`provenance.go`: producer-version + tool-schema-digest baseline recorded trust-on-first-use; a drifted or malformed baseline fails start/resume/cancel closed with the typed `capability_quarantined` error and consumes no approval) | Stale approval-ledger lock fails closed; pure syscall-level TOCTOU against live symlink replacement between the final revalidation and the write/exec remains a residual race; symlink cases skip when the platform cannot create symlinks |
 | MCP stdio transport | `go test ./internal/tagteam/ ./internal/cli -run 'TestMCP'` | pass | `mcp_stdio_test.go`, `control_equivalence_test.go`, `root_test.go` | MCP initialization, deterministic tool listing excluding command/cwd/artifact readers, launch/start/resume preparation, structured success and typed error envelopes (`code`, bounded `reason`, `recoverable`), approved start handles, normal-stdio-shutdown cancellation/drain of owned jobs, unknown `test_preset` as a typed `isError` tool result, trusted-preset starts reaching preflight, typed lifecycle-error recovery over stdio (stable structured `code`/`recoverable` for start/resume/cancel approval failures), the read-only `tagteam_advise` steward tool, and CLI wiring | Forced process termination is not exercised |
-| MCP socket daemon | `go test ./internal/tagteam/ -run 'ServeMCPSocket\|ListenMCPUnix'` | pass | `mcp_daemon.go`, `mcp_daemon_test.go` | Local unix-socket daemon hosting one shared runtime: read-only tool serving over the socket, concurrent multi-client sessions, and durable run ownership across a client disconnect (a reconnecting client still observes a run started by a since-closed connection). Clean shutdown closes the listener and live connections on context cancellation | Reconnectable push event streams and formal multi-client arbitration are not yet implemented; durable ownership across a full daemon restart is not exercised |
-| Advisory Run Steward | `go test ./internal/tagteam/ -run 'Steward\|Advise\|NewRunObservation'` | pass | `steward_test.go`, `steward_model_test.go`, `control_steward_test.go` | Sanitized `RunObservation` projection (counts only; no prompts/diffs/paths), deterministic advisory for every run status, advisory-schema validation, never-block fallback on steward error/timeout/invalid output, local OpenAI-compatible (Ollama) model tier parsing, recursion prevention (text-only request with no tool surface), per-run call/timeout/dedup budgets, single-observer `steward.lease`, and the control-plane `Advise` + `tagteam_advise` wiring | Live Ollama/model execution is exercised via an in-process HTTP stub, not a real local model |
+| MCP socket daemon | local focused test `-count=30` and `-race -count=10`; GitHub runs 29382764126 / 29257383105 | **fail on clean GitHub runners; local pass** | `mcp_stdio.go`, `mcp_daemon.go`, `control_runtime.go`, `mcp_daemon_test.go` | Read-only socket serving and concurrent connections work locally. The current test proves a reconnecting client can read the run ID. | A disconnect closes the shared runtime and cancels all jobs; daemon shutdown does not join run workers. The test does not assert continued live execution or terminal completion and has failed during temp-dir cleanup on macOS and Linux. See AUD-001. |
+| Advisory Run Steward | `go test ./internal/tagteam/ -run 'Steward\|Advise\|NewRunObservation'` | **partial; unit paths pass** | `steward_test.go`, `steward_model_test.go`, `control_steward_test.go`, `config.go` | Sanitized observations, deterministic fallback, schema validation, timeout fallback, text-only model request, direct budget-wrapper behavior, lease behavior, and MCP tool exposure pass. | Config loading never merges `[steward]`, and `ControlRuntime.Advise` rebuilds the budget wrapper per request. No end-to-end config/runtime budget test exists. See AUD-003. |
 | Trusted test preset registry | `go test ./internal/tagteam/ -run 'Test(LoadConfig_.*TestPreset\|ValidateConfig_RejectsMalformedTestPresets\|ControlRuntime.*TestPreset\|ControlStartActionDigestBindsPreset)'` | pass | `config_part03_test.go`, `control_runtime_test.go` | User-config merge/normalize, untrusted-repo strip, trusted-repo merge under `--trust-repo-config`, malformed entry fail-closed validation | Env overlay for presets not implemented |
 | TUI | `go test ./internal/tui/` | pass | `internal/tui/*_test.go` | Compose/config resolution, role/profile selection, scoped paths, lint/timeouts, bounded overlays, detail scrolling, command completion, split terminal input, non-interactive behavior, and missing-run handling | Automated coverage does not execute a full vendor-backed launch in a real terminal |
 | CLI | `go test ./internal/cli/` | pass | `internal/cli/*_test.go` | Command wiring, live status rendering, TUI run resolution, completed-run command behavior | General CLI layer coverage remains thinner than runner coverage |
@@ -32,7 +34,9 @@ socket-daemon suites were re-validated on 2026-07-13.
 | Formatting | `gofmt -l .` | pass (empty) | CI | CI gate | — |
 | Vet | `go vet ./...` | pass | CI | CI gate | — |
 | Build | `go build ./...` | pass | local validation | Buildability across packages | — |
-| Full suite | `go test ./...` | pass | local validation | End-to-end package-level regression signal | Does not exercise real vendor CLIs |
+| Race suite | `go test -race ./...` | pass locally | local validation | Race detector across all packages; tagteam completed in 122.430s | Timing-sensitive socket lifecycle defect remains reproducible on clean GitHub runners |
+| Coverage | `go test -cover ./...` | pass | local validation | CLI 42.7%, tagteam 72.6%, TUI 62.7% statement coverage | Coverage percentage does not cover the missing negative/fault scenarios in AUD-001, AUD-003, AUD-004, and AUD-005 |
+| Full suite | `go test ./...` | pass locally; current GitHub `main` CI fails | local validation + GitHub Actions | End-to-end package-level regression signal | Does not exercise real vendor CLIs; clean-runner socket failure remains open under AUD-001 |
 
 ## Known gaps
 
@@ -43,14 +47,22 @@ socket-daemon suites were re-validated on 2026-07-13.
   behavioral confidence lives in `internal/tagteam`.
 - The test suite uses fake adapters and local fixtures. It validates host
   orchestration and persistence logic, not third-party vendor CLI stability.
+- The full audit's required negative and fault-injection scenarios are tracked
+  in [AUDIT_REPORT_2026-07-16.md](AUDIT_REPORT_2026-07-16.md), especially
+  disconnect/drain, Steward config-budget lifetime, autostash restore conflict,
+  and mandatory artifact write failure.
 
 ## Validation commands
 
 - `gofmt -l .` → clean
+- `scripts/check-go-file-lines.sh` → clean
 - `go vet ./...` → clean
 - `go build ./...` → ok
-- `go test ./...` → all pass (now deterministic across developer and CI
-  environments: `TestMain` isolates ambient sensitive-keyed env vars so secret
-  redaction cannot corrupt unrelated timestamps/byte streams, and the fake
-  adapter transcript test uses a non-login shell so profile banners cannot
-  pollute its parsed output)
+- `go test ./...` → all packages pass locally
+- `go test -race ./...` → all packages pass locally
+- `go test -cover ./...` → CLI 42.7%, tagteam 72.6%, TUI 62.7%
+- `go mod verify` → all modules verified
+- `go mod tidy -diff` → clean
+- GitHub `main` CI runs 29382764126 (macOS) and 29257383105 (Linux) → fail in
+  `TestServeMCPSocketDurableOwnershipAcrossClientDisconnect` while the
+  background run is still writing (AUD-001)

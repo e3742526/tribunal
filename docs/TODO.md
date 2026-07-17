@@ -1,5 +1,55 @@
 # TODO
 
+## Full repository audit follow-ups (2026-07-16)
+
+Source: [Full Repository Audit — 2026-07-16](AUDIT_REPORT_2026-07-16.md).
+Keep finding IDs on implementation PRs and add the required negative/fault tests
+before closing an item.
+
+### P0 — runtime and source-of-truth integrity
+
+- [ ] **AUD-001:** separate stdio/session ownership from daemon ownership of
+  `ControlRuntime`; close the socket runtime once, cancel and join all run
+  workers on daemon shutdown, and prove client disconnect does not cancel any
+  daemon-owned run with repeated and race-enabled tests.
+- [ ] **AUD-002:** protect `main` and release tags with pull-request review,
+  stable required Linux/macOS checks, conversation resolution, force-push/delete
+  restrictions, and an explicit administrator-bypass policy.
+
+### P1 — persistence, recovery, and repository security
+
+- [ ] **AUD-005:** classify mandatory versus advisory artifacts, propagate all
+  mandatory state/quality/final persistence failures, and define a consistent
+  state-snapshot/event-journal commit protocol with fault-injection tests.
+- [ ] **AUD-004:** restore autostashes by recorded object identity, surface
+  restore conflicts in the terminal result, and persist a recovery artifact
+  that leaves the original user changes recoverable.
+- [ ] **AUD-006:** pin GitHub Actions to reviewed commit SHAs and scope
+  `contents: write` to the publishing job only; consider a protected release
+  environment.
+- [ ] **AUD-007:** enable secret scanning/push protection, CodeQL, and
+  Dependabot security updates; add CODEOWNERS/reviewer routing and a tested
+  private vulnerability-reporting channel.
+- [ ] **AUD-008:** publish an SBOM, keyless signature, and repository-bound
+  provenance/attestation for each release while retaining checksums and archive
+  smoke tests.
+
+### P2 — capability truth and cleanup
+
+- [ ] **AUD-003:** merge and validate trusted `[steward]` config, strip its
+  endpoint/key selectors from untrusted repo config, and retain one bounded
+  Steward budget state per run with end-to-end tests.
+- [ ] **AUD-009:** fail closed if the unix socket cannot be set and verified as
+  owner-only; close and safely remove the listener on permission failure.
+- [ ] **AUD-010:** remove the stale tracked `bin/tagteam` and absolute-path TUI
+  launcher in a focused change, ignore local build outputs, and do not rewrite
+  history without separate explicit approval.
+- [ ] **AUD-011:** validate and remove the 11 repository-unreferenced internal
+  functions identified by the audit; wire a real caller and behavior test only
+  where the feature is intentionally retained.
+- [ ] **AUD-012:** reject present-but-malformed typed `TAGTEAM_*` values and
+  header pairs with field-specific errors; add CLI/environment parity tests.
+
 ## Code-intelligence relay recovery
 
 - [x] Rerun the quarantined full-phase code-intelligence work as a fresh,
@@ -24,14 +74,13 @@
 
 ## Deferred: MCP control plane and optional Run Steward
 
-**Status:** The MCP MVP gates are complete: the producer contract, local MCP
-stdio transport, approved idempotent start/resume/cancel with full cross-action
-approval-replay protection and typed error recovery, non-mutating resume
-assessment, and the acceptance playtest suite are implemented. The optional
-advisory Run Steward (immediate-horizon items below) is now implemented as a
-local-first, strictly-advisory tier with a deterministic fallback. The
-remaining Future-vision items (tagteamd daemon, capability provenance, remote
-auth, fleet summaries) are in progress.
+**Status:** The producer contract, local MCP stdio transport, approved
+idempotent start/resume/cancel, non-mutating resume assessment, and deterministic
+Run Steward fallback are implemented. The 2026-07-16 audit found that unix-
+socket runtime ownership is not durable across client disconnect and that the
+optional model Steward is not wired end to end through config/budget lifetime.
+Those paths remain partial under AUD-001 and AUD-003. Capability provenance is
+implemented; remote auth and fleet summaries remain future work.
 
 The goal is to let any MCP-capable host launch and monitor Tagteam without
 turning model output into shell commands. A deterministic controller remains
@@ -85,18 +134,19 @@ own recovery action.
   `AdviseWithFallback` runs any model steward under a strict timeout and falls
   back to the template on error, timeout, or schema-invalid output, never
   blocking the run.
-- [x] Default the steward tier to a separately configured local Ollama model.
+- [~] Default the steward tier to a separately configured local Ollama model.
   Cloud or CLI-backed stewards are optional escalation targets and must run at
   lower priority with call, token, timeout, and deduplication budgets so they
   do not contend with worker or reviewer invocations. `[steward]` config
-  defaults to a disabled local OpenAI-compatible (Ollama) endpoint; enabling it
-  builds a `BudgetedSteward` with per-run call, timeout, and dedup budgets.
+  defaults to a disabled local OpenAI-compatible (Ollama) endpoint. **Audit
+  gap:** config merges currently discard this section, and `Advise` rebuilds a
+  `BudgetedSteward` per request, resetting call and dedup state (AUD-003).
 - [x] Prevent recursion and duplicate observers: one steward lease per run,
   no Tagteam invocation from the steward, and no inherited arbitrary MCP or
   repository-write tools. `ModelSteward` sends a text-only chat request with no
   tool/function surface (recursion prevented by construction); a per-run
   `steward.lease` enforces a single observer.
-- [x] Add contract, process-lifecycle, hostile-output, approval-replay,
+- [~] Add contract, process-lifecycle, hostile-output, approval-replay,
   concurrency, cancellation, restart, malformed-JSON, and weak-model
   playtests. Verify that an MCP host can recover from every returned error
   without reading source code. Start now returns typed `ControlStartError`
@@ -105,7 +155,10 @@ own recovery action.
   malformed persisted JSON (ledger and run artifacts), concurrent start
   requests, hostile run identities at the lifecycle entry points, weak/failed
   adapter terminal records, and equivalence of the normalized launch and
-  terminal records between the direct CLI and MCP paths.
+  terminal records between the direct CLI and MCP paths. **Audit gap:** the
+  socket disconnect test asserts reconnectable visibility, not continued live
+  execution or drained shutdown; clean GitHub runners fail while its background
+  run is still writing (AUD-001).
 
 ### Future vision
 
@@ -113,13 +166,12 @@ own recovery action.
   with the MCP endpoint as a thin client transport. Add leases, reconnectable
   event streams, multi-client arbitration, and safe cancellation after the
   originating host exits. **Partially implemented:** `mcp_daemon.go` +
-  `tagteam mcp --socket <path>` host one shared `ControlRuntime` over a unix
-  socket; the MCP endpoint is a thin client transport, so runs are owned by the
-  daemon and survive a client disconnect, multiple clients attach concurrently
-  (serialized through the runtime's mutex and run lock), and existing
-  file-backed cancellation gives safe cancellation after the originating client
-  exits. **Remaining:** reconnectable push event streams and formal
-  multi-client arbitration beyond serialization.
+  `tagteam mcp --socket <path>` accept multiple clients over one shared
+  `ControlRuntime`. **Audit gap:** each session currently closes that shared
+  runtime on disconnect, cancelling registered jobs without draining their
+  goroutines (AUD-001). **Remaining:** correct daemon/session ownership, drained
+  shutdown, reconnectable push event streams, and formal multi-client
+  arbitration beyond serialization.
 - [x] Add capability/version provenance and quarantine when tool schemas,
   side effects, or the Tagteam binary change outside the approved baseline.
   `provenance.go` fingerprints the producer version, contract version, and MCP
@@ -139,8 +191,9 @@ own recovery action.
   terminal records for the same inputs.
 - A low-capability steward can explain progress and request help, but cannot
   gain execution authority through prompt text or tool output.
-- Killing an attached MCP host leaves either a cleanly cancelled run or an
-  explicitly recoverable persisted state; no run is reported as successful
-  from missing or malformed evidence.
+- [ ] Killing or disconnecting an attached MCP host leaves either a cleanly
+  cancelled run or an explicitly recoverable persisted state; no run is
+  reported as successful from missing or malformed evidence. Blocked by
+  AUD-001 and AUD-005.
 - Gosling and other hosts consume this contract rather than duplicating
   Tagteam profiles, model catalogs, reason codes, or recovery rules.

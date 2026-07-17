@@ -20,6 +20,9 @@ Canonical entry point for `tagteam` documentation.
   gates.
 - [Implementation Diagrams](IMPLEMENTATION_DIAGRAMS.md) — Mermaid diagrams of the
   component map, live status/TUI flow, run loop, and failure classification.
+- [Full Repository Audit — 2026-07-16](AUDIT_REPORT_2026-07-16.md) —
+  source-backed implementation, reliability, security, dataflow, dead-code,
+  dependency, release, and GitHub-posture findings with remediation order.
 - [Test Ledger](TEST_LEDGER.md) — test areas, evidence, latest results, and
   known gaps.
 - [v0.1.0 to current](V0.1.0_TO_CURRENT.md) — detailed release-to-development

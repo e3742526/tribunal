@@ -574,7 +574,14 @@ command = "make unit"
 
 An optional, local-first **Run Steward** can summarize a run's progress and recommend a next action for the operator. It is **strictly advisory**: it reads only a bounded, sanitized `RunObservation` (status, phase, reason codes, and counts — never prompts, diffs, file paths, or model reasoning) and returns a schema-validated advisory whose `action` is one of `wait`, `inspect`, `notify`, `prepare_resume`, `ask_user`, or `report_issue`. It cannot edit the repository, change scope or roles, dismiss findings, run commands, or approve recovery, and the controller never gates execution on it.
 
-Hosts read it through the read-only `tagteam_advise` MCP tool. The steward is **disabled by default**; when disabled, missing, slow, invalid, or over budget, a deterministic template steward is the guaranteed fallback, so a run never depends on a model. Enabling it points the default tier at a local OpenAI-compatible endpoint (e.g. Ollama) with conservative per-run call, timeout, and deduplication budgets, and a per-run lease keeps a single observer. The model request is text-only with no tool/function surface, so the steward cannot invoke Tagteam or inherit MCP/repository-write tools.
+Hosts read it through the read-only `tagteam_advise` MCP tool. The steward is **disabled by default**; when disabled, missing, slow, invalid, or over budget, a deterministic template steward is the guaranteed fallback, so a run never depends on a model. The intended model tier points at a local OpenAI-compatible endpoint (e.g. Ollama), uses conservative call, timeout, and deduplication budgets, and keeps a single-observer lease. The model request is text-only with no tool/function surface, so the steward cannot invoke Tagteam or inherit MCP/repository-write tools.
+
+> **Known implementation gap (2026-07-16):** the deterministic advisory path is
+> available, but config layering currently discards `[steward]` values and the
+> runtime rebuilds the budget wrapper per request. Until
+> [AUD-003](docs/AUDIT_REPORT_2026-07-16.md#aud-003--steward-configuration-is-discarded-and-per-run-budgets-reset-per-request)
+> is repaired, the model tier is not configurable end to end and its call/dedup
+> limits are not per-run on the real MCP path.
 
 ```toml
 [steward]

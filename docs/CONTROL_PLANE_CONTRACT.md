@@ -58,10 +58,12 @@ state model rather than introducing a second run state machine.
   strictly read-only and advisory: a missing, slow, invalid, or over-budget
   steward falls back to a deterministic template, and the controller never gates
   execution on the advisory. Exposed as the read-only `tagteam_advise` MCP tool
-  when the lifecycle runtime is enabled. The optional model tier is a local-first
-  OpenAI-compatible endpoint queried with a text-only request (no tool surface),
-  bounded by per-run call/timeout/dedup budgets and a single-observer lease, so
-  the steward cannot invoke Tagteam or inherit MCP/repository-write tools.
+  when the lifecycle runtime is enabled. The optional model tier is designed as
+  a local-first OpenAI-compatible endpoint queried with a text-only request (no
+  tool surface). The deterministic advisory path is implemented. The model-tier
+  config and per-run budget lifetime remain incomplete under
+  [AUD-003](AUDIT_REPORT_2026-07-16.md#aud-003--steward-configuration-is-discarded-and-per-run-budgets-reset-per-request),
+  so they are not yet an enforceable end-to-end contract.
 
 The base capability list intentionally excludes lifecycle mutations; the
 enabled lifecycle runtime adds `start`, `resume`, and `cancel` only when those
@@ -69,14 +71,15 @@ handlers are available. No handler returns canned success or delegates to
 arbitrary shell input.
 
 `tagteam mcp` implements MCP protocol revision `2025-11-25` over stdio, or over
-a local unix socket with `tagteam mcp --socket <path>`. In socket mode the
-process is a small local daemon hosting one shared `ControlRuntime`: the MCP
-endpoint is a thin client transport, so runs are owned by the daemon and survive
-a client disconnect, multiple clients can attach concurrently (serialized
-through the runtime's mutex and run lock), and existing file-backed cancellation
-provides safe cancellation after the originating client exits. It advertises
-exactly the implemented tools and returns both structured JSON and bounded text
-content. `tagteam_prepare_start` and `tagteam_prepare_resume` are
+a local unix socket with `tagteam mcp --socket <path>`. Socket mode hosts one
+shared `ControlRuntime` and accepts multiple clients, but durable ownership
+across client disconnect is not currently satisfied: each connection can close
+the shared runtime and cancel its jobs. See
+[AUD-001](AUDIT_REPORT_2026-07-16.md#aud-001--socket-clients-close-the-shared-runtime-and-daemon-shutdown-does-not-drain-jobs).
+Until that finding is repaired and its repeated/race tests pass, socket mode
+must not be treated as a durable daemon boundary. The server advertises exactly
+the implemented tools and returns both structured JSON and bounded text content.
+`tagteam_prepare_start` and `tagteam_prepare_resume` are
 read-only; `tagteam_start`, `tagteam_resume`, and `tagteam_cancel` are marked
 destructive and idempotent for MCP clients. An unverified binary keeps the
 server read-only unless the operator explicitly passes `--allow-dev-build`.
