@@ -317,12 +317,12 @@ go run . --allow-dev-build "add OAuth login"
 
 ## Quick start
 
-Default run (supervisor mode, Gemini 3.5 Flash Medium worker and GPT-5.6 Sol supervisor at high reasoning effort):
+Default run (supervisor mode, `codex:gpt-5.6-terra` worker and `claude:claude-opus-4-8` supervisor):
 
 ```bash
 tagteam "add OAuth login"
-# Equivalent explicit one-shot spelling:
-tagteam run -m 'agy:Gemini 3.5 Flash (Medium)' "add OAuth login"
+# Equivalent explicit role spelling:
+tagteam run --worker codex:gpt-5.6-terra --supervisor claude:claude-opus-4-8 "add OAuth login"
 ```
 
 That's the whole thing — no flags, no config. From your repo root you just describe the change:
