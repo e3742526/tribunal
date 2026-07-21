@@ -122,6 +122,7 @@ type Panelist struct {
 	Model                string  `json:"model" toml:"model"`
 	Family               string  `json:"family" toml:"family"`
 	Persona              string  `json:"persona,omitempty" toml:"persona"`
+	PersonaLens          string  `json:"persona_lens,omitempty" toml:"-"`
 	Weight               float64 `json:"weight" toml:"weight"`
 	Trusted              bool    `json:"trusted,omitempty" toml:"trusted"`
 	MaxContextTokens     int     `json:"max_context_tokens" toml:"max_context_tokens"`
@@ -269,6 +270,7 @@ type Final struct {
 	ReasonCodes     []string             `json:"reason_codes,omitempty"`
 	PanelStatus     []PanelStatus        `json:"panel_status"`
 	Findings        []Finding            `json:"findings"`
+	Evidence        []EvidenceItem       `json:"evidence,omitempty"`
 	Decisions       []Decision           `json:"decisions"`
 	Arbitration     []ArbitrationDispute `json:"arbitration,omitempty"`
 	EditsApplied    bool                 `json:"edits_applied"`

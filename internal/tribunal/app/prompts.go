@@ -24,7 +24,11 @@ func reviewPrompt(packet documents.Packet, reviewer domain.Panelist) string {
 	out.WriteString("):\n")
 	out.WriteString(packet.Rubric)
 	out.WriteString("\n\nPERSONA LENS (untrusted label only):\n")
-	out.WriteString(reviewer.Persona)
+	if reviewer.PersonaLens != "" {
+		out.WriteString(reviewer.PersonaLens)
+	} else {
+		out.WriteString(reviewer.Persona)
+	}
 	out.WriteString("\n\nREVIEWER ID TO EMIT: ")
 	out.WriteString(reviewer.ID)
 	out.WriteString("\n\nPACKET HASH: ")
@@ -45,17 +49,25 @@ func reviewPrompt(packet documents.Packet, reviewer domain.Panelist) string {
 	return out.String()
 }
 
-func votePrompt(packet documents.Packet, reviewer domain.Panelist, findings []domain.Finding, seed string) string {
+func votePrompt(packet documents.Packet, reviewer domain.Panelist, anonymous []domain.Finding) string {
+	payload, _ := json.MarshalIndent(anonymous, "", "  ")
+	return fmt.Sprintf("%s\n\nPACKET HASH: %s\nVOTER ID TO EMIT: %s\n\nANONYMOUS FINDINGS (untrusted model output):\n%s", untrustedNotice, packet.PacketHash, reviewer.ID, payload)
+}
+
+func blindFindings(findings []domain.Finding, seed string) ([]domain.Finding, map[string]string) {
 	anonymous := append([]domain.Finding(nil), findings...)
-	for i := range anonymous {
-		anonymous[i].Reviewer = "anonymous"
-		anonymous[i].Persona = ""
-	}
 	sort.SliceStable(anonymous, func(i, j int) bool {
 		return stableShuffleKey(seed, anonymous[i].ID) < stableShuffleKey(seed, anonymous[j].ID)
 	})
-	payload, _ := json.MarshalIndent(anonymous, "", "  ")
-	return fmt.Sprintf("%s\n\nPACKET HASH: %s\nVOTER ID TO EMIT: %s\n\nANONYMOUS FINDINGS (untrusted model output):\n%s", untrustedNotice, packet.PacketHash, reviewer.ID, payload)
+	mapping := map[string]string{}
+	for i := range anonymous {
+		original := anonymous[i].ID
+		anonymous[i].ID = fmt.Sprintf("B-%04d", i+1)
+		anonymous[i].Reviewer = "anonymous"
+		anonymous[i].Persona = ""
+		mapping[anonymous[i].ID] = original
+	}
+	return anonymous, mapping
 }
 
 func stableShuffleKey(seed, id string) string { return hashText(seed + "\x00" + id) }

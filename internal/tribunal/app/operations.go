@@ -58,6 +58,8 @@ type ArbitrationOptions struct {
 	Operator       string
 }
 
+const arbitrationFileSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["schema_version","run_id","rulings"],"properties":{"schema_version":{"const":1},"run_id":{"type":"string"},"rulings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","outcome","reason","operator"],"properties":{"id":{"type":"string"},"outcome":{"enum":["accepted","rejected","deferred"]},"reason":{"type":"string","minLength":1},"operator":{"type":"string","minLength":1}}}}}}`
+
 type DoctorReport struct {
 	SchemaVersion int                    `json:"schema_version"`
 	StateRoot     string                 `json:"state_root"`
@@ -214,6 +216,14 @@ func (s *Service) Arbitrate(opts ArbitrationOptions) (domain.Final, error) {
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
+	lock, err := storage.AcquireLock(context.Background(), filepath.Join(runDir, "run.lock"), nil)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "acquire run lock: %v", err)
+	}
+	defer lock.Close()
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "revalidate run: %v", err)
+	}
 	final, err := readFinal(filepath.Join(runDir, "final.json"))
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
@@ -226,7 +236,17 @@ func (s *Service) Arbitrate(opts ArbitrationOptions) (domain.Final, error) {
 		return domain.Final{}, exitError(ExitInvalidArguments, "%v", err)
 	}
 	byID := map[string]ArbitrationRuling{}
+	pendingIDs := map[string]bool{}
+	for _, dispute := range final.Arbitration {
+		pendingIDs[dispute.ID] = true
+	}
 	for _, ruling := range rulings {
+		if !pendingIDs[ruling.ID] {
+			return domain.Final{}, exitError(ExitInvalidArguments, "arbitration %q is not pending", ruling.ID)
+		}
+		if _, duplicate := byID[ruling.ID]; duplicate {
+			return domain.Final{}, exitError(ExitInvalidArguments, "duplicate arbitration ruling %q", ruling.ID)
+		}
 		if ruling.Outcome != "accepted" && ruling.Outcome != "rejected" && ruling.Outcome != "deferred" {
 			return domain.Final{}, exitError(ExitInvalidArguments, "arbitration %s has invalid outcome %q", ruling.ID, ruling.Outcome)
 		}
@@ -335,8 +355,7 @@ func (s *Service) locateRun(ref RunRef) (storage.Workspace, string, string, erro
 		return storage.Workspace{}, "", "", fmt.Errorf("invalid run id %q", runID)
 	}
 	runDir := filepath.Join(workspace.RunsDir, runID)
-	info, err := os.Stat(runDir)
-	if err != nil || !info.IsDir() {
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
 		return storage.Workspace{}, "", "", fmt.Errorf("run %q not found", runID)
 	}
 	return workspace, runDir, runID, nil
@@ -348,7 +367,11 @@ func arbitrationRulings(opts ArbitrationOptions, final domain.Final) ([]Arbitrat
 	}
 	if opts.DecisionsPath != "" {
 		var file ArbitrationFile
-		if err := storage.ReadJSON(opts.DecisionsPath, &file); err != nil {
+		raw, err := os.ReadFile(opts.DecisionsPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := adapters.DecodeStrict(raw, arbitrationFileSchema, &file); err != nil {
 			return nil, err
 		}
 		if file.SchemaVersion != 1 || (file.RunID != "" && file.RunID != final.RunID) {
@@ -372,7 +395,7 @@ func arbitrationRulings(opts ArbitrationOptions, final domain.Final) ([]Arbitrat
 		if strings.HasPrefix(dispute.Default, "accept") {
 			outcome = "accepted"
 		}
-		rulings = append(rulings, ArbitrationRuling{ID: dispute.ID, Outcome: outcome, Reason: "accepted recorded panel majority", Operator: opts.Operator})
+		rulings = append(rulings, ArbitrationRuling{ID: dispute.ID, Outcome: outcome, Reason: "applied recorded panel recommendation", Operator: opts.Operator})
 	}
 	return rulings, nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -35,12 +36,77 @@ type Persona struct {
 	Lens          string   `toml:"lens" json:"lens,omitempty"`
 }
 
+var starterPersonas = map[string]Persona{
+	"methodologist": {SchemaVersion: 1, Name: "methodologist", Summary: "Examine methods, measurements, assumptions, and reproducibility.", Focus: []string{"methods", "statistics", "reproducibility"}},
+	"skeptic":       {SchemaVersion: 1, Name: "skeptic", Summary: "Stress-test consequential claims and missing alternatives.", Focus: []string{"evidence", "counterexamples", "uncertainty"}},
+	"governor":      {SchemaVersion: 1, Name: "governor", Summary: "Examine authority, accountability, exceptions, and due process.", Focus: []string{"authority", "accountability", "auditability"}},
+}
+
+func StarterPersonas() []Persona {
+	names := make([]string, 0, len(starterPersonas))
+	for name := range starterPersonas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	values := make([]Persona, 0, len(names))
+	for _, name := range names {
+		values = append(values, starterPersonas[name])
+	}
+	return values
+}
+
+func ResolvePersona(name, workspace string, trustWorkspace bool) (Persona, error) {
+	if trustWorkspace && workspace != "" {
+		path := filepath.Join(workspace, ".tribunal", "personas", name+".toml")
+		if exists(path) {
+			return LoadPersona(path, true)
+		}
+	}
+	dirs, err := PersonaDirectories("")
+	if err != nil {
+		return Persona{}, err
+	}
+	path := filepath.Join(dirs[0], name+".toml")
+	if exists(path) {
+		return LoadPersona(path, false)
+	}
+	if persona, ok := starterPersonas[name]; ok {
+		return persona, nil
+	}
+	return Persona{}, fmt.Errorf("persona %q not found", name)
+}
+
+func PersonaText(persona Persona) string {
+	parts := []string{persona.Summary}
+	if len(persona.Focus) > 0 {
+		parts = append(parts, "Focus: "+strings.Join(persona.Focus, ", "))
+	}
+	if len(persona.Questions) > 0 {
+		parts = append(parts, "Questions: "+strings.Join(persona.Questions, " | "))
+	}
+	if len(persona.StyleNotes) > 0 {
+		parts = append(parts, "Style notes: "+strings.Join(persona.StyleNotes, ", "))
+	}
+	if persona.Lens != "" {
+		parts = append(parts, persona.Lens)
+	}
+	return strings.Join(parts, "\n")
+}
+
 var forbiddenPersona = regexp.MustCompile(`(?i)(vote\s+(accept|reject)|severity\s*[:=]|ignore (the |all )?(system|role|schema)|use (a )?tool|run (a )?command|other reviewer|change your permissions)`)
 
 func LoadPersona(path string, workspace bool) (Persona, error) {
 	var persona Persona
-	if _, err := toml.DecodeFile(path, &persona); err != nil {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return Persona{}, fmt.Errorf("persona must be a regular non-symlink file")
+	}
+	metadata, err := toml.DecodeFile(path, &persona)
+	if err != nil {
 		return Persona{}, fmt.Errorf("load persona: %w", err)
+	}
+	if unknown := metadata.Undecoded(); len(unknown) > 0 {
+		return Persona{}, fmt.Errorf("load persona: unknown key %s", unknown[0].String())
 	}
 	if err := LintPersona(persona, workspace); err != nil {
 		return Persona{}, err

@@ -106,7 +106,18 @@ func Build(ctx context.Context, input string, opts BuildOptions) (Packet, error)
 	if opts.MaxExtractedByte <= 0 {
 		opts.MaxExtractedByte = 16 << 20
 	}
-	canonical, err := canonicalExisting(input)
+	absInput, err := filepath.Abs(input)
+	if err != nil {
+		return Packet{}, fmt.Errorf("resolve input: %w", err)
+	}
+	requested, err := os.Lstat(absInput)
+	if err != nil {
+		return Packet{}, fmt.Errorf("inspect input: %w", err)
+	}
+	if requested.Mode()&os.ModeSymlink != 0 {
+		return Packet{}, fmt.Errorf("input may not be a symlink")
+	}
+	canonical, err := canonicalExisting(absInput)
 	if err != nil {
 		return Packet{}, err
 	}
@@ -146,6 +157,9 @@ func Build(ctx context.Context, input string, opts BuildOptions) (Packet, error)
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return Packet{}, fmt.Errorf("read %s: %w", path, err)
+		}
+		if err := ensureStillCanonical(path, canonical, info.IsDir()); err != nil {
+			return Packet{}, err
 		}
 		content, mediaType, editable, err := extract(ctx, path, raw, opts)
 		if err != nil {
@@ -378,7 +392,10 @@ func canonicalPacketHash(packet Packet) (string, error) {
 	type hashItem struct {
 		ID           string `json:"id"`
 		LogicalPath  string `json:"logical_path"`
+		MediaType    string `json:"media_type"`
+		SourceSHA256 string `json:"source_sha256"`
 		PacketSHA256 string `json:"packet_sha256"`
+		Editable     bool   `json:"editable"`
 	}
 	projection := struct {
 		SchemaVersion int                   `json:"schema_version"`
@@ -386,9 +403,11 @@ func canonicalPacketHash(packet Packet) (string, error) {
 		RubricHash    string                `json:"rubric_hash"`
 		Items         []hashItem            `json:"items"`
 		Evidence      []domain.EvidenceItem `json:"evidence,omitempty"`
-	}{SchemaVersion: packet.SchemaVersion, Kind: packet.Kind, RubricHash: packet.RubricHash, Evidence: packet.Evidence}
+		Redactions    []Redaction           `json:"redactions,omitempty"`
+		Chunks        []Chunk               `json:"chunks,omitempty"`
+	}{SchemaVersion: packet.SchemaVersion, Kind: packet.Kind, RubricHash: packet.RubricHash, Evidence: packet.Evidence, Redactions: packet.Redactions, Chunks: packet.Chunks}
 	for _, item := range packet.Items {
-		projection.Items = append(projection.Items, hashItem{ID: item.ID, LogicalPath: item.LogicalPath, PacketSHA256: item.PacketSHA256})
+		projection.Items = append(projection.Items, hashItem{ID: item.ID, LogicalPath: item.LogicalPath, MediaType: item.MediaType, SourceSHA256: item.SourceSHA256, PacketSHA256: item.PacketSHA256, Editable: item.Editable})
 	}
 	data, err := json.Marshal(projection)
 	if err != nil {

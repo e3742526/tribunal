@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -17,9 +18,11 @@ import (
 )
 
 type Store struct {
-	Root    string
-	Clock   func() time.Time
-	Entropy io.Reader
+	Root      string
+	Clock     func() time.Time
+	Entropy   io.Reader
+	mu        sync.Mutex
+	monotonic io.Reader
 }
 
 type Workspace struct {
@@ -80,7 +83,12 @@ func (s *Store) CreateRun(workspace Workspace) (string, string, error) {
 	if s.Clock == nil || s.Entropy == nil {
 		return "", "", fmt.Errorf("store clock and entropy are required")
 	}
-	id, err := ulid.New(ulid.Timestamp(s.Clock().UTC()), s.Entropy)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.monotonic == nil {
+		s.monotonic = ulid.Monotonic(s.Entropy, 1)
+	}
+	id, err := ulid.New(ulid.Timestamp(s.Clock().UTC()), s.monotonic)
 	if err != nil {
 		return "", "", fmt.Errorf("generate run ULID: %w", err)
 	}
@@ -93,6 +101,21 @@ func (s *Store) CreateRun(workspace Workspace) (string, string, error) {
 		return "", "", fmt.Errorf("create run directory: %w", err)
 	}
 	return runID, runDir, nil
+}
+
+func ValidateRunDir(workspace Workspace, runDir string) error {
+	expected := filepath.Join(workspace.RunsDir, filepath.Base(runDir))
+	if filepath.Clean(runDir) != expected {
+		return fmt.Errorf("run directory is outside the workspace runs root")
+	}
+	info, err := os.Lstat(runDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("run directory is not a canonical directory")
+	}
+	return revalidateBelow(workspace.Root, runDir)
 }
 
 func WriteJSON(path string, value any) error {
@@ -168,6 +191,13 @@ func appendJSONLine(path string, value any) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing non-regular JSONL target %s", path)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

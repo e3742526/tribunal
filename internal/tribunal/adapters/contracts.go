@@ -45,10 +45,18 @@ func DecodeReview(raw []byte, reviewer string) (domain.Review, bool, error) {
 	if reviewer != "" && review.ReviewerID != reviewer {
 		return domain.Review{}, repaired, fmt.Errorf("reviewer_id %q does not match %q", review.ReviewerID, reviewer)
 	}
+	seen := map[string]bool{}
 	for i := range review.Findings {
 		if err := domain.ValidateFinding(review.Findings[i]); err != nil {
 			return domain.Review{}, repaired, err
 		}
+		if review.Findings[i].Reviewer != review.ReviewerID || review.Findings[i].Origin != "panel" {
+			return domain.Review{}, repaired, fmt.Errorf("finding %q has invalid reviewer or origin binding", review.Findings[i].ID)
+		}
+		if seen[review.Findings[i].ID] {
+			return domain.Review{}, repaired, fmt.Errorf("duplicate finding id %q", review.Findings[i].ID)
+		}
+		seen[review.Findings[i].ID] = true
 	}
 	return review, repaired, nil
 }
@@ -62,10 +70,15 @@ func DecodeVotes(raw []byte, reviewer string) ([]domain.Vote, bool, error) {
 	if err != nil {
 		return nil, repaired, err
 	}
+	seen := map[string]bool{}
 	for _, vote := range payload.Votes {
 		if vote.ReviewerID != reviewer {
 			return nil, repaired, fmt.Errorf("vote reviewer_id %q does not match %q", vote.ReviewerID, reviewer)
 		}
+		if seen[vote.FindingID] {
+			return nil, repaired, fmt.Errorf("reviewer %q voted more than once on %q", reviewer, vote.FindingID)
+		}
+		seen[vote.FindingID] = true
 	}
 	return payload.Votes, repaired, nil
 }
@@ -80,6 +93,28 @@ func DecodeEdit(raw []byte, runID, packetHash string) (domain.EditProposal, bool
 		return domain.EditProposal{}, repaired, fmt.Errorf("edit proposal run or packet identity mismatch")
 	}
 	return proposal, repaired, nil
+}
+
+func DecodeEditStrict(raw []byte, runID, packetHash string) (domain.EditProposal, error) {
+	var proposal domain.EditProposal
+	if err := DecodeStrict(raw, EditSchema, &proposal); err != nil {
+		return domain.EditProposal{}, err
+	}
+	if proposal.RunID != runID || proposal.PacketHash != packetHash {
+		return domain.EditProposal{}, fmt.Errorf("edit proposal run or packet identity mismatch")
+	}
+	return proposal, nil
+}
+
+func DecodeStrict(raw []byte, schemaText string, target any) error {
+	repaired, err := decodeContract(raw, schemaText, target)
+	if err != nil {
+		return err
+	}
+	if repaired {
+		return fmt.Errorf("input must be exactly one JSON object")
+	}
+	return nil
 }
 
 func decodeContract(raw []byte, schemaText string, target any) (bool, error) {

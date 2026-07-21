@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golangci/misspell"
 
@@ -27,6 +28,47 @@ type WorkerService struct {
 	Client              *http.Client
 	AllowPrivateForTest bool
 	Clock               func() time.Time
+	Headers             map[string]string
+}
+
+type EvidenceTarget struct {
+	URL      string `json:"url"`
+	Provider string `json:"provider"`
+	Domain   string `json:"domain"`
+	Builtin  bool   `json:"builtin"`
+}
+
+func ResolveEvidenceTarget(reference string) (EvidenceTarget, error) {
+	reference = strings.TrimSpace(reference)
+	lower := strings.ToLower(reference)
+	switch {
+	case strings.HasPrefix(lower, "doi:"):
+		value := strings.TrimSpace(reference[4:])
+		if value == "" {
+			return EvidenceTarget{}, fmt.Errorf("empty DOI")
+		}
+		return EvidenceTarget{URL: "https://api.crossref.org/works/" + url.PathEscape(value), Provider: "crossref", Domain: "api.crossref.org", Builtin: true}, nil
+	case strings.HasPrefix(lower, "pmid:"):
+		value := strings.TrimSpace(reference[5:])
+		if !regexp.MustCompile(`^[0-9]+$`).MatchString(value) {
+			return EvidenceTarget{}, fmt.Errorf("invalid PubMed identifier")
+		}
+		return EvidenceTarget{URL: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=" + url.QueryEscape(value), Provider: "pubmed", Domain: "eutils.ncbi.nlm.nih.gov", Builtin: true}, nil
+	case strings.HasPrefix(lower, "arxiv:"):
+		value := strings.TrimSpace(reference[6:])
+		if value == "" {
+			return EvidenceTarget{}, fmt.Errorf("empty arXiv identifier")
+		}
+		return EvidenceTarget{URL: "https://export.arxiv.org/api/query?id_list=" + url.QueryEscape(value), Provider: "arxiv", Domain: "export.arxiv.org", Builtin: true}, nil
+	case strings.HasPrefix(lower, "https://"):
+		parsed, err := url.Parse(reference)
+		if err != nil || parsed.Hostname() == "" {
+			return EvidenceTarget{}, fmt.Errorf("invalid evidence URL")
+		}
+		return EvidenceTarget{URL: parsed.String(), Provider: "url", Domain: parsed.Hostname()}, nil
+	default:
+		return EvidenceTarget{}, fmt.Errorf("unsupported evidence reference")
+	}
 }
 
 func (w *WorkerService) Fetch(ctx context.Context, rawURL, task, phase string) (domain.EvidenceItem, error) {
@@ -39,16 +81,8 @@ func (w *WorkerService) Fetch(ctx context.Context, rawURL, task, phase string) (
 	if !exactDomainAllowed(parsed.Hostname(), w.AllowedDomains) {
 		return domain.EvidenceItem{}, fmt.Errorf("worker domain %q is not allowlisted", parsed.Hostname())
 	}
-	if !w.AllowPrivateForTest {
-		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, parsed.Hostname())
-		if err != nil {
-			return domain.EvidenceItem{}, fmt.Errorf("resolve worker domain: %w", err)
-		}
-		for _, address := range addresses {
-			if address.IP.IsPrivate() || address.IP.IsLoopback() || address.IP.IsLinkLocalUnicast() || address.IP.IsLinkLocalMulticast() || address.IP.IsUnspecified() {
-				return domain.EvidenceItem{}, fmt.Errorf("worker domain resolves to a private or local address")
-			}
-		}
+	if err := validateWorkerTarget(ctx, parsed, w.AllowedDomains, w.AllowPrivateForTest); err != nil {
+		return domain.EvidenceItem{}, err
 	}
 	timeout := w.Timeout
 	if timeout <= 0 {
@@ -60,18 +94,25 @@ func (w *WorkerService) Fetch(ctx context.Context, rawURL, task, phase string) (
 	if err != nil {
 		return domain.EvidenceItem{}, err
 	}
+	for key, value := range w.Headers {
+		req.Header.Set(key, value)
+	}
 	client := w.Client
 	if client == nil {
-		client = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if !exactDomainAllowed(req.URL.Hostname(), w.AllowedDomains) {
-				return fmt.Errorf("redirect escaped domain allowlist")
-			}
-			if len(via) >= 3 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		}}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if !w.AllowPrivateForTest {
+			transport.DialContext = publicDialContext
+		}
+		client = &http.Client{Transport: transport}
 	}
+	clientCopy := *client
+	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many redirects")
+		}
+		return validateWorkerTarget(req.Context(), req.URL, w.AllowedDomains, w.AllowPrivateForTest)
+	}
+	client = &clientCopy
 	resp, err := client.Do(req)
 	if err != nil {
 		return domain.EvidenceItem{}, err
@@ -99,9 +140,55 @@ func (w *WorkerService) Fetch(ctx context.Context, rawURL, task, phase string) (
 	hash := hex.EncodeToString(sum[:])
 	excerpt := strings.TrimSpace(string(data))
 	if len(excerpt) > 4000 {
-		excerpt = excerpt[:4000]
+		end := 4000
+		for end > 0 && !utf8.RuneStart(excerpt[end]) {
+			end--
+		}
+		excerpt = excerpt[:end]
 	}
 	return domain.EvidenceItem{SchemaVersion: 1, ID: "evidence:" + hash[:12], Task: task, Phase: phase, Source: parsed.String(), RetrievedAt: clock().UTC(), Excerpt: excerpt, ContentSHA256: hash, Status: "ok"}, nil
+}
+
+func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{}
+	for _, address := range addresses {
+		ip := address.IP
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			continue
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+	return nil, fmt.Errorf("worker target has no public address")
+}
+
+func validateWorkerTarget(ctx context.Context, target *url.URL, allowed []string, allowPrivate bool) error {
+	if target == nil || target.Hostname() == "" || (target.Scheme != "https" && !(allowPrivate && target.Scheme == "http")) {
+		return fmt.Errorf("worker URL must remain on an allowed HTTPS target")
+	}
+	if !exactDomainAllowed(target.Hostname(), allowed) {
+		return fmt.Errorf("redirect escaped domain allowlist")
+	}
+	if allowPrivate {
+		return nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, target.Hostname())
+	if err != nil {
+		return fmt.Errorf("resolve worker domain: %w", err)
+	}
+	for _, address := range addresses {
+		if address.IP.IsPrivate() || address.IP.IsLoopback() || address.IP.IsLinkLocalUnicast() || address.IP.IsLinkLocalMulticast() || address.IP.IsUnspecified() {
+			return fmt.Errorf("worker domain resolves to a private or local address")
+		}
+	}
+	return nil
 }
 
 func exactDomainAllowed(host string, allowed []string) bool {

@@ -94,3 +94,29 @@ func TestEditAppliesAcceptedScopeAndRevertProtectsUserChanges(t *testing.T) {
 		t.Fatalf("revert restored %q, want %q", restored, original)
 	}
 }
+
+func TestValidateEditRejectsOutOfScopeAndStaleSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.md")
+	content := "claim" + strings.Repeat("x", 900) + "tail"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := documents.Build(context.Background(), path, documents.BuildOptions{Kind: "generic", Rubric: "rubric"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finding := domain.Finding{SchemaVersion: 2, ID: "F-1", Reviewer: "R-001", Origin: "panel", Severity: domain.SeverityMinor, Category: domain.CategoryCorrectness, Anchor: domain.Anchor{Kind: "quote", PacketItem: packet.Items[0].ID, Quote: "claim", ItemSHA256: packet.Items[0].PacketSHA256, CharOffset: 0, EndOffset: 5}, Issue: "issue", Recommendation: "recommend", EvidenceStatus: domain.EvidenceAnchored, Confidence: "high"}
+	final := domain.Final{SchemaVersion: 1, RunID: "run", PacketHash: packet.PacketHash, Findings: []domain.Finding{finding}, Decisions: []domain.Decision{{SchemaVersion: 1, FindingID: finding.ID, Outcome: "accepted"}}}
+	proposal := domain.EditProposal{SchemaVersion: 1, RunID: "run", PacketHash: packet.PacketHash, Hunks: []domain.EditHunk{{PacketItem: packet.Items[0].ID, FindingIDs: []string{finding.ID}, Scope: domain.EditLocal, SourceSHA256: packet.Items[0].SourceSHA256, Start: 900, End: 904, Replacement: "end"}}}
+	if _, err := validateEditProposal(packet, final, proposal, false); err == nil {
+		t.Fatal("expected local-scope rejection")
+	}
+	proposal.Hunks[0].Start, proposal.Hunks[0].End = 0, 5
+	if err := os.WriteFile(path, []byte("user changed it"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateEditProposal(packet, final, proposal, false); err == nil {
+		t.Fatal("expected stale source rejection")
+	}
+}

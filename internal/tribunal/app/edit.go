@@ -64,6 +64,14 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	if err != nil {
 		return EditResult{}, exitError(ExitPreflight, "%v", err)
 	}
+	lock, err := storage.AcquireLock(ctx, filepath.Join(runDir, "run.lock"), nil)
+	if err != nil {
+		return EditResult{}, exitError(ExitPreflight, "acquire run lock: %v", err)
+	}
+	defer lock.Close()
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
+		return EditResult{}, exitError(ExitPreflight, "revalidate run: %v", err)
+	}
 	packet, err := readPacket(filepath.Join(runDir, "packet.json"))
 	if err != nil {
 		return EditResult{}, exitError(ExitPreflight, "%v", err)
@@ -113,9 +121,17 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 }
 
 func (s *Service) Revert(ref RunRef) (EditRecord, error) {
-	_, runDir, _, err := s.locateRun(ref)
+	workspace, runDir, _, err := s.locateRun(ref)
 	if err != nil {
 		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	}
+	lock, err := storage.AcquireLock(context.Background(), filepath.Join(runDir, "run.lock"), nil)
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "acquire run lock: %v", err)
+	}
+	defer lock.Close()
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "revalidate run: %v", err)
 	}
 	var record EditRecord
 	path := filepath.Join(runDir, "edit-record.json")
@@ -128,6 +144,7 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 	type restore struct {
 		file EditFileRecord
 		data []byte
+		live []byte
 		mode os.FileMode
 	}
 	var restores []restore
@@ -148,17 +165,34 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 		if err != nil {
 			return EditRecord{}, exitError(ExitAborted, "%v", err)
 		}
-		restores = append(restores, restore{file: file, data: backup, mode: info.Mode()})
+		restores = append(restores, restore{file: file, data: backup, live: live, mode: info.Mode()})
 	}
+	var restored []restore
 	for _, item := range restores {
 		if err := storage.WriteFileMode(item.file.SourcePath, item.data, item.mode); err != nil {
+			for _, prior := range restored {
+				_ = storage.WriteFileMode(prior.file.SourcePath, prior.live, prior.mode)
+			}
 			return EditRecord{}, exitError(ExitAborted, "restore %s: %v", item.file.SourcePath, err)
 		}
+		restored = append(restored, item)
 	}
 	now := s.now()
 	record.RevertedAt = &now
 	if err := storage.WriteJSON(path, record); err != nil {
 		return EditRecord{}, exitError(ExitAborted, "persist revert record: %v", err)
+	}
+	final, err := readFinal(filepath.Join(runDir, "final.json"))
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	}
+	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	}
+	final.EditsApplied, final.FinishedAt = false, now
+	if err := s.publish(runDir, workspace, final, meta.Panel); err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "persist reverted final: %v", err)
 	}
 	return record, nil
 }
@@ -169,14 +203,22 @@ func (s *Service) loadOrCreateProposal(ctx context.Context, runDir, runID string
 		if err != nil {
 			return domain.EditProposal{}, err
 		}
-		proposal, _, err := adapters.DecodeEdit(raw, runID, packet.PacketHash)
-		return proposal, err
+		return adapters.DecodeEditStrict(raw, runID, packet.PacketHash)
 	}
 	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
 	if err != nil || len(meta.Panel.Reviewers) == 0 {
 		return domain.EditProposal{}, fmt.Errorf("run has no editor-capable panel")
 	}
-	editor := meta.Panel.Reviewers[0]
+	var editor domain.Panelist
+	for _, candidate := range meta.Panel.Reviewers {
+		if candidate.Adapter != "claude" {
+			editor = candidate
+			break
+		}
+	}
+	if editor.ID == "" {
+		return domain.EditProposal{}, fmt.Errorf("run panel has no proposal-capable editor")
+	}
 	adapter, err := s.Registry.Get(editor.Adapter)
 	if err != nil {
 		return domain.EditProposal{}, err
@@ -363,6 +405,11 @@ func applyPlans(runDir, runID, packetHash string, plans []plannedEdit, now time.
 		if err != nil || canonical != plan.item.SourcePath {
 			rollbackPlans(applied)
 			return EditRecord{}, fmt.Errorf("source path changed before atomic apply")
+		}
+		current, err := os.ReadFile(plan.item.SourcePath)
+		if err != nil || hashText(string(current)) != hashText(string(plan.live)) {
+			rollbackPlans(applied)
+			return EditRecord{}, fmt.Errorf("source content changed before atomic apply")
 		}
 		if err := storage.WriteFileMode(plan.item.SourcePath, plan.after, plan.mode); err != nil {
 			rollbackPlans(applied)

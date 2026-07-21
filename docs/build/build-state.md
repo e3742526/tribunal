@@ -1,10 +1,10 @@
 # Build State
 
 - Project: Tribunal v0.1.0
-- Current gate: 6 — adversarial audit
-- Last update: Gates 3–5 implementation and public surface complete
-- Status: audit and acceptance in progress
-- Waypoint: pending Gates 3–5 local commit
+- Current gate: 7 — documentation and clean-checkout verification
+- Last update: Gate 6 adversarial audit complete
+- Status: acceptance in progress
+- Waypoint: `f67fb05` (Gates 3–5)
 
 ## Verified facts
 

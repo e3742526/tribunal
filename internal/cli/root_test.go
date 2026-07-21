@@ -51,7 +51,7 @@ func TestReviewCommandCompletesWithoutGitAndWritesOnlyExternalState(t *testing.T
 			}
 			content = fmt.Sprintf(`{"schema_version":1,"reviewer_id":%q,"findings":[{"schema_version":2,"id":%q,"reviewer":%q,"origin":"panel","severity":"major","category":"correctness","anchor":{"kind":"quote","packet_item":"artifact:brief.md","quote":"launch date is unsupported","item_sha256":%q},"issue":"The date lacks support.","recommendation":"Cite a source or remove the date.","evidence_status":"anchored","confidence":"high"}]}`, reviewer, "F-"+reviewer, reviewer, hash[1])
 		} else {
-			content = fmt.Sprintf(`{"schema_version":1,"votes":[{"schema_version":1,"reviewer_id":%q,"finding_id":"F-R-001","choice":"accept","severity":"major","reason":"The claim needs support."}]}`, reviewer)
+			content = fmt.Sprintf(`{"schema_version":1,"votes":[{"schema_version":1,"reviewer_id":%q,"finding_id":"B-0001","choice":"accept","severity":"major","reason":"The claim needs support."}]}`, reviewer)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
 	}))

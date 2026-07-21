@@ -82,6 +82,11 @@ func Split(packet *Packet, maxBytes int) error {
 		}
 	}
 	sort.SliceStable(packet.Chunks, func(i, j int) bool { return packet.Chunks[i].ID < packet.Chunks[j].ID })
+	hash, err := canonicalPacketHash(*packet)
+	if err != nil {
+		return err
+	}
+	packet.PacketHash = hash
 	return nil
 }
 

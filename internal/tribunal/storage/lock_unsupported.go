@@ -14,3 +14,5 @@ func AcquireLock(context.Context, string, func()) (*Lock, error) {
 }
 
 func (*Lock) Close() error { return nil }
+
+func LockStatus(string) (bool, int, error) { return false, 0, nil }

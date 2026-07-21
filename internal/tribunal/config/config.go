@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,6 +58,8 @@ type Config struct {
 	Workers          WorkerConfig     `toml:"workers" json:"workers"`
 	TrustedSources   []string         `toml:"-" json:"trusted_sources"`
 	IgnoredSources   []string         `toml:"-" json:"ignored_sources"`
+	WorkspaceRoot    string           `toml:"-" json:"workspace_root,omitempty"`
+	TrustWorkspace   bool             `toml:"-" json:"trust_workspace_config"`
 }
 
 type LoadOptions struct {
@@ -93,6 +97,8 @@ func Default() Config {
 
 func Load(opts LoadOptions) (Config, error) {
 	cfg := Default()
+	cfg.WorkspaceRoot = opts.Workspace
+	cfg.TrustWorkspace = opts.TrustWorkspaceConfig
 	cfg.TrustedSources = []string{"built-in defaults"}
 	userPath, err := userConfigPath()
 	if err != nil {
@@ -137,13 +143,28 @@ func mergeFile(cfg *Config, path string) error {
 	if !exists(path) {
 		return nil
 	}
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config %s must be a regular non-symlink file", path)
+	}
+	metadata, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		return fmt.Errorf("load config %s: %w", path, err)
+	}
+	if unknown := metadata.Undecoded(); len(unknown) > 0 {
+		return fmt.Errorf("load config %s: unknown key %s", path, unknown[0].String())
 	}
 	return nil
 }
 
 func mergeEnv(cfg *Config) error {
+	known := map[string]bool{"TRIBUNAL_STATE_ROOT": true, "TRIBUNAL_PANEL": true, "TRIBUNAL_PASSES": true, "TRIBUNAL_MAX_OUTPUT_BYTES": true, "TRIBUNAL_MAX_WALL_TIME": true, "TRIBUNAL_TOKEN_BUDGET": true}
+	for _, item := range os.Environ() {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && strings.HasPrefix(key, "TRIBUNAL_") && !known[key] {
+			return fmt.Errorf("unknown Tribunal environment key %s", key)
+		}
+	}
 	if value := os.Getenv("TRIBUNAL_STATE_ROOT"); value != "" {
 		cfg.StateRoot = value
 	}
@@ -227,6 +248,31 @@ func normalize(cfg *Config) error {
 	}
 	if _, ok := BuiltinRubric(cfg.Kind); !ok {
 		return fmt.Errorf("unknown document kind %q", cfg.Kind)
+	}
+	if cfg.Workers.WebSearchURL != "" {
+		endpoint, err := url.Parse(cfg.Workers.WebSearchURL)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" {
+			return fmt.Errorf("workers.websearch_url must be an absolute HTTPS URL")
+		}
+		allowed := false
+		for _, domainName := range cfg.Workers.AllowedDomains {
+			allowed = allowed || strings.EqualFold(strings.TrimSuffix(domainName, "."), strings.TrimSuffix(endpoint.Hostname(), "."))
+		}
+		if !allowed {
+			return fmt.Errorf("workers.websearch_url domain must be explicitly allowlisted")
+		}
+	}
+	if cfg.OpenAICompatible.BaseURL != "" {
+		endpoint, err := url.Parse(cfg.OpenAICompatible.BaseURL)
+		if err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") {
+			return fmt.Errorf("openai_compatible.base_url must be an absolute HTTP(S) URL")
+		}
+		if endpoint.Scheme == "http" {
+			ip := net.ParseIP(endpoint.Hostname())
+			if endpoint.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+				return fmt.Errorf("openai_compatible.base_url requires HTTPS except on loopback")
+			}
+		}
 	}
 	panel, err := domain.ParsePanel(cfg.Panel)
 	if err != nil {

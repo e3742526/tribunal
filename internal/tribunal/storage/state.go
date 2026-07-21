@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -85,13 +86,23 @@ func LoadLedger(workspace Workspace) (FindingsLedger, error) {
 	return ledger, nil
 }
 
-func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding) error {
+func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding, decisions []domain.Decision) error {
+	lock, err := AcquireLock(context.Background(), filepath.Join(workspace.Root, "ledger.lock"), nil)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	ledger, err := LoadLedger(workspace)
 	if err != nil {
 		return err
 	}
+	outcomes := map[string]string{}
+	for _, decision := range decisions {
+		outcomes[decision.FindingID] = decision.Outcome
+	}
 	seen := map[string]bool{}
 	for _, finding := range findings {
+		outcome := outcomes[finding.ID]
 		fingerprint := domain.FindingFingerprint(finding)
 		seen[fingerprint] = true
 		found := false
@@ -99,12 +110,15 @@ func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding) 
 			if ledger.Findings[i].Fingerprint == fingerprint {
 				ledger.Findings[i].Finding = finding
 				ledger.Findings[i].LastRunID = runID
+				if ledger.Findings[i].Status != "deferred" {
+					ledger.Findings[i].Status = statusForFinding(finding, outcome)
+				}
 				found = true
 				break
 			}
 		}
 		if !found {
-			ledger.Findings = append(ledger.Findings, FindingRecord{SchemaVersion: domain.SchemaVersion, ID: fingerprint, Fingerprint: fingerprint, Finding: finding, Status: statusForFinding(finding), FirstRunID: runID, LastRunID: runID})
+			ledger.Findings = append(ledger.Findings, FindingRecord{SchemaVersion: domain.SchemaVersion, ID: fingerprint, Fingerprint: fingerprint, Finding: finding, Status: statusForFinding(finding, outcome), FirstRunID: runID, LastRunID: runID})
 		}
 	}
 	for i := range ledger.Findings {
@@ -120,6 +134,11 @@ func DeferFinding(workspace Workspace, id, reason, operator string) error {
 	if reason == "" || operator == "" {
 		return fmt.Errorf("defer requires reason and operator")
 	}
+	lock, err := AcquireLock(context.Background(), filepath.Join(workspace.Root, "ledger.lock"), nil)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	ledger, err := LoadLedger(workspace)
 	if err != nil {
 		return err
@@ -135,12 +154,24 @@ func DeferFinding(workspace Workspace, id, reason, operator string) error {
 	return fmt.Errorf("finding %q not found", id)
 }
 
-func statusForFinding(f domain.Finding) string {
+func statusForFinding(f domain.Finding, outcome string) string {
 	if f.Quarantined {
 		return "quarantined"
 	}
+	if outcome == "rejected" {
+		return "rejected"
+	}
+	if outcome == "arbitration" {
+		return "disputed"
+	}
+	if outcome == "deferred" {
+		return "deferred"
+	}
 	if f.EvidenceStatus == domain.EvidenceUnevidenced {
 		return "unverified-claim"
+	}
+	if outcome == "" {
+		return "observed"
 	}
 	return "open"
 }
@@ -157,6 +188,20 @@ type DecisionRecord struct {
 func AppendDecision(workspace Workspace, decision DecisionRecord) error {
 	if decision.SchemaVersion != domain.SchemaVersion || decision.Fingerprint == "" || decision.Ruling == "" {
 		return fmt.Errorf("invalid decision record")
+	}
+	lock, err := AcquireLock(context.Background(), filepath.Join(workspace.Root, "decisions.lock"), nil)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	records, err := ReadDecisions(workspace)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.PacketItem == decision.PacketItem && record.Fingerprint == decision.Fingerprint && record.Ruling == decision.Ruling && record.Operator == decision.Operator {
+			return nil
+		}
 	}
 	return appendJSONLine(filepath.Join(workspace.Root, "decisions.jsonl"), decision)
 }
@@ -203,6 +248,11 @@ func BuildSnapshot(runDir string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("unsupported run state schema_version %d", state.SchemaVersion)
 	}
 	snapshot := Snapshot{SchemaVersion: domain.SchemaVersion, State: state}
+	waiting, pid, err := LockStatus(filepath.Join(runDir, "run.lock"))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.Waiting, snapshot.WaitPID = waiting, pid
 	var final domain.Final
 	if err := ReadJSON(filepath.Join(runDir, "final.json"), &final); err == nil {
 		if final.SchemaVersion != domain.SchemaVersion {

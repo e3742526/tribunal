@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -18,9 +20,14 @@ func AcquireLock(ctx context.Context, path string, onWait func()) (*Lock, error)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open lock file")
 	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -68,4 +75,25 @@ func firstError(a, b error) error {
 		return a
 	}
 	return b
+}
+
+func LockStatus(path string) (bool, int, error) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if os.IsNotExist(err) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	defer file.Close()
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		return false, 0, nil
+	} else if err != unix.EWOULDBLOCK {
+		return false, 0, err
+	}
+	data := make([]byte, 32)
+	n, _ := file.ReadAt(data, 0)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data[:n])))
+	return true, pid, nil
 }

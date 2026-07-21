@@ -47,7 +47,9 @@ func TestCreateRunUsesULIDAndPrivateDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.Clock = func() time.Time { return time.Unix(1700000000, 0).UTC() }
-	store.Entropy = bytes.NewReader(make([]byte, 32))
+	entropy := make([]byte, 32)
+	entropy[0] = 1
+	store.Entropy = bytes.NewReader(entropy)
 	workspace, err := store.Workspace("0123456789abcdef01234567", doc)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +60,13 @@ func TestCreateRunUsesULIDAndPrivateDirectory(t *testing.T) {
 	}
 	if len(runID) != 26 {
 		t.Fatalf("run id = %q", runID)
+	}
+	secondID, _, err := store.CreateRun(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondID <= runID {
+		t.Fatalf("ULIDs are not monotonic: %s then %s", runID, secondID)
 	}
 	info, err := os.Stat(runDir)
 	if err != nil || info.Mode().Perm() != 0o700 {
@@ -115,4 +124,31 @@ func TestLockHelper(t *testing.T) {
 	defer lock.Close()
 	fmt.Println("locked")
 	time.Sleep(2 * time.Second)
+}
+
+func TestLockAndJournalRejectSymlinkTargets(t *testing.T) {
+	dir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(external, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(dir, "run.lock")
+	if err := os.Symlink(external, lockPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := AcquireLock(context.Background(), lockPath, nil); err == nil {
+		t.Fatal("expected symlink lock rejection")
+	}
+	events := filepath.Join(dir, "events.jsonl")
+	if err := os.Symlink(external, events); err != nil {
+		t.Fatal(err)
+	}
+	state := domain.RunState{SchemaVersion: 1, RunID: "run", WorkspaceID: "workspace", Phase: domain.PhaseInit, Status: "running", UpdatedAt: time.Now()}
+	if err := Transition(dir, state); err == nil {
+		t.Fatal("expected symlink journal rejection")
+	}
+	data, err := os.ReadFile(external)
+	if err != nil || string(data) != "sentinel" {
+		t.Fatalf("external target changed: %q, %v", data, err)
+	}
 }

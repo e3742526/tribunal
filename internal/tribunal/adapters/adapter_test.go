@@ -10,14 +10,19 @@ import (
 func TestSubprocessReviewerArgvIsReadOnly(t *testing.T) {
 	panelist := domain.Panelist{Model: "model"}
 	for _, id := range []string{"codex", "claude", "agy"} {
-		a := &Subprocess{AdapterID: id, Binary: id}
-		argv, _, err := a.argv(RoleReviewer, panelist, Request{RunDir: "/run", Schema: ReviewSchema, SchemaPath: "/run/schema.json", OutputPath: "/run/output.json", TimeoutSeconds: 3}, "prompt")
-		if err != nil {
-			t.Fatal(err)
-		}
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "workspace-write") || strings.Contains(joined, "acceptEdits") || strings.Contains(joined, "dangerously-skip") {
-			t.Fatalf("%s reviewer argv grants mutation: %s", id, joined)
+		for _, role := range []Role{RoleReviewer, RoleVoter, RoleEditor} {
+			if id == "claude" && role == RoleEditor {
+				continue
+			}
+			a := &Subprocess{AdapterID: id, Binary: id}
+			argv, _, err := a.argv(role, panelist, Request{RunDir: "/run", Schema: ReviewSchema, SchemaPath: "/run/schema.json", OutputPath: "/run/output.json", TimeoutSeconds: 3}, "prompt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(argv, " ")
+			if strings.Contains(joined, "workspace-write") || strings.Contains(joined, "acceptEdits") || strings.Contains(joined, "dangerously-skip") {
+				t.Fatalf("%s %s argv grants mutation: %s", id, role, joined)
+			}
 		}
 	}
 }
@@ -37,6 +42,13 @@ func TestDecodeReviewRejectsWrongReviewer(t *testing.T) {
 	raw := []byte(`{"schema_version":1,"reviewer_id":"peer","findings":[]}`)
 	if _, _, err := DecodeReview(raw, "R-001"); err == nil {
 		t.Fatal("expected reviewer binding failure")
+	}
+}
+
+func TestDecodeVotesRejectsDuplicateBallots(t *testing.T) {
+	raw := []byte(`{"schema_version":1,"votes":[{"schema_version":1,"reviewer_id":"R-001","finding_id":"F-1","choice":"accept","severity":"major","reason":"yes"},{"schema_version":1,"reviewer_id":"R-001","finding_id":"F-1","choice":"reject","severity":"major","reason":"no"}]}`)
+	if _, _, err := DecodeVotes(raw, "R-001"); err == nil {
+		t.Fatal("expected duplicate vote rejection")
 	}
 }
 

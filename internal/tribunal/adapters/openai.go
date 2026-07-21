@@ -110,8 +110,8 @@ func (a *OpenAICompatible) Invoke(ctx context.Context, role Role, panelist domai
 }
 
 func sameOriginRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
-		return fmt.Errorf("redirect changed origin")
+	if len(via) > 0 && (!strings.EqualFold(req.URL.Host, via[0].URL.Host) || !strings.EqualFold(req.URL.Scheme, via[0].URL.Scheme)) {
+		return fmt.Errorf("redirect changed origin or scheme")
 	}
 	if len(via) >= 3 {
 		return fmt.Errorf("too many redirects")

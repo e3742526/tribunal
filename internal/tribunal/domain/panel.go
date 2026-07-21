@@ -50,6 +50,13 @@ func ParsePanel(raw string) (Panel, error) {
 }
 
 func ValidatePanel(panel Panel) error {
+	return NormalizePanel(&panel)
+}
+
+func NormalizePanel(panel *Panel) error {
+	if panel == nil {
+		return fmt.Errorf("panel is required")
+	}
 	if panel.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("panel schema_version must be %d", SchemaVersion)
 	}

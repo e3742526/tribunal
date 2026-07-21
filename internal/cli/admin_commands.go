@@ -29,6 +29,9 @@ func newPersonaCommand(f *flags) *cobra.Command {
 			return err
 		}
 		var entries []personaEntry
+		for _, persona := range config.StarterPersonas() {
+			entries = append(entries, personaEntry{Path: "builtin:" + persona.Name, Persona: persona})
+		}
 		for index, dir := range dirs {
 			paths, _ := filepath.Glob(filepath.Join(dir, "*.toml"))
 			sort.Strings(paths)

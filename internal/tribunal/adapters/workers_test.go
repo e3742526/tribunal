@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,5 +39,28 @@ func TestDeterministicWorkersProduceBoundedFindings(t *testing.T) {
 	}
 	if len(references) != 1 || references[0].Severity != "minor" {
 		t.Fatalf("references=%#v", references)
+	}
+}
+
+func TestWorkerRedirectCannotEscapeAllowlistWithCustomClient(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("escaped")) }))
+	defer target.Close()
+	escapingURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, escapingURL, http.StatusFound) }))
+	defer source.Close()
+	parsed, _ := url.Parse(source.URL)
+	worker := WorkerService{AllowedDomains: []string{parsed.Hostname()}, Client: source.Client(), AllowPrivateForTest: true}
+	if _, err := worker.Fetch(context.Background(), source.URL, "test", "pre-review"); err == nil {
+		t.Fatal("redirect escaped exact-domain allowlist")
+	}
+}
+
+func TestResolveTypedEvidenceTargets(t *testing.T) {
+	tests := map[string]string{"doi:10.1000/example": "crossref", "pmid:12345": "pubmed", "arxiv:2401.00001": "arxiv", "https://example.com/source": "url"}
+	for input, provider := range tests {
+		target, err := ResolveEvidenceTarget(input)
+		if err != nil || target.Provider != provider || target.URL == "" {
+			t.Fatalf("ResolveEvidenceTarget(%q) = %#v, %v", input, target, err)
+		}
 	}
 }

@@ -58,6 +58,9 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 		return domain.Final{}, exitError(ExitPreflight, "acquire run lock: %v", err)
 	}
 	defer lock.Close()
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "revalidate run directory: %v", err)
+	}
 	started := s.now()
 	if err := s.persistStart(runDir, runID, packet, panel, opts, started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
@@ -88,6 +91,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	}
 	workerFindings := readWorkerFindings(runDir)
 	allFindings = append(allFindings, workerFindings...)
+	canonicalizeFindingIDs(allFindings)
 	if len(valid)*2 <= len(panel.Reviewers) || len(valid) < 2 {
 		final, persistErr := s.finalizeDegraded(runDir, workspace, runID, packet, panel, started, statuses, allFindings, reasons)
 		if persistErr != nil {
@@ -97,6 +101,25 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	}
 	if err := s.transition(runDir, runID, packet, domain.PhaseReviewed, "running", reasons); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
+	}
+	var verificationEvidence []domain.EvidenceItem
+	if !opts.NoWorkers {
+		if err := s.transition(runDir, runID, packet, domain.PhaseVerifying, "running", reasons); err != nil {
+			return domain.Final{}, exitError(ExitPreflight, "%v", err)
+		}
+		var verificationReasons []string
+		verificationEvidence, verificationReasons, err = s.verifyFindings(runCtx, runDir, allFindings)
+		if err != nil {
+			return domain.Final{}, exitError(ExitPreflight, "persist verification: %v", err)
+		}
+		reasons = append(reasons, verificationReasons...)
+		if runCtx.Err() != nil {
+			final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, runCtx.Err())
+			if persistErr != nil {
+				return domain.Final{}, exitError(ExitPreflight, "%v", persistErr)
+			}
+			return final, exitError(ExitAborted, "%v", runCtx.Err())
+		}
 	}
 	clusters := domain.ClusterFindings(allFindings)
 	if err := storage.WriteJSON(filepath.Join(runDir, "clusters.json"), map[string]any{"schema_version": 1, "clusters": clusters}); err != nil {
@@ -134,7 +157,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	for i := range clusters {
 		votes := votesForCluster(clusters[i], votesByFinding)
 		clusters[i].Votes = votes
-		decision := domain.ResolveVotes(clusters[i].Finding, votes, domain.ConsensusOptions{ConfiguredReviewers: len(panel.Reviewers), ValidReviewers: len(valid), Weights: weights})
+		decision := domain.ResolveVotes(clusters[i].Finding, votes, domain.ConsensusOptions{ConfiguredReviewers: len(panel.Reviewers), ValidReviewers: len(valid), Weighted: true, Weights: weights})
 		clusters[i].Decision = &decision
 		decisions = append(decisions, decision)
 	}
@@ -170,7 +193,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.transition(runDir, runID, packet, phase, "running", reasons); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	final := buildFinal(runID, packet, started, s.now(), statuses, allFindings, decisions, disputes, reasons)
+	final := buildFinal(runID, packet, started, s.now(), statuses, allFindings, verificationEvidence, decisions, disputes, reasons)
 	if err := s.publish(runDir, workspace, final, panel); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
@@ -183,7 +206,10 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 func (s *Service) resolvePanel(opts ReviewOptions) (domain.Panel, error) {
 	if opts.PanelValue != nil {
 		panel := *opts.PanelValue
-		return panel, domain.ValidatePanel(panel)
+		if err := domain.NormalizePanel(&panel); err != nil {
+			return domain.Panel{}, err
+		}
+		return s.hydratePanel(panel)
 	}
 	raw := opts.Panel
 	if raw == "" {
@@ -197,7 +223,23 @@ func (s *Service) resolvePanel(opts ReviewOptions) (domain.Panel, error) {
 		panel.Reviewers[i].MaxContextTokens = s.Config.Limits.MaxContextTokens
 		panel.Reviewers[i].ReservedOutputTokens = s.Config.Limits.ReservedOutput
 	}
-	return panel, domain.ValidatePanel(panel)
+	if err := domain.NormalizePanel(&panel); err != nil {
+		return domain.Panel{}, err
+	}
+	return s.hydratePanel(panel)
+}
+
+func (s *Service) hydratePanel(panel domain.Panel) (domain.Panel, error) {
+	for i := range panel.Reviewers {
+		if panel.Reviewers[i].Persona != "" && panel.Reviewers[i].Persona != "plain" {
+			persona, err := config.ResolvePersona(panel.Reviewers[i].Persona, s.Config.WorkspaceRoot, s.Config.TrustWorkspace)
+			if err != nil {
+				return domain.Panel{}, err
+			}
+			panel.Reviewers[i].PersonaLens = config.PersonaText(persona)
+		}
+	}
+	return panel, nil
 }
 
 func (s *Service) resolvePacket(ctx context.Context, opts ReviewOptions) (documents.Packet, error) {
@@ -256,16 +298,18 @@ func preflightTokenBudget(packet documents.Packet, panel domain.Panel, passes, b
 }
 
 func (s *Service) resolveRun(opts ReviewOptions, packet documents.Packet) (storage.Workspace, string, string, error) {
-	root, err := documentRoot(packet.InputRoot)
-	if err != nil {
-		return storage.Workspace{}, "", "", err
-	}
-	workspace, err := s.Store.Workspace(packet.WorkspaceID, root)
-	if err != nil {
-		return storage.Workspace{}, "", "", err
-	}
+	var workspace storage.Workspace
 	if opts.Workspace != nil {
 		workspace = *opts.Workspace
+	} else {
+		root, err := documentRoot(packet.InputRoot)
+		if err != nil {
+			return storage.Workspace{}, "", "", err
+		}
+		workspace, err = s.Store.Workspace(packet.WorkspaceID, root)
+		if err != nil {
+			return storage.Workspace{}, "", "", err
+		}
 	}
 	if opts.RunDir != "" && opts.RunID != "" {
 		return workspace, opts.RunID, opts.RunDir, nil
@@ -498,7 +542,8 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 		result.err = err
 		return result
 	}
-	prompt := votePrompt(packet, voter, findings, packet.PacketHash)
+	blind, blindToOriginal := blindFindings(findings, packet.PacketHash)
+	prompt := votePrompt(packet, voter, blind)
 	if err := storage.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt)); err != nil {
 		result.err = err
 		return result
@@ -511,7 +556,7 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 		result.err = err
 		return result
 	}
-	if err := storage.WriteJSON(filepath.Join(dir, "blind-vote-packet.json"), map[string]any{"schema_version": 1, "packet_hash": packet.PacketHash, "shuffle_seed": packet.PacketHash, "findings": anonymizeFindings(findings, packet.PacketHash)}); err != nil {
+	if err := storage.WriteJSON(filepath.Join(dir, "blind-vote-packet.json"), map[string]any{"schema_version": 1, "packet_hash": packet.PacketHash, "shuffle_seed": packet.PacketHash, "findings": blind}); err != nil {
 		result.err = err
 		return result
 	}
@@ -541,15 +586,13 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 		result.err = err
 		return result
 	}
-	allowed := map[string]bool{}
-	for _, finding := range findings {
-		allowed[finding.ID] = true
-	}
-	for _, vote := range votes {
-		if !allowed[vote.FindingID] {
-			result.err = fmt.Errorf("vote references unknown finding %q", vote.FindingID)
+	for i := range votes {
+		original, ok := blindToOriginal[votes[i].FindingID]
+		if !ok {
+			result.err = fmt.Errorf("vote references unknown finding %q", votes[i].FindingID)
 			return result
 		}
+		votes[i].FindingID = original
 	}
 	result.votes, result.repaired = votes, repaired
 	if err := storage.WriteJSON(filepath.Join(dir, "parsed.json"), map[string]any{"schema_version": 1, "votes": votes}); err != nil {
@@ -573,7 +616,7 @@ func votesForCluster(cluster domain.Cluster, votes map[string][]domain.Vote) []d
 	return result
 }
 
-func buildFinal(runID string, packet documents.Packet, started, finished time.Time, statuses []domain.PanelStatus, findings []domain.Finding, decisions []domain.Decision, disputes []domain.ArbitrationDispute, reasons []string) domain.Final {
+func buildFinal(runID string, packet documents.Packet, started, finished time.Time, statuses []domain.PanelStatus, findings []domain.Finding, evidence []domain.EvidenceItem, decisions []domain.Decision, disputes []domain.ArbitrationDispute, reasons []string) domain.Final {
 	exit, status := ExitSuccess, "final"
 	if len(disputes) > 0 {
 		exit, status = ExitArbitration, "arbitration_pending"
@@ -585,7 +628,7 @@ func buildFinal(runID string, packet documents.Packet, started, finished time.Ti
 			}
 		}
 	}
-	return domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: status, ExitCode: exit, Summary: summaryFor(decisions, disputes), PanelIncomplete: panelIncomplete(statuses), ReasonCodes: unique(reasons), PanelStatus: statuses, Findings: findings, Decisions: decisions, Arbitration: disputes, StartedAt: started, FinishedAt: finished}
+	return domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: status, ExitCode: exit, Summary: summaryFor(decisions, disputes), PanelIncomplete: panelIncomplete(statuses), ReasonCodes: unique(reasons), PanelStatus: statuses, Findings: findings, Evidence: evidence, Decisions: decisions, Arbitration: disputes, StartedAt: started, FinishedAt: finished}
 }
 
 func (s *Service) finalizeDegraded(runDir string, workspace storage.Workspace, runID string, packet documents.Packet, panel domain.Panel, started time.Time, statuses []domain.PanelStatus, findings []domain.Finding, reasons []string) (domain.Final, error) {
@@ -605,7 +648,12 @@ func (s *Service) finalizeAborted(runDir string, workspace storage.Workspace, ru
 }
 
 func (s *Service) publish(runDir string, workspace storage.Workspace, final domain.Final, panel domain.Panel) error {
-	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings); err != nil {
+	lock, err := storage.AcquireLock(context.Background(), filepath.Join(workspace.Root, "publish.lock"), nil)
+	if err != nil {
+		return fmt.Errorf("acquire publication lock: %w", err)
+	}
+	defer lock.Close()
+	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions); err != nil {
 		return fmt.Errorf("persist findings ledger: %w", err)
 	}
 	if err := writeReports(runDir, final, panel); err != nil {
@@ -623,15 +671,6 @@ func (s *Service) publish(runDir string, workspace storage.Workspace, final doma
 
 func writeActive(workspace storage.Workspace, runID string, packet documents.Packet, status string, at time.Time) error {
 	return storage.WriteJSON(filepath.Join(workspace.Root, "active.json"), map[string]any{"schema_version": 1, "run_id": runID, "workspace_id": packet.WorkspaceID, "packet_hash": packet.PacketHash, "status": status, "updated_at": at})
-}
-
-func anonymizeFindings(findings []domain.Finding, seed string) []domain.Finding {
-	values := append([]domain.Finding(nil), findings...)
-	for i := range values {
-		values[i].Reviewer, values[i].Persona = "anonymous", ""
-	}
-	sort.SliceStable(values, func(i, j int) bool { return hashText(seed+"\x00"+values[i].ID) < hashText(seed+"\x00"+values[j].ID) })
-	return values
 }
 
 func summaryFor(decisions []domain.Decision, disputes []domain.ArbitrationDispute) string {
@@ -690,6 +729,18 @@ func unique(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func canonicalizeFindingIDs(findings []domain.Finding) {
+	counts := map[string]int{}
+	for _, finding := range findings {
+		counts[finding.ID]++
+	}
+	for i := range findings {
+		if counts[findings[i].ID] > 1 {
+			findings[i].ID = findings[i].Reviewer + "-" + findings[i].ID
+		}
+	}
 }
 
 func hashText(value string) string {

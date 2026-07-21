@@ -19,7 +19,7 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/storage"
 )
 
-var Version = "0.1.0-dev"
+var Version = "0.1.0"
 
 type flags struct {
 	JSON           bool
