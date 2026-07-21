@@ -1,9 +1,9 @@
 # Build State
 
 - Project: Tribunal v0.1.0
-- Current gate: 8 — final acceptance and handoff
-- Last update: Gate 7 documentation/vendor-contract verification complete
-- Status: final acceptance in progress
+- Current gate: 8 — complete
+- Last update: Gate 8 acceptance complete
+- Status: complete
 - Waypoint: `2ba8980` (Gate 6)
 
 ## Verified facts
@@ -23,23 +23,23 @@
 
 ## Work in flight
 
-Gate 8 is rerunning the complete gate from a clean worktree and recording the
-final QA and handoff state.
+None. The accepted Tribunal v0.1.0 source is ready for user review.
 
 ## Next actions
 
-1. Run `scripts/check.sh`, race, scans, and clean-checkout quickstart.
-2. Close or explicitly rescope every remaining evidence gap.
-3. Produce the Gate 8 acceptance commit and verify a clean worktree.
+1. Review the local Gate 8 commit and evidence.
+2. Install optional `govulncheck`, GoReleaser, and `actionlint` before a public
+   release and record their output.
+3. Push, tag, or publish only under separate explicit authorization.
 
 ## Open items
 
 - D-001 through D-018 are fixed with regression evidence.
-- Linux runtime archive smoke, Windows multiprocess locks, and unavailable
-  local third-party QA tools remain explicit evidence gaps.
+- Linux runtime archive execution, Windows multiprocess locks, and unavailable
+  local third-party QA tools are explicitly out of this host's verified scope.
 
 ## Resume verification
 
 Run `git status --short`, read this file plus `docs/INTENT.md`, then run
-`go test ./...`. Adopt this state only if the current slice compiles or is
-described here accurately.
+`scripts/check.sh`. The accepted state has a clean worktree and all required
+local gate commands pass, subject to the evidence gaps above.
