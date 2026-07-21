@@ -337,10 +337,10 @@ func (s *Service) persistStart(runDir, runID string, packet documents.Packet, pa
 	if err := storage.WriteJSON(filepath.Join(runDir, "packet-manifest.json"), map[string]any{"schema_version": 1, "packet_hash": packet.PacketHash, "items": manifestItems, "redactions": packet.Redactions, "chunks": packet.Chunks}); err != nil {
 		return fmt.Errorf("persist packet manifest: %w", err)
 	}
-	if err := storage.WriteFile(filepath.Join(runDir, "review.schema.json"), []byte(adapters.ReviewSchema+"\n")); err != nil {
+	if err := storage.WriteFile(filepath.Join(runDir, "review.schema.json"), []byte(adapters.ProviderReviewSchema+"\n")); err != nil {
 		return err
 	}
-	if err := storage.WriteFile(filepath.Join(runDir, "vote.schema.json"), []byte(adapters.VoteSchema+"\n")); err != nil {
+	if err := storage.WriteFile(filepath.Join(runDir, "vote.schema.json"), []byte(adapters.ProviderVoteSchema+"\n")); err != nil {
 		return err
 	}
 	return s.transition(runDir, runID, packet, domain.PhasePacketBuilt, "running", nil)
@@ -400,7 +400,7 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 		result.err, result.status.Status, result.status.Reason = err, "persistence_failed", err.Error()
 		return result
 	}
-	req := adapters.Request{RunDir: invocationDir, SystemPrompt: reviewerSystem, Prompt: prompt, Schema: adapters.ReviewSchema, SchemaPath: filepath.Join(runDir, "review.schema.json"), OutputPath: filepath.Join(invocationDir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
+	req := adapters.Request{RunDir: invocationDir, SystemPrompt: reviewerSystem, Prompt: prompt, Schema: adapters.ProviderReviewSchema, SchemaPath: filepath.Join(runDir, "review.schema.json"), OutputPath: filepath.Join(invocationDir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
 	var response adapters.Response
 	for attempt := 1; attempt <= 2; attempt++ {
 		response, err = s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleReviewer, panelist, req)
@@ -560,7 +560,7 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 		result.err = err
 		return result
 	}
-	req := adapters.Request{RunDir: dir, SystemPrompt: voterSystem, Prompt: prompt, Schema: adapters.VoteSchema, SchemaPath: filepath.Join(runDir, "vote.schema.json"), OutputPath: filepath.Join(dir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
+	req := adapters.Request{RunDir: dir, SystemPrompt: voterSystem, Prompt: prompt, Schema: adapters.ProviderVoteSchema, SchemaPath: filepath.Join(runDir, "vote.schema.json"), OutputPath: filepath.Join(dir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
 	response, err := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleVoter, voter, req)
 	if err != nil {
 		result.err = err

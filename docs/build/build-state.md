@@ -1,10 +1,10 @@
 # Build State
 
 - Project: Tribunal v0.1.0
-- Current gate: 7 — documentation and clean-checkout verification
-- Last update: Gate 6 adversarial audit complete
-- Status: acceptance in progress
-- Waypoint: `f67fb05` (Gates 3–5)
+- Current gate: 8 — final acceptance and handoff
+- Last update: Gate 7 documentation/vendor-contract verification complete
+- Status: final acceptance in progress
+- Waypoint: `2ba8980` (Gate 6)
 
 ## Verified facts
 
@@ -17,22 +17,26 @@
   writes.
 - Focused package tests, full tests, vet, build, module verification, and the
   800-line gate pass. `govulncheck` is unavailable locally.
+- A bounded authenticated three-family smoke reached blind voting with Codex
+  and Agy valid, Claude invalid-output isolated, quorum met, two accepted
+  recommendations, and one arbitration item (exit 2).
 
 ## Work in flight
 
-Gate 6 is auditing persistence, contracts, edit safety, CLI behavior, source
-identity, and documentation against the traceability matrix.
+Gate 8 is rerunning the complete gate from a clean worktree and recording the
+final QA and handoff state.
 
 ## Next actions
 
-1. Run race, repetition, fault/resume, clean-checkout, and quickstart evidence.
-2. Close or explicitly defer every traceability and defect item.
-3. Produce Gate 8 QA/handoff evidence and final local commit.
+1. Run `scripts/check.sh`, race, scans, and clean-checkout quickstart.
+2. Close or explicitly rescope every remaining evidence gap.
+3. Produce the Gate 8 acceptance commit and verify a clean worktree.
 
 ## Open items
 
-- R-001 and R-006 are closed; remaining risks are under Gate 6 audit.
-- D-001 through D-005 were fixed with regression evidence.
+- D-001 through D-018 are fixed with regression evidence.
+- Linux runtime archive smoke, Windows multiprocess locks, and unavailable
+  local third-party QA tools remain explicit evidence gaps.
 
 ## Resume verification
 

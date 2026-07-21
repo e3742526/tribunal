@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -104,7 +103,7 @@ func unwrapClaude(raw []byte) []byte {
 func (a *Subprocess) argv(role Role, panelist domain.Panelist, req Request, prompt string) ([]string, []byte, error) {
 	switch a.AdapterID {
 	case "codex":
-		args := []string{"exec", "-C", req.RunDir}
+		args := []string{"exec", "--skip-git-repo-check", "-C", req.RunDir}
 		if role == RoleEditor {
 			args = append(args, "-s", "read-only") // editor proposes JSON; host alone writes.
 		} else {
@@ -128,7 +127,11 @@ func (a *Subprocess) argv(role Role, panelist domain.Panelist, req Request, prom
 		args = append(args, a.ExtraArgs...)
 		return args, []byte(prompt + "\n"), nil
 	case "agy":
-		args := []string{"--print=" + prompt, "--model", panelist.Model, "--print-timeout", strconv.Itoa(req.TimeoutSeconds), "--sandbox", "--mode", "plan"}
+		timeout := time.Duration(req.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 15 * time.Minute
+		}
+		args := []string{"--print=" + prompt, "--model", panelist.Model, "--print-timeout", timeout.String(), "--sandbox", "--mode", "plan"}
 		args = append(args, a.ExtraArgs...)
 		return args, nil, nil
 	default:

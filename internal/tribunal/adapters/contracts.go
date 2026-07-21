@@ -12,26 +12,47 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/domain"
 )
 
+const ProviderReviewSchema = `{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "type":"object","additionalProperties":false,
+  "required":["schema_version","reviewer_id","summary","findings"],
+  "properties":{
+    "schema_version":{"type":"integer","const":1},"reviewer_id":{"type":"string"},"summary":{"type":"string"},
+    "findings":{"type":"array","maxItems":25,"items":{"$ref":"#/$defs/finding"}}
+  },
+  "$defs":{"finding":{"type":"object","additionalProperties":false,
+    "required":["schema_version","id","reviewer","persona","origin","severity","category","anchor","issue","recommendation","evidence","evidence_status","confidence","redacted_input","quarantined","quarantine_reason"],
+    "properties":{"schema_version":{"type":"integer","const":2},"id":{"type":"string"},"reviewer":{"type":"string"},"persona":{"type":"string"},"origin":{"type":"string","enum":["panel","worker"]},
+      "severity":{"type":"string","enum":["blocker","major","minor","nit"]},"category":{"type":"string","enum":["correctness","evidence","citation-integrity","factual-claim","security","data-loss","integrity","style","scope","structure"]},
+      "anchor":{"type":"object","required":["kind","packet_item","quote","prefix","suffix","char_offset","end_offset","item_sha256"],"properties":{"kind":{"type":"string","enum":["quote","section"]},"packet_item":{"type":"string"},"quote":{"type":"string"},"prefix":{"type":"string"},"suffix":{"type":"string"},"char_offset":{"type":"integer"},"end_offset":{"type":"integer"},"item_sha256":{"type":"string"}},"additionalProperties":false},
+      "issue":{"type":"string"},"recommendation":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"evidence_status":{"type":"string","enum":["anchored","worker-verified","unevidenced"]},"confidence":{"type":"string","enum":["low","med","high"]},"redacted_input":{"type":"boolean"},"quarantined":{"type":"boolean"},"quarantine_reason":{"type":"string"}}
+    }}
+}`
+
 const ReviewSchema = `{
   "$schema":"https://json-schema.org/draft/2020-12/schema",
   "type":"object","additionalProperties":false,
   "required":["schema_version","reviewer_id","findings"],
   "properties":{
-    "schema_version":{"const":1},"reviewer_id":{"type":"string"},"summary":{"type":"string"},
+    "schema_version":{"type":"integer","const":1},"reviewer_id":{"type":"string"},"summary":{"type":"string"},
     "findings":{"type":"array","maxItems":25,"items":{"$ref":"#/$defs/finding"}}
   },
   "$defs":{"finding":{"type":"object","additionalProperties":false,
     "required":["schema_version","id","reviewer","origin","severity","category","anchor","issue","recommendation","evidence_status","confidence"],
-    "properties":{"schema_version":{"const":2},"id":{"type":"string"},"reviewer":{"type":"string"},"persona":{"type":"string"},"origin":{"enum":["panel","worker"]},
-      "severity":{"enum":["blocker","major","minor","nit"]},"category":{"enum":["correctness","evidence","citation-integrity","factual-claim","security","data-loss","integrity","style","scope","structure"]},
-      "anchor":{"type":"object","required":["kind","packet_item","quote","item_sha256"],"properties":{"kind":{"enum":["quote","section"]},"packet_item":{"type":"string"},"quote":{"type":"string"},"prefix":{"type":"string"},"suffix":{"type":"string"},"char_offset":{"type":"integer"},"end_offset":{"type":"integer"},"item_sha256":{"type":"string"}},"additionalProperties":false},
-      "issue":{"type":"string"},"recommendation":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"evidence_status":{"enum":["anchored","worker-verified","unevidenced"]},"confidence":{"enum":["low","med","high"]},"redacted_input":{"type":"boolean"},"quarantined":{"type":"boolean"},"quarantine_reason":{"type":"string"}}
+    "properties":{"schema_version":{"type":"integer","const":2},"id":{"type":"string"},"reviewer":{"type":"string"},"persona":{"type":"string"},"origin":{"type":"string","enum":["panel","worker"]},
+      "severity":{"type":"string","enum":["blocker","major","minor","nit"]},"category":{"type":"string","enum":["correctness","evidence","citation-integrity","factual-claim","security","data-loss","integrity","style","scope","structure"]},
+      "anchor":{"type":"object","required":["kind","packet_item","quote","item_sha256"],"properties":{"kind":{"type":"string","enum":["quote","section"]},"packet_item":{"type":"string"},"quote":{"type":"string"},"prefix":{"type":"string"},"suffix":{"type":"string"},"char_offset":{"type":"integer"},"end_offset":{"type":"integer"},"item_sha256":{"type":"string"}},"additionalProperties":false},
+      "issue":{"type":"string"},"recommendation":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"evidence_status":{"type":"string","enum":["anchored","worker-verified","unevidenced"]},"confidence":{"type":"string","enum":["low","med","high"]},"redacted_input":{"type":"boolean"},"quarantined":{"type":"boolean"},"quarantine_reason":{"type":"string"}}
     }}
 }`
 
-const VoteSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","votes"],"properties":{"schema_version":{"const":1},"votes":{"type":"array","items":{"type":"object","required":["schema_version","reviewer_id","finding_id","choice","severity","reason"],"properties":{"schema_version":{"const":1},"reviewer_id":{"type":"string"},"finding_id":{"type":"string"},"choice":{"enum":["accept","reject","modify","abstain"]},"severity":{"enum":["blocker","major","minor","nit"]},"reason":{"type":"string"},"modification":{"type":"string"}},"additionalProperties":false}}},"additionalProperties":false}`
+const ProviderVoteSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","votes"],"properties":{"schema_version":{"type":"integer","const":1},"votes":{"type":"array","items":{"type":"object","required":["schema_version","reviewer_id","finding_id","choice","severity","reason","modification"],"properties":{"schema_version":{"type":"integer","const":1},"reviewer_id":{"type":"string"},"finding_id":{"type":"string"},"choice":{"type":"string","enum":["accept","reject","modify","abstain"]},"severity":{"type":"string","enum":["blocker","major","minor","nit"]},"reason":{"type":"string"},"modification":{"type":"string"}},"additionalProperties":false}}},"additionalProperties":false}`
 
-const EditSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["schema_version","run_id","packet_hash","hunks"],"properties":{"schema_version":{"const":1},"run_id":{"type":"string"},"packet_hash":{"type":"string"},"hunks":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["packet_item","finding_ids","scope","source_sha256","start","end","replacement"],"properties":{"packet_item":{"type":"string"},"finding_ids":{"type":"array","minItems":1,"items":{"type":"string"}},"scope":{"enum":["local","section","document"]},"source_sha256":{"type":"string"},"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":0},"replacement":{"type":"string"}}}}}}`
+const VoteSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","votes"],"properties":{"schema_version":{"type":"integer","const":1},"votes":{"type":"array","items":{"type":"object","required":["schema_version","reviewer_id","finding_id","choice","severity","reason"],"properties":{"schema_version":{"type":"integer","const":1},"reviewer_id":{"type":"string"},"finding_id":{"type":"string"},"choice":{"type":"string","enum":["accept","reject","modify","abstain"]},"severity":{"type":"string","enum":["blocker","major","minor","nit"]},"reason":{"type":"string"},"modification":{"type":"string"}},"additionalProperties":false}}},"additionalProperties":false}`
+
+const EditSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["schema_version","run_id","packet_hash","hunks"],"properties":{"schema_version":{"type":"integer","const":1},"run_id":{"type":"string"},"packet_hash":{"type":"string"},"hunks":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["packet_item","finding_ids","scope","source_sha256","start","end","replacement"],"properties":{"packet_item":{"type":"string"},"finding_ids":{"type":"array","minItems":1,"items":{"type":"string"}},"scope":{"type":"string","enum":["local","section","document"]},"source_sha256":{"type":"string"},"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":0},"replacement":{"type":"string"}}}}}}`
+
+const ProviderEditSchema = EditSchema
 
 func DecodeReview(raw []byte, reviewer string) (domain.Review, bool, error) {
 	var review domain.Review

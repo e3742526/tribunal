@@ -10,10 +10,16 @@ Current version: `v0.1.0`.
 
 Requirements are Go 1.23 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
 
+From a checkout:
+
 ```bash
-go install github.com/e3742526/tribunal@v0.1.0
+go build -o ./bin/tribunal .
+export PATH="$PWD/bin:$PATH"
 tribunal doctor
 ```
+
+After a release is published, `go install github.com/e3742526/tribunal@v0.1.0`
+installs the same command.
 
 Provider CLIs are detected from `PATH`:
 

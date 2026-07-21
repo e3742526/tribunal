@@ -227,14 +227,14 @@ func (s *Service) loadOrCreateProposal(ctx context.Context, runDir, runID string
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return domain.EditProposal{}, err
 	}
-	if err := storage.WriteFile(filepath.Join(runDir, "edit.schema.json"), []byte(adapters.EditSchema+"\n")); err != nil {
+	if err := storage.WriteFile(filepath.Join(runDir, "edit.schema.json"), []byte(adapters.ProviderEditSchema+"\n")); err != nil {
 		return domain.EditProposal{}, err
 	}
 	prompt := editPrompt(packet, final, runID)
 	if err := storage.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt)); err != nil {
 		return domain.EditProposal{}, err
 	}
-	req := adapters.Request{RunDir: dir, SystemPrompt: "Propose only typed replacement hunks for accepted Tribunal findings. Never access or modify files.", Prompt: prompt, Schema: adapters.EditSchema, SchemaPath: filepath.Join(runDir, "edit.schema.json"), OutputPath: filepath.Join(dir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
+	req := adapters.Request{RunDir: dir, SystemPrompt: "Propose only typed replacement hunks for accepted Tribunal findings. Never access or modify files.", Prompt: prompt, Schema: adapters.ProviderEditSchema, SchemaPath: filepath.Join(runDir, "edit.schema.json"), OutputPath: filepath.Join(dir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
 	response, err := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleEditor, editor, req)
 	if err != nil {
 		return domain.EditProposal{}, err
