@@ -1,16 +1,19 @@
-module github.com/cephalopod-ai/tagteam
+module github.com/e3742526/tribunal
 
-go 1.23
+go 1.23.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
+	github.com/golangci/misspell v0.8.0
+	github.com/oklog/ulid/v2 v2.1.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	golang.org/x/sys v0.28.0
 	golang.org/x/term v0.27.0
 )
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
+	golang.org/x/text v0.14.0 // indirect
 )

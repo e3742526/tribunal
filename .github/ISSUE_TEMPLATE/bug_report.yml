@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in tagteam behavior
+description: Report a defect in Tribunal behavior
 title: "[Bug]: "
 labels:
   - bug
@@ -17,7 +17,7 @@ body:
       label: Reproduction
       description: Exact command, config, and steps to reproduce
       placeholder: |
-        1. Run `tagteam ...`
+        1. Run `tribunal ...`
         2. Observe ...
     validations:
       required: true
@@ -41,7 +41,7 @@ body:
       placeholder: |
         OS:
         Go:
-        tagteam:
+        tribunal:
         codex:
         claude:
         agy:

@@ -28,17 +28,5 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Check formatting
-        shell: bash
-        run: |
-          unformatted="$(gofmt -l .)"
-          test -z "$unformatted"
-
-      - name: Check Go file line limit
-        run: scripts/check-go-file-lines.sh
-
-      - name: Run tests
-        run: go test ./...
-
-      - name: Run vet
-        run: go vet ./...
+      - name: Run repository gate
+        run: scripts/check.sh

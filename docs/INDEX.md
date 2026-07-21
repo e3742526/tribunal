@@ -1,44 +1,16 @@
-# Documentation Index
+# Documentation index
 
-Canonical entry point for `tagteam` documentation.
-
-## Start here
-
-- [README](../README.md) — install, quick start, all run modes, configuration,
-  run artifacts, TUI usage, troubleshooting, and `v1.1.0` release highlights.
-  Serves as the user manual.
-- [AGENTS.md](../AGENTS.md) — repo-wide contract for coding agents (authoritative
-  on conflict).
-- [CONTRIBUTING](../CONTRIBUTING.md) — development workflow and PR expectations.
-
-## Reference docs
-
-- [Architecture](ARCHITECTURE.md) — components, run flow, data model, extension
-  points, live status/TUI datapath, known risks.
-- [Control Plane Contract](CONTROL_PLANE_CONTRACT.md) — draft versioned producer
-  contract, bounded read operations, authority boundary, and MCP lifecycle
-  gates.
-- [Implementation Diagrams](IMPLEMENTATION_DIAGRAMS.md) — Mermaid diagrams of the
-  component map, live status/TUI flow, run loop, and failure classification.
-- [Full Repository Audit — 2026-07-16](AUDIT_REPORT_2026-07-16.md) —
-  source-backed implementation, reliability, security, dataflow, dead-code,
-  dependency, release, and GitHub-posture findings with remediation order.
-- [Defect Repair Campaign — 2026-07-16](REPAIR_CAMPAIGN_2026-07-16.md) — gated
-  inventory, locality-grouped repair stages, validation evidence, adversarial
-  review dispositions, and stage commit checkpoints for AUD-001–AUD-012.
-- [Test Ledger](TEST_LEDGER.md) — test areas, evidence, latest results, and
-  known gaps.
-- [Release Security](RELEASE_SECURITY.md) — published checksums, SBOMs,
-  keyless signatures, provenance attestations, and consumer verification.
-- [v0.1.0 to current](V0.1.0_TO_CURRENT.md) — detailed release-to-development
-  comparison, default changes, compatibility impact, and upgrade guidance.
-- [TODO](TODO.md) — active engineering follow-ups, including quarantined relay
-  recovery work.
-- [Error logs](logs/errors/) — source-grounded records for run failures and
-  their repair status.
-
-## Policies
-
-- [Security Policy](../SECURITY.md)
-- [Code of Conduct](../CODE_OF_CONDUCT.md)
-- [License](../LICENSE)
+- [Intent](INTENT.md): mission, users, invariants, non-goals.
+- [Specification](SPEC.md): deduplicated v3.1 normative contract.
+- [Architecture](ARCHITECTURE.md): package and execution boundaries.
+- [Configuration](configuration.md): trusted sources and defaults.
+- [I/O contract](io-contract.md): schemas, artifacts, and exit behavior.
+- [User manual](USER_MANUAL.md): command workflows and recovery.
+- [Developer manual](DEVELOPER_MANUAL.md): extension and validation rules.
+- [Troubleshooting](TROUBLESHOOTING.md): provider, packet, state, and edit errors.
+- [Test ledger](TEST_LEDGER.md): runtime evidence and explicit gaps.
+- [Release security](RELEASE_SECURITY.md): archive and provenance verification.
+- [ADRs](adr/): clean break, state, decision core, adapters, editing, workers,
+  and extraction.
+- [Build record](build/): gate state, requirements, risks, defects, audits, and
+  evidence.

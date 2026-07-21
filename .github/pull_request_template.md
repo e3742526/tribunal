@@ -5,14 +5,13 @@
 
 ## Validation
 
-- [ ] `go test ./...`
-- [ ] `go vet ./...`
-- [ ] `gofmt -l .`
+- [ ] `scripts/check.sh`
+- [ ] `go test -race ./...` when concurrency, storage, adapters, or editing changed
 
 List the exact commands you ran and their results.
 
 ## Risks
 
 - Behavior changes:
-- Adapter/config compatibility:
+- Adapter/config/schema compatibility:
 - Remaining gaps:

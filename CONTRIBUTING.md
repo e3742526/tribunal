@@ -1,45 +1,15 @@
 # Contributing
 
-## Scope
-
-Keep changes small and coherent. `tagteam` is an orchestration CLI, not a vendor CLI shim. Avoid unrelated cleanup in the same change.
-
-## Development
-
-Requirements:
-
-- Go 1.23+
-- Git
-- Any adapter CLIs needed for local manual testing
-
-Common commands:
+Tribunal requires Go 1.23 or newer. Inspect `AGENTS.md`, `docs/ARCHITECTURE.md`,
+the relevant ADRs, nearby implementation, and tests before changing behavior.
 
 ```bash
-gofmt -w main.go internal/cli/root.go internal/tagteam/*.go
-go test ./...
-go vet ./...
+scripts/check.sh
+go test -race ./...
 ```
 
-## Adapter changes
-
-When changing adapters:
-
-- update argv construction tests;
-- preserve clear preflight failures for missing or unrunnable CLIs;
-- avoid cloning vendor flag surfaces unless `tagteam` owns the concept;
-- document new config and examples in `README.md`.
-
-## Pull requests
-
-Changes to `main` land through a pull request. The repository ruleset requires
-the Linux and macOS `Go checks` jobs, resolved review threads, and one code-owner
-approval. The sole-maintainer bypass is limited to pull requests; it does not
-permit direct pushes to `main`.
-
-PRs should include:
-
-- the user-visible behavior change;
-- exact validation commands run;
-- residual risks or known gaps.
-
-If a change affects prompts, run artifacts, or config resolution, add focused tests for those paths.
+Keep dependencies inward, schemas explicitly versioned, review operations
+read-only, and state outside document workspaces. Adapter changes require argv
+or HTTP golden tests. Persistence and edit changes require failure-path tests.
+Pull requests should state the behavior change, exact validation run, evidence
+gaps, and residual risks.

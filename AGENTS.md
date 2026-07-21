@@ -1,5 +1,13 @@
 # AGENTS
 
+## Private agent-skills catalog
+
+For a task that may match a reusable workflow—such as audit, repair, planning,
+governance, research, writing, infrastructure, acquisition, or graphics—search
+the private agent-skills catalog before improvising. For repository work,
+include this repository root. If the catalog is unavailable, report that fact
+and continue within the task's normal constraints.
+
 This file is the canonical repo-wide instruction contract for coding agents.
 
 ## Canonical Filename
@@ -121,3 +129,16 @@ Prefer:
 - Stay within the requested task boundary.
 - If adjacent changes are necessary, disclose them explicitly.
 - Stop at destructive actions, unresolved ambiguity, or conflicting repo state and report the next safe step.
+
+## Tribunal Architecture
+
+Dependencies point inward: `main` → `internal/cli` → `internal/tribunal/app`.
+The application layer coordinates pure `domain` rules, `documents`, `storage`,
+`config`, and `adapters`; `internal/tui` renders only `storage.Snapshot`.
+Reviewed documents are untrusted input. Review code must not execute Git or
+write into the document workspace. Model editors propose hunks; the host alone
+validates and applies them.
+
+Run `scripts/check.sh` before completion. No non-test Go file may exceed 800
+lines. Changes to schemas, prompts, adapters, persistence, or edit validation
+require focused behavior tests.

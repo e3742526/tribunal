@@ -2,10 +2,9 @@
 
 | ID | Risk | Likelihood/impact | Mitigation | Status |
 |---|---|---|---|---|
-| R-001 | Legacy Git/coding behavior leaks into Tribunal | medium/blocker | replacement packages, final source scan | open |
-| R-002 | Model prompt isolation is only conventional | medium/blocker | isolated cwd/env/argv plus forbidden-text tests | open |
-| R-003 | Path replacement escapes a trusted root | medium/blocker | canonical revalidation before sensitive I/O | open |
-| R-004 | Persistence failure reports success | low/blocker | journal-first and mandatory terminal writes | open |
+| R-001 | Legacy Git/coding behavior leaks into Tribunal | medium/blocker | replacement packages, final source scan | closed: packages removed; no Git subprocess |
+| R-002 | Model prompt isolation is only conventional | medium/blocker | isolated cwd/env/argv plus forbidden-text tests | mitigated; authenticated vendor smoke pending |
+| R-003 | Path replacement escapes a trusted root | medium/blocker | canonical revalidation before sensitive I/O | mitigated by packet/edit/state path tests |
+| R-004 | Persistence failure reports success | low/blocker | journal-first and mandatory terminal writes | mitigated; broader fault matrix pending |
 | R-005 | Optional extractor/provider behavior drifts | medium/major | doctor, caps, golden tests, typed unavailable result | open |
-| R-006 | Broad fork migration deletes useful substrate | medium/major | port with tests before exact legacy deletion | open |
-
+| R-006 | Broad fork migration deletes useful substrate | medium/major | port with tests before exact legacy deletion | closed: replacement green before exact deletion |

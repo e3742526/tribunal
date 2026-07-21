@@ -1,50 +1,34 @@
 version: 2
-
-project_name: tagteam
+project_name: tribunal
 
 before:
   hooks:
-    - sh -c 'test -z "$(gofmt -l .)"'
-    - scripts/check-go-file-lines.sh
-    - go test ./...
-    - go vet ./...
+    - scripts/check.sh
 
 builds:
-  - id: tagteam
+  - id: tribunal
     main: .
-    binary: tagteam
-    env:
-      - CGO_ENABLED=0
+    binary: tribunal
+    env: [CGO_ENABLED=0]
     ldflags:
       - >-
         -s -w
-        -X github.com/cephalopod-ai/tagteam/internal/cli.Version={{ .Version }}
-        -X github.com/cephalopod-ai/tagteam/internal/cli.CommitSHA={{ .FullCommit }}
-        -X github.com/cephalopod-ai/tagteam/internal/cli.BuildTime={{ .Date }}
-        -X github.com/cephalopod-ai/tagteam/internal/cli.Dirty=false
-    goos:
-      - darwin
-      - linux
-    goarch:
-      - amd64
-      - arm64
+        -X github.com/e3742526/tribunal/internal/cli.Version={{ .Version }}
+        -X github.com/e3742526/tribunal/internal/cli.CommitSHA={{ .FullCommit }}
+        -X github.com/e3742526/tribunal/internal/cli.BuildTime={{ .Date }}
+        -X github.com/e3742526/tribunal/internal/cli.Dirty=false
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
     hooks:
       post:
         - scripts/write-binary-manifest.sh "{{ .Path }}"
 
 archives:
-  - id: default
-    ids:
-      - tagteam
-    formats:
-      - tar.gz
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- .Version }}_
-      {{- .Os }}_
-      {{- .Arch }}
+  - ids: [tribunal]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
-      - src: dist/tagteam_{{ .Os }}_{{ .Arch }}*/tagteam.sha256
+      - src: dist/tribunal_{{ .Os }}_{{ .Arch }}*/tribunal.sha256
         strip_parent: true
       - README.md
       - LICENSE
@@ -55,37 +39,22 @@ archives:
 
 checksum:
   name_template: checksums.txt
-
 sboms:
   - id: archives
     artifacts: archive
-    disable: false
-
 signs:
   - id: checksums
     cmd: cosign
     signature: "${artifact}.sigstore.json"
-    args:
-      - sign-blob
-      - "--bundle=${signature}"
-      - "${artifact}"
-      - --yes
+    args: [sign-blob, "--bundle=${signature}", "${artifact}", --yes]
     artifacts: checksum
   - id: sboms
     cmd: cosign
     signature: "${artifact}.sigstore.json"
-    args:
-      - sign-blob
-      - "--bundle=${signature}"
-      - "${artifact}"
-      - --yes
+    args: [sign-blob, "--bundle=${signature}", "${artifact}", --yes]
     artifacts: sbom
-
 changelog:
   use: git
   sort: asc
   filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+    exclude: ["^docs:", "^test:", "^chore:"]

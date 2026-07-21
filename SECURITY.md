@@ -1,32 +1,13 @@
-# Security Policy
+# Security policy
 
-## Reporting
+Report vulnerabilities privately through the repository's GitHub Security
+Advisory form. Do not publish exploit details in an issue.
 
-If you find a security issue in `tagteam`, please do not open a public issue with exploit details.
+Important boundaries include untrusted document, persona, model, and fetched
+content; exact-domain network allowlists; subprocess environment restriction;
+external state path containment; durable locks and writes; schema validation;
+secret redaction; and host-only edit/revert enforcement.
 
-Use GitHub's
-[private vulnerability reporting form](https://github.com/cephalopod-ai/tagteam/security/advisories/new)
-to report it privately to the maintainer with:
-
-- a description of the issue;
-- affected version or commit;
-- reproduction steps or proof of concept;
-- impact assessment.
-
-Do not include vulnerability details in a public issue. If the private form is
-unavailable, open a minimal public issue asking the maintainer to restore the
-private reporting channel without disclosing the exploit.
-
-## Scope
-
-Security issues may include:
-
-- command injection or unsafe shell execution;
-- prompt or artifact handling that can cause unintended destructive actions;
-- secret leakage in run artifacts or logs;
-- sandbox or permission-boundary bypasses;
-- unsafe adapter behavior that causes execution outside the intended workdir.
-
-## Expectations
-
-`tagteam` orchestrates third-party agent CLIs. Security fixes may require coordinated changes across prompt construction, adapter argv construction, run artifact handling, and preflight validation.
+Include the affected version, reproduction, impact, and whether later user
+changes or external state are at risk. Tribunal `v0.1.0` supports macOS and
+Linux release artifacts. Windows is not a supported release target.

@@ -2,252 +2,110 @@ package cli
 
 import (
 	"bytes"
-	"os/exec"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/cephalopod-ai/tagteam/internal/tagteam"
+	"github.com/e3742526/tribunal/internal/tribunal/app"
 )
 
-func initGitWorktree(t *testing.T, dir string) {
-	t.Helper()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@example.com"},
-		{"config", "user.name", "Test"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-}
-
-func TestNewRootCommandHelpIncludesModeModelAndFlags(t *testing.T) {
-	cmd := NewRootCommand()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"-h"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute help: %v", err)
-	}
-
-	help := out.String()
-	checks := []string{
-		"Modes",
-		"supervisor (default)",
-		"relay",
-		"solo",
-		"adversarial",
-		"Role flags by mode",
-		"--mode",
-		"--model",
-		"--worker",
-		"--supervisor",
-		"--mc",
-		"--ma",
-		"--reviewer",
-		"--scout",
-		"--no-scout-retrieval",
-		"tagteam --solo codex:gpt-5.6-terra",
-		"tagteam run -m 'agy:Gemini 3.5 Flash (Medium)'",
-		"tagteam --relay --scout openai-compatible:gemma4:latest",
-		"tagteam --mode adversarial -mc codex:gpt-5.6-terra -ma codex:gpt-5.6-sol",
-	}
-	for _, want := range checks {
-		if !strings.Contains(help, want) {
-			t.Fatalf("help output missing %q\nfull output:\n%s", want, help)
-		}
-	}
-}
-
-func TestRunCommandAndModelFlagUseExistingRunSurface(t *testing.T) {
-	cmd := NewRootCommand()
-	run, _, err := cmd.Find([]string{"run"})
-	if err != nil {
-		t.Fatalf("find run command: %v", err)
-	}
-	if run == nil || run.Use != "run <prompt>" {
-		t.Fatalf("run command = %#v", run)
-	}
-	model := cmd.PersistentFlags().Lookup("model")
-	if model == nil || model.Shorthand != "m" {
-		t.Fatalf("model flag = %#v", model)
-	}
-}
-
-func TestTestFlagAcceptsIndependentParallelCommands(t *testing.T) {
-	cmd := NewRootCommand()
-	testFlag := cmd.PersistentFlags().Lookup("test")
-	if testFlag == nil || testFlag.Value.Type() != "stringArray" {
-		t.Fatalf("test flag = %#v, want repeatable stringArray", testFlag)
-	}
-	if !strings.Contains(testFlag.Usage, "concurrently") {
-		t.Fatalf("test flag usage = %q", testFlag.Usage)
-	}
-}
-
-func TestMCPCommandUsesLocalStdioSurface(t *testing.T) {
-	cmd := NewRootCommand()
-	mcp, _, err := cmd.Find([]string{"mcp"})
-	if err != nil {
+func TestReviewCommandCompletesWithoutGitAndWritesOnlyExternalState(t *testing.T) {
+	documentDir := t.TempDir()
+	documentPath := filepath.Join(documentDir, "brief.md")
+	original := "# Brief\n\nThe launch date is unsupported.\n"
+	if err := os.WriteFile(documentPath, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if mcp == nil || mcp.Use != "mcp" {
-		t.Fatalf("mcp command = %#v", mcp)
-	}
-}
-
-func TestMCPCommandGatesStartOnVerifiedInstallation(t *testing.T) {
-	input := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`,
-		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-	}, "\n") + "\n"
-	for _, test := range []struct {
-		name      string
-		args      []string
-		wantStart bool
-	}{
-		{name: "unverified read only", args: []string{"mcp"}, wantStart: false},
-		{name: "explicit development override", args: []string{"mcp", "--allow-dev-build"}, wantStart: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			workdir := t.TempDir()
-			// MCP binds to a real Git worktree root at server start.
-			initGitWorktree(t, workdir)
-			args := append(append([]string{}, test.args...), "--workdir", workdir)
-			cmd := NewRootCommand()
-			var out bytes.Buffer
-			cmd.SetIn(strings.NewReader(input))
-			cmd.SetOut(&out)
-			cmd.SetErr(&out)
-			cmd.SetArgs(args)
-			if err := cmd.Execute(); err != nil {
-				t.Fatal(err)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+			ResponseFormat struct {
+				JSONSchema struct {
+					Name string `json:"name"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		reviewer := map[string]string{"one": "R-001", "two": "R-002", "three": "R-003"}[request.Model]
+		content := ""
+		if request.ResponseFormat.JSONSchema.Name == "reviewer" {
+			hash := regexp.MustCompile(`sha256=([a-f0-9]{64})`).FindStringSubmatch(request.Messages[1].Content)
+			if len(hash) != 2 {
+				t.Errorf("packet hash missing from prompt")
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
-			if got := strings.Contains(out.String(), `"name":"tagteam_start"`); got != test.wantStart {
-				t.Fatalf("start advertisement = %t, want %t; output=%s", got, test.wantStart, out.String())
-			}
-		})
+			content = fmt.Sprintf(`{"schema_version":1,"reviewer_id":%q,"findings":[{"schema_version":2,"id":%q,"reviewer":%q,"origin":"panel","severity":"major","category":"correctness","anchor":{"kind":"quote","packet_item":"artifact:brief.md","quote":"launch date is unsupported","item_sha256":%q},"issue":"The date lacks support.","recommendation":"Cite a source or remove the date.","evidence_status":"anchored","confidence":"high"}]}`, reviewer, "F-"+reviewer, reviewer, hash[1])
+		} else {
+			content = fmt.Sprintf(`{"schema_version":1,"votes":[{"schema_version":1,"reviewer_id":%q,"finding_id":"F-R-001","choice":"accept","severity":"major","reason":"The claim needs support."}]}`, reviewer)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+	}))
+	defer server.Close()
+	configText := fmt.Sprintf("schema_version = 1\n[openai_compatible]\nbase_url = %q\n", server.URL)
+	if err := os.WriteFile(filepath.Join(documentDir, ".tribunal.toml"), []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadDir(documentDir)
+	stateRoot := t.TempDir()
+	t.Setenv("PATH", "")
+	root := NewRootCommand()
+	var output bytes.Buffer
+	root.SetOut(&output)
+	root.SetErr(&output)
+	root.SetArgs([]string{"--json", "--state-root", stateRoot, "--trust-workspace-config", "--panel", "openai-compatible/one,openai-compatible/two,openai-compatible/three", "review", documentPath})
+	err := root.Execute()
+	var exit *app.ExitError
+	if !errors.As(err, &exit) || exit.Code != app.ExitBlockingFindings {
+		t.Fatalf("Execute() error = %v, output = %s", err, output.String())
+	}
+	var final map[string]any
+	if err := json.Unmarshal(output.Bytes(), &final); err != nil {
+		t.Fatalf("output is not stable JSON: %v\n%s", err, output.String())
+	}
+	if final["status"] != "findings" {
+		t.Fatalf("status = %v, want findings", final["status"])
+	}
+	after, _ := os.ReadDir(documentDir)
+	if len(after) != len(before) {
+		t.Fatalf("review wrote into document workspace: before=%v after=%v", names(before), names(after))
+	}
+	content, _ := os.ReadFile(documentPath)
+	if string(content) != original {
+		t.Fatalf("review changed source: %q", content)
 	}
 }
 
-func TestVersionCommandAndFlag(t *testing.T) {
-	t.Run("version subcommand", func(t *testing.T) {
-		cmd := NewRootCommand()
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&out)
-		cmd.SetArgs([]string{"version"})
-
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("execute version command: %v", err)
-		}
-
-		got := strings.TrimSpace(out.String())
-		if got != Version {
-			t.Errorf("version command output got %q, want %q", got, Version)
-		}
-	})
-
-	t.Run("--version flag", func(t *testing.T) {
-		cmd := NewRootCommand()
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&out)
-		cmd.SetArgs([]string{"--version"})
-
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("execute version flag: %v", err)
-		}
-
-		got := strings.TrimSpace(out.String())
-		if !strings.Contains(got, Version) {
-			t.Errorf("version flag output got %q, should contain %q", got, Version)
-		}
-	})
-}
-
-func TestRenderRunSnapshotIncludesLiveProgress(t *testing.T) {
-	cmd := NewRootCommand()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-
-	renderRunSnapshot(cmd, tagteam.RunSnapshot{
-		RunID:        "run-active",
-		RunDir:       "/tmp/run-active",
-		Mode:         tagteam.ModeAdversarial,
-		Status:       "running",
-		Phase:        "reviewing",
-		CurrentRound: 1,
-		LiveProgress: &tagteam.LiveProgress{
-			Role:          tagteam.RoleAdversary,
-			Status:        "running",
-			Elapsed:       "2m0s",
-			NoProgressFor: "1m30s",
-			FilesChanged:  3,
-			Additions:     12,
-			Deletions:     4,
-		},
-	}, false)
-
-	got := out.String()
-	for _, want := range []string{
-		"run=run-active",
-		"status=running",
-		"phase=reviewing round=1",
-		"progress role=adversary status=running elapsed=2m0s idle=1m30s files=3 +12 -4",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("status output missing %q\nfull output:\n%s", want, got)
-		}
+func TestRootContainsOnlyTribunalCommands(t *testing.T) {
+	root := NewRootCommand()
+	allowed := "adopt arbitrate bench decisions doctor edit explain findings persona recommend replay resume revert review status transcript tui verify-install version"
+	var names []string
+	for _, command := range root.Commands() {
+		names = append(names, command.Name())
+	}
+	if strings.Join(names, " ") != allowed {
+		t.Fatalf("commands = %q", strings.Join(names, " "))
 	}
 }
 
-func TestRenderRunSnapshotIncludesQueueContext(t *testing.T) {
-	cmd := NewRootCommand()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	renderRunSnapshot(cmd, tagteam.RunSnapshot{LiveProgress: &tagteam.LiveProgress{
-		Role:       tagteam.RoleCoder,
-		Status:     "waiting",
-		WaitingFor: "claude",
-		HolderPID:  4242,
-		Elapsed:    "8s",
-	}}, false)
-	if got := out.String(); !strings.Contains(got, "queued_for=claude holder_pid=4242") {
-		t.Fatalf("queue context missing from status output:\n%s", got)
+func names(entries []os.DirEntry) []string {
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.Name())
 	}
-}
-
-func TestRenderRunSnapshotIncludesHostActivity(t *testing.T) {
-	cmd := NewRootCommand()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	renderRunSnapshot(cmd, tagteam.RunSnapshot{HostActivity: &tagteam.HostActivity{
-		Actor:        "tagteam-host",
-		Phase:        "baseline-test",
-		Status:       "integrity_violation",
-		Elapsed:      "3s",
-		Command:      "pytest -q",
-		OutputPath:   "/tmp/run/baseline-test.txt",
-		ChangedFiles: []string{"working/registry.yaml", "archived/registry.yaml"},
-		Error:        "repository mutation",
-	}}, false)
-
-	got := out.String()
-	for _, want := range []string{
-		"host actor=tagteam-host phase=baseline-test status=integrity_violation elapsed=3s",
-		"host_command=pytest -q output=/tmp/run/baseline-test.txt",
-		"host_mutated_files=working/registry.yaml,archived/registry.yaml",
-		"host_error=repository mutation",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("status output missing %q\nfull output:\n%s", want, got)
-		}
-	}
+	return result
 }
