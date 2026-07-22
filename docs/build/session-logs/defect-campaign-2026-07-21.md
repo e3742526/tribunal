@@ -167,9 +167,17 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
   scope. No residual in-scope defect found.
 - Record closure: ARC-TRIBUNAL-001 changed open → resolved and ledger D-029 records
   the machine evidence.
-- Commit: pending local group checkpoint.
+- Commit: `cb99216` (`repair: enforce architecture invariants in repository gate`).
 
 ## Record closure
 
-To be completed only after verification. The generated audit report/findings and
-`docs/build/defect-ledger.md` remain open until their corresponding stage passes.
+- All 11 supplied findings are resolved in the source audit overview and mirrored
+  by defect-ledger entries D-019 through D-029.
+- Final `scripts/check.sh` and `go test -race ./...` passed. Runtime Git/Tagteam,
+  open-audit-row, and TODO/FIXME scans were clean in the scoped paths.
+- `govulncheck` and `actionlint` were unavailable. The release workflow parsed as
+  YAML and passed its structural regression, but no tag workflow was dispatched.
+- Final repair report: `generated/audits/tribunal-repair-report-2026-07-21.md`.
+- Clean-checkout verification: detached `cb99216` worktree passed
+  `scripts/check.sh`; the temporary worktree was removed afterward.
+- Remote effects: none. No push, tag, release, or history rewrite occurred.
