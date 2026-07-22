@@ -72,6 +72,11 @@ func ValidateDecision(decision Decision) error {
 	default:
 		return fmt.Errorf("invalid decision outcome %q", decision.Outcome)
 	}
+	switch decision.WeightedLean {
+	case "accept", "reject", "tie":
+	default:
+		return fmt.Errorf("invalid decision weighted_lean %q", decision.WeightedLean)
+	}
 	return nil
 }
 

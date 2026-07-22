@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — 2026-07-23 consensus playtest
+
+D-070 repaired; see `docs/build/session-logs/playtest-consensus-2026-07-23.md`
+and the new `docs/test_scenarios/` scenario library (51 consensus/voting
+scenarios). Behavior change:
+
+- Arbitration disputes carry a new `weighted_lean` field on `Decision`
+  ("accept"/"reject"/"tie"), and the dispute's default recommendation text
+  is derived from it instead of raw vote counts. Previously, a weighted
+  panel's tied or non-unanimous decision could show a misleading "accept
+  majority" recommendation, and `--accept-majority` would silently
+  auto-accept it. Pre-existing persisted finals/clusters lacking this field
+  are rejected with an explicit validation error on read (pre-release state
+  break, no migration, consistent with prior campaign precedent).
+
 ## Unreleased — 2026-07-22 defect campaign
 
 Forty defects (D-030–D-069) repaired across eight staged commits; see

@@ -134,6 +134,17 @@ func ResolveVotes(f Finding, votes []Vote, opts ConsensusOptions) Decision {
 		decision.Severity = SeverityMinor
 	}
 	nonAbstain := decision.Accepts + decision.Rejects
+	// Computed once, from the same weighted sums every branch below is
+	// gated by (directly or indirectly via Accepts/Rejects), so it stays
+	// correct regardless of which Reason ultimately fires.
+	switch {
+	case acceptWeight > rejectWeight:
+		decision.WeightedLean = "accept"
+	case rejectWeight > acceptWeight:
+		decision.WeightedLean = "reject"
+	default:
+		decision.WeightedLean = "tie"
+	}
 	switch {
 	case opts.ValidReviewers < 2 || opts.ValidReviewers*2 <= opts.ConfiguredReviewers:
 		decision.Outcome, decision.Reason = "degraded", "quorum_unmet"
@@ -220,14 +231,28 @@ func RankArbitration(clusters []Cluster, max int) ([]ArbitrationDispute, []strin
 	return disputes[:max], overflow
 }
 
+// defaultRecommendation summarizes a dispute for the operator and, via
+// arbitrationRulings' "accept"/"reject" prefix match, is what
+// --accept-majority actually auto-resolves against. It reads
+// Decision.WeightedLean -- the weighted vote comparison itself -- rather
+// than raw Accepts/Rejects counts or Reason. Raw counts can diverge from
+// the weighted comparison under any non-uniform panel weighting (e.g. a
+// 2-accept/1-reject raw split that is an exact tie once a dissenting
+// reviewer's weight is doubled), and every arbitration Reason --
+// vote_tie, category_requires_full_panel_unanimity,
+// unanimity_not_reached, and any future addition -- can co-occur with
+// that divergence. Keying off WeightedLean instead of enumerating Reason
+// values means no arbitration path can silently mislabel a tie or a
+// non-unanimous decision as a majority.
 func defaultRecommendation(decision Decision) string {
-	if decision.Accepts > decision.Rejects {
+	switch decision.WeightedLean {
+	case "accept":
 		return "accept majority"
-	}
-	if decision.Rejects > decision.Accepts {
+	case "reject":
 		return "reject majority"
+	default:
+		return "review both arguments"
 	}
-	return "review both arguments"
 }
 
 func ValidateFinding(f Finding) error {
