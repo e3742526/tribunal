@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "mission_ref": "docs/INTENT.md",
+  "authority_refs": ["docs/SPEC.md", "docs/ARCHITECTURE.md", "docs/adr"],
+  "nodes": [
+    {"id": "repo.tribunal", "path": ".", "owner": "maintainers", "kind": "repository", "allows": []},
+    {"id": "presentation.cli", "path": "internal/cli", "owner": "cli", "kind": "go-package", "allows": ["application", "configuration", "domain", "storage", "presentation.tui"]},
+    {"id": "presentation.tui", "path": "internal/tui", "owner": "tui", "kind": "go-package", "allows": ["domain", "storage"]},
+    {"id": "application", "path": "internal/tribunal/app", "owner": "application", "kind": "go-package", "allows": ["adapters", "configuration", "documents", "domain", "storage"]},
+    {"id": "domain", "path": "internal/tribunal/domain", "owner": "domain", "kind": "go-package", "allows": []},
+    {"id": "documents", "path": "internal/tribunal/documents", "owner": "documents", "kind": "go-package", "allows": ["domain"]},
+    {"id": "adapters", "path": "internal/tribunal/adapters", "owner": "adapters", "kind": "go-package", "allows": ["documents", "domain"]},
+    {"id": "storage", "path": "internal/tribunal/storage", "owner": "storage", "kind": "go-package", "allows": ["domain"]},
+    {"id": "configuration", "path": "internal/tribunal/config", "owner": "configuration", "kind": "go-package", "allows": ["domain"]},
+    {"id": "release", "path": ".github/workflows/release.yml", "owner": "release", "kind": "workflow", "allows": []}
+  ]
+}

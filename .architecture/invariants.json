@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "invariants": [
+    {"id": "architecture.registry.present", "severity": "high", "owner": "maintainers", "node_ids": ["repo.tribunal"], "sources": ["docs/INTENT.md", "docs/ARCHITECTURE.md"], "evidence": ["go test ./internal/architecture"]},
+    {"id": "architecture.dependencies.inward", "severity": "high", "owner": "maintainers", "node_ids": ["presentation.cli", "presentation.tui", "application", "domain", "documents", "adapters", "storage", "configuration"], "sources": ["docs/ARCHITECTURE.md"], "evidence": ["scripts/check-architecture.sh"]},
+    {"id": "spec.vote-packet.complete", "severity": "high", "owner": "application", "node_ids": ["application"], "sources": ["docs/SPEC.md"], "evidence": ["go test ./internal/tribunal/app -run TestReviewPersistsBarrierAndCompletesWithoutGit"]},
+    {"id": "spec.consensus.unevidenced-cap", "severity": "medium", "owner": "domain", "node_ids": ["domain"], "sources": ["docs/SPEC.md"], "evidence": ["go test ./internal/tribunal/domain -run TestUnevidencedSeverityCapAppliesToEveryCategory"]},
+    {"id": "spec.persistence.schema-fail-closed", "severity": "high", "owner": "storage", "node_ids": ["application", "documents", "storage"], "sources": ["docs/SPEC.md", "docs/adr/ADR-0002-packet-and-state.md"], "evidence": ["go test ./internal/tribunal/app ./internal/tribunal/documents ./internal/tribunal/storage"]},
+    {"id": "spec.packet.identity-revalidated", "severity": "high", "owner": "documents", "node_ids": ["documents", "application"], "sources": ["docs/SPEC.md", "docs/adr/ADR-0002-packet-and-state.md"], "evidence": ["go test ./internal/tribunal/documents -run TestValidatePacketRejectsPersistedTampering"]},
+    {"id": "spec.review.resume-idempotent", "severity": "high", "owner": "application", "node_ids": ["application", "storage"], "sources": ["docs/SPEC.md"], "evidence": ["go test ./internal/tribunal/app -run TestReviewPersistsBarrierAndCompletesWithoutGit"]},
+    {"id": "spec.publication.terminal-before-ledger", "severity": "high", "owner": "application", "node_ids": ["application", "storage"], "sources": ["docs/SPEC.md", "docs/adr/ADR-0002-packet-and-state.md"], "evidence": ["go test ./internal/tribunal/app ./internal/tribunal/storage"]},
+    {"id": "spec.edit.transactional", "severity": "high", "owner": "application", "node_ids": ["application", "documents", "storage"], "sources": ["docs/SPEC.md", "docs/adr/ADR-0005-edit-safety.md"], "evidence": ["go test ./internal/tribunal/app -run TestEditTransaction"]},
+    {"id": "release.smoke-before-publish", "severity": "medium", "owner": "release", "node_ids": ["release"], "sources": [".github/workflows/release.yml"], "evidence": ["go test . -run TestReleaseSmokePrecedesPublication"]}
+  ]
+}

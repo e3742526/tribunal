@@ -145,6 +145,28 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
   placement. The workflow was not executed because no tag/release was authorized.
 - Record closure: SEC-TRIBUNAL-002 changed open → resolved and ledger D-028 records
   the evidence.
+- Commit: `ca15fec` (`repair: smoke test archives before release publication`).
+
+### Group 5 — architecture governance
+
+- Fixed ARC-TRIBUNAL-001 with a schema-versioned `.architecture` registry covering
+  mission authority, owned scope nodes, allowed Go dependency edges, ten accepted
+  invariants, evidence commands, expiring exceptions, and a complete baseline.
+- The bootstrap baseline accounts for every invariant with zero accepted violations
+  and a normalized health score of 100. This is a new baseline, so its trend is
+  explicitly `bootstrap`, not an invented historical improvement.
+- `scripts/check-architecture.sh` is part of `scripts/check.sh` and fails on unknown
+  fields/versions, missing authority or sources, unknown ownership references,
+  forbidden package dependencies, expired exceptions, unaccepted violations,
+  incomplete baseline accounting, or an incorrect score.
+- Repository conformance, a deliberate forbidden dependency, and an expired
+  exception fixture passed, as did `scripts/check.sh`. `govulncheck` remained
+  unavailable and was explicitly skipped.
+- Adversarial review covered self-dependencies, unknown nodes, stale exceptions,
+  baseline denominator integrity, source existence, and production-vs-test import
+  scope. No residual in-scope defect found.
+- Record closure: ARC-TRIBUNAL-001 changed open → resolved and ledger D-029 records
+  the machine evidence.
 - Commit: pending local group checkpoint.
 
 ## Record closure

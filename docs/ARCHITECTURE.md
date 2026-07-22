@@ -49,7 +49,7 @@ sequenceDiagram
 | `app` | Use-case orchestration and barriers | raw CLI parsing, vendor argv | domain + ports | Service methods |
 | `documents` | canonical packets/extraction/anchors/redaction | voting, model invocation | domain | Builder, Resolver |
 | `storage` | external durable state, locks, snapshots, ledgers | review policy, UI | domain | Store |
-| `adapters` | model/worker process and HTTP translation | consensus, persistence policy | domain/app ports | Registry, Adapter |
+| `adapters` | model/worker process and HTTP translation | consensus, persistence policy | domain + document packet values | Registry, Adapter |
 | `config` | trusted layered configuration | execution | domain | Load, ResolvePanel |
 | `cli` | parse/delegate/render | domain rules, persistence | app/config | NewRootCommand |
 | `tui` | read-only snapshot rendering | launch/edit logic | app snapshot port | Run |
@@ -62,3 +62,13 @@ sequenceDiagram
 - New rubric/persona: provide schema-versioned data and pass lint/hash checks.
 - New worker: implement the typed evidence task port and obey network policy.
 - New report: consume the final domain projection; never parse raw model output.
+
+## Machine-evaluable governance
+
+`.architecture/intent.json` owns the node and allowed-dependency map;
+`invariants.json` binds accepted SPEC/ADR rules to owners and executable evidence;
+`exceptions.json` contains only approved, expiring deviations; and `baseline.json`
+accounts for every invariant and records the normalized health score. The standard
+repository gate runs `scripts/check-architecture.sh`; missing nodes, forbidden Go
+dependency edges, unknown fields, expired exceptions, unaccepted violations, or an
+incorrect baseline score fail closed.

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-21",
+  "basis": "defect campaign validation after the 2026-07-21 bootstrap audit",
+  "health_score": 100,
+  "trend": "bootstrap",
+  "passing_invariants": [
+    "architecture.registry.present",
+    "architecture.dependencies.inward",
+    "spec.vote-packet.complete",
+    "spec.consensus.unevidenced-cap",
+    "spec.persistence.schema-fail-closed",
+    "spec.packet.identity-revalidated",
+    "spec.review.resume-idempotent",
+    "spec.publication.terminal-before-ledger",
+    "spec.edit.transactional",
+    "release.smoke-before-publish"
+  ],
+  "violations": []
+}
