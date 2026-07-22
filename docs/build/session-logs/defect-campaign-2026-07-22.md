@@ -206,3 +206,18 @@ record, so a rolled-back apply reports "rolled back" instead of accusing the
 user of foreign changes. Adversarial review verified all three new tests
 fail against pre-fix sources with the exact predicted defect messages.
 Tests: edit_retry_test.go. check.sh + app race suite green.
+
+### Stage 8 — ci-release-docs and record closure
+
+D-043/044/068/069 fixed. CI gains a race-detector job and installs
+govulncheck (check.sh now fails in CI without it, still soft-skips locally);
+check.sh uses `go mod tidy -diff` (no tree mutation, no git dependence);
+release publication re-runs converge (create-if-missing + upload --clobber,
+smoke-before-publish ordering test still green); dead GoReleaser changelog
+block replaced with an explicit disable. SPEC/io-contract no longer claim
+panel files, custom rubrics, or per-hunk confirmation; weight quantization
+documented; ARCHITECTURE module table matches exported symbols; io-contract
+documents exit 7, the JSON error envelope, torn-tail quarantine, and backup
+reuse. Record closure: CHANGELOG Unreleased section lists all behavior
+changes; defect ledger rows D-030–D-069 appended; TEST_LEDGER updated with
+the campaign suites and the corrected gate/race rows.

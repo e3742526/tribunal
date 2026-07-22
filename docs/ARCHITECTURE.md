@@ -50,9 +50,9 @@ sequenceDiagram
 | `documents` | canonical packets/extraction/anchors/redaction | voting, model invocation | domain | Builder, Resolver |
 | `storage` | external durable state, locks, snapshots, ledgers | review policy, UI | domain | Store |
 | `adapters` | model/worker process and HTTP translation | consensus, persistence policy | domain + document packet values | Registry, Adapter |
-| `config` | trusted layered configuration | execution | domain | Load, ResolvePanel |
+| `config` | trusted layered configuration | execution | domain | Load, BuiltinRubric, ResolvePersona |
 | `cli` | parse/delegate/render | domain rules, persistence | app/config | NewRootCommand |
-| `tui` | read-only snapshot rendering | launch/edit logic | app snapshot port | Run |
+| `tui` | read-only snapshot rendering | launch/edit logic | app snapshot port | RenderSnapshot |
 
 ## Extension seams
 

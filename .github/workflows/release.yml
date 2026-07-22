@@ -27,6 +27,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
       - name: Run repository gate
         run: scripts/check.sh
 
@@ -149,7 +152,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           assets=(dist/*.tar.gz dist/checksums.txt dist/*.sbom.json dist/*.sigstore.json)
-          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
-            --verify-tag \
-            --generate-notes \
-            --title "Tribunal ${GITHUB_REF_NAME}"
+          # Re-runs of a partially failed publish must converge, not fail on
+          # the existing release; create-if-missing then upload with clobber.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --generate-notes \
+              --title "Tribunal ${GITHUB_REF_NAME}"
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber

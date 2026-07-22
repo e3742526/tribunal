@@ -46,9 +46,11 @@ hash-checked operation.
 
 Panel entries use `adapter/model[@persona]`. The adapter ends at the first `/`;
 the optional persona is a trailing slug matching `[a-z0-9-]{1,64}`; the model
-between them is preserved verbatim. Weighted panels use a TOML panel file and
-weights are clamped to 0.5–2.0. Default panel: Claude Opus 4.8, Codex GPT-5.6
-Sol, and Agy Gemini 3.5 Flash Medium, each weight 1.0.
+between them is preserved verbatim. Panels enter as strings (flag, environment,
+or config); every reviewer currently carries weight 1.0. Consensus arithmetic
+clamps any configured weight to 0.5–2.0 and quantizes to hundredths so tie
+detection is exact. Default panel: Claude Opus 4.8, Codex GPT-5.6 Sol, and Agy
+Gemini 3.5 Flash Medium.
 
 Reviewers receive a fenced role prompt, rubric, persona, and packet only. Worker
 evidence gathered before review is part of the packet. Post-review verification
@@ -129,8 +131,10 @@ findings, anchored regions, minimal context, and explicit local/section/document
 scopes. It emits typed replacement hunks. The host rejects hunks outside the
 allowlist, revalidates paths, and compares the live source hash to the packet
 source hash. Apply is dry-run first, then durable atomic replacement with the
-original preserved. Document-scope edits require per-hunk confirmation or a
-mandatory rereview. Revert refuses if the edited file changed afterward.
+original preserved. Document-scope hunks are rejected unless the operator
+passes an explicit `--confirm-document-scope` acknowledgment; a bounded
+rereview of the edited document is available with `--rereview`. Revert refuses
+if the edited file changed afterward.
 
 ## Configuration and commands
 

@@ -13,11 +13,14 @@ go test ./...
 go vet ./...
 go build ./...
 go mod verify
-go mod tidy
-git diff --exit-code -- go.mod go.sum
+# tidy -diff checks without mutating the tree and needs no git checkout.
+go mod tidy -diff
 
 if command -v govulncheck >/dev/null 2>&1; then
   govulncheck ./...
+elif [ "${CI:-}" = "true" ]; then
+  echo "govulncheck is required in CI; install golang.org/x/vuln/cmd/govulncheck" >&2
+  exit 1
 else
   echo "govulncheck unavailable; vulnerability scan skipped" >&2
 fi
