@@ -87,19 +87,22 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	}
 	results := s.reviewPass(runCtx, runDir, packet, panel)
 	valid, allFindings, statuses, reasons := validatePass(packet, results)
-	if runCtx.Err() != nil {
-		final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, runCtx.Err())
-		if persistErr != nil {
-			return domain.Final{}, exitError(ExitPreflight, "%v", persistErr)
-		}
-		return final, exitError(ExitAborted, "%v", runCtx.Err())
-	}
+	// Worker findings merge and ID canonicalization precede every
+	// finalization path so an aborted final still carries the already
+	// persisted worker results and collision-free finding IDs.
 	workerFindings, err := readWorkerFindings(runDir)
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "read worker findings: %v", err)
 	}
 	allFindings = append(allFindings, workerFindings...)
 	canonicalizeFindingIDs(allFindings)
+	if runCtx.Err() != nil {
+		final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, reasons, runCtx.Err())
+		if persistErr != nil {
+			return domain.Final{}, exitError(ExitPreflight, "%v", persistErr)
+		}
+		return final, exitError(ExitAborted, "%v", runCtx.Err())
+	}
 	if len(valid)*2 <= len(panel.Reviewers) || len(valid) < 2 {
 		final, persistErr := s.finalizeDegraded(runDir, workspace, runID, packet, panel, started, statuses, allFindings, reasons)
 		if persistErr != nil {
@@ -122,7 +125,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 		}
 		reasons = append(reasons, verificationReasons...)
 		if runCtx.Err() != nil {
-			final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, runCtx.Err())
+			final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, reasons, runCtx.Err())
 			if persistErr != nil {
 				return domain.Final{}, exitError(ExitPreflight, "%v", persistErr)
 			}
@@ -141,7 +144,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	}
 	voteResults := s.votePass(runCtx, runDir, packet, verification, valid, clusterFindings(clusters))
 	if runCtx.Err() != nil {
-		final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, runCtx.Err())
+		final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, reasons, runCtx.Err())
 		if persistErr != nil {
 			return domain.Final{}, exitError(ExitPreflight, "%v", persistErr)
 		}
@@ -180,7 +183,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	for i := range disputes {
 		for _, record := range memory {
 			if domain.MatchesDecisionMemory(disputes[i].Finding, record.PacketItem, record.Fingerprint) {
-				disputes[i].Default = "previous ruling: " + record.Ruling
+				disputes[i].MemoryHint = "previous ruling: " + record.Ruling
 				break
 			}
 		}
@@ -472,6 +475,10 @@ func validatePass(packet documents.Packet, results []panelResult) ([]domain.Pane
 			reasons = append(reasons, "json_repair_used")
 		}
 		for _, finding := range result.review.Findings {
+			// Host-side trust boundary: a model may not self-declare
+			// worker-verified evidence. This must hold even when the
+			// verification phase is skipped (--no-workers, degraded runs).
+			finding.EvidenceStatus = trustedEvidenceStatus(finding.EvidenceStatus)
 			if err := documents.ResolveAnchor(packet, &finding.Anchor); err != nil {
 				finding.Quarantined = true
 				finding.QuarantineWhy = err.Error()
@@ -631,37 +638,6 @@ func votesForCluster(cluster domain.Cluster, votes map[string][]domain.Vote) []d
 		result = votes[cluster.Finding.ID]
 	}
 	return result
-}
-
-func buildFinal(runID string, packet documents.Packet, started, finished time.Time, statuses []domain.PanelStatus, findings []domain.Finding, evidence []domain.EvidenceItem, decisions []domain.Decision, disputes []domain.ArbitrationDispute, reasons []string) domain.Final {
-	exit, status := ExitSuccess, "final"
-	if len(disputes) > 0 {
-		exit, status = ExitArbitration, "arbitration_pending"
-	} else {
-		for _, decision := range decisions {
-			if decision.Outcome == "accepted" && decision.Severity.Rank() >= domain.SeverityMajor.Rank() {
-				exit, status = ExitBlockingFindings, "findings"
-				break
-			}
-		}
-	}
-	return domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: status, ExitCode: exit, Summary: summaryFor(decisions, disputes), PanelIncomplete: panelIncomplete(statuses), ReasonCodes: unique(reasons), PanelStatus: statuses, Findings: findings, Evidence: evidence, Decisions: decisions, Arbitration: disputes, StartedAt: started, FinishedAt: finished}
-}
-
-func (s *Service) finalizeDegraded(runDir string, workspace storage.Workspace, runID string, packet documents.Packet, panel domain.Panel, started time.Time, statuses []domain.PanelStatus, findings []domain.Finding, reasons []string) (domain.Final, error) {
-	final := domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: "degraded", ExitCode: ExitDegraded, Summary: "Panel quorum was not met; independent findings only.", PanelIncomplete: true, DegradedReason: degradedReason(statuses), ReasonCodes: unique(append(reasons, "quorum_unmet")), PanelStatus: statuses, Findings: findings, StartedAt: started, FinishedAt: s.now()}
-	if err := s.publish(runDir, workspace, final, panel); err != nil {
-		return domain.Final{}, err
-	}
-	return final, nil
-}
-
-func (s *Service) finalizeAborted(runDir string, workspace storage.Workspace, runID string, packet documents.Packet, panel domain.Panel, started time.Time, statuses []domain.PanelStatus, findings []domain.Finding, cause error) (domain.Final, error) {
-	final := domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: "aborted", ExitCode: ExitAborted, Summary: "Run aborted after persisting all available results.", PanelIncomplete: true, DegradedReason: cause.Error(), ReasonCodes: []string{"run_aborted"}, PanelStatus: statuses, Findings: findings, StartedAt: started, FinishedAt: s.now()}
-	if err := s.publish(runDir, workspace, final, panel); err != nil {
-		return domain.Final{}, err
-	}
-	return final, nil
 }
 
 func (s *Service) publish(runDir string, workspace storage.Workspace, final domain.Final, panel domain.Panel) error {

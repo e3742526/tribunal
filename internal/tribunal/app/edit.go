@@ -144,7 +144,8 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	}
 	result.Applied = true
 	if opts.Rereview {
-		rereview, reviewErr := s.Review(ctx, ReviewOptions{Input: packet.InputRoot, Kind: packet.Kind, PanelValue: &meta.Panel})
+		// A packet frozen with --split still needs splitting on re-review.
+		rereview, reviewErr := s.Review(ctx, ReviewOptions{Input: packet.InputRoot, Kind: packet.Kind, PanelValue: &meta.Panel, Split: len(packet.Chunks) > 0})
 		result.Rereview = &rereview
 		return result, reviewErr
 	}

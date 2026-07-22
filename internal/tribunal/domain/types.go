@@ -201,6 +201,11 @@ type ArbitrationDispute struct {
 	ForArgument   string   `json:"for_argument,omitempty"`
 	Against       string   `json:"against_argument,omitempty"`
 	Default       string   `json:"default_recommendation"`
+	// MemoryHint carries a matched prior ruling from decision memory. It is
+	// advisory context for the operator and must never replace Default:
+	// --accept-majority parses Default's "accept …"/"reject …" prefix, so
+	// overwriting it with "previous ruling: accepted" would invert outcomes.
+	MemoryHint string `json:"memory_hint,omitempty"`
 }
 
 type PanelStatus struct {

@@ -104,3 +104,20 @@ early errors bypassed the envelope (central decorator added). Regression tests:
 `internal/cli/contract_test.go` (envelope, zero-final impersonation, parse-error
 codes, rubric/kind exclusivity, decorator path). `scripts/check.sh` green.
 Interactive-only arbitrate nil-final guard is reasoned, not TTY-tested.
+
+### Stage 2 — arbitration-resume-core (commit 81d33e4)
+
+D-030/031/034/035/067 fixed. Resume now takes `run.lock` (bounded by the run
+timeout) + ValidateRunDir before its mutating branches; the inner
+resumeCheckpoint lock was removed (sole caller holds it; double flock would
+self-deadlock). Decision-memory hints moved to a new `MemoryHint` dispute
+field so `--accept-majority` reads the true panel default; legacy finals with
+"previous ruling:" in Default are honored explicitly. `validatePass` enforces
+the worker-verified downgrade host-side. Replay and edit `--rereview` re-enable
+splitting for chunked packets. Abort finals now include worker findings,
+canonical IDs, and accumulated reason codes. finalize helpers extracted to
+`finalize.go` (review.go had crossed the 800-line gate). Adversarial review
+found four residuals (unbounded lock wait, edit-rereview split gap, hint
+missing from report.md, legacy-final inversion) — all fixed pre-commit.
+Tests: `arbitration_resume_test.go` (5 tests incl. real flock contention and
+split replay). check.sh + `go test -race ./internal/tribunal/app` green.

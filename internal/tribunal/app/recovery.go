@@ -74,17 +74,11 @@ func readMeta(path string) (Meta, error) {
 
 // resumeCheckpoint is a reducer over immutable call artifacts. It invokes only
 // the first absent provider work and never replaces a completed call result.
+// The caller (Resume) already holds run.lock and has revalidated the run
+// directory; acquiring the lock again here would self-deadlock.
 func (s *Service) resumeCheckpoint(ctx context.Context, workspace storage.Workspace, runDir, runID string, packet documents.Packet, meta Meta) (domain.Final, error) {
 	runCtx, cancel := withRunTimeout(ctx, s.Config.Limits.RunTimeout)
 	defer cancel()
-	lock, err := storage.AcquireLock(runCtx, filepath.Join(runDir, "run.lock"), nil)
-	if err != nil {
-		return domain.Final{}, exitError(ExitPreflight, "acquire run lock: %v", err)
-	}
-	defer lock.Close()
-	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
-		return domain.Final{}, exitError(ExitPreflight, "revalidate run: %v", err)
-	}
 	var state domain.RunState
 	if err := storage.ReadJSONStrict(filepath.Join(runDir, "state.json"), &state); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "resume state: %v", err)
@@ -158,7 +152,7 @@ func (s *Service) resumeCheckpoint(ctx context.Context, workspace storage.Worksp
 	for i := range disputes {
 		for _, record := range memory {
 			if domain.MatchesDecisionMemory(disputes[i].Finding, record.PacketItem, record.Fingerprint) {
-				disputes[i].Default = "previous ruling: " + record.Ruling
+				disputes[i].MemoryHint = "previous ruling: " + record.Ruling
 				break
 			}
 		}

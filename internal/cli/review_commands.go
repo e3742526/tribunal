@@ -102,7 +102,11 @@ func promptRulings(cmd *cobra.Command, disputes []domain.ArbitrationDispute, ope
 	reader := bufio.NewReader(cmd.InOrStdin())
 	var rulings []app.ArbitrationRuling
 	for _, dispute := range disputes {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nDefault: %s\nChoose accept/reject/defer/skip: ", dispute.ID, dispute.Finding.Issue, dispute.Default)
+		hint := ""
+		if dispute.MemoryHint != "" {
+			hint = "\nMemory: " + dispute.MemoryHint
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nDefault: %s%s\nChoose accept/reject/defer/skip: ", dispute.ID, dispute.Finding.Issue, dispute.Default, hint)
 		choice, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, &app.ExitError{Code: app.ExitInternal, Err: err}
