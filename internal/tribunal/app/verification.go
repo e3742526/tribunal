@@ -13,7 +13,7 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/storage"
 )
 
-func (s *Service) verifyFindings(ctx context.Context, runDir string, findings []domain.Finding) ([]domain.EvidenceItem, []string, error) {
+func (s *Service) verifyFindings(ctx context.Context, runDir string, findings []domain.Finding) (verificationArtifact, []string, error) {
 	allowedConfigured := map[string]bool{}
 	for _, domainName := range s.Config.Workers.AllowedDomains {
 		allowedConfigured[strings.ToLower(strings.TrimSuffix(domainName, "."))] = true
@@ -22,7 +22,7 @@ func (s *Service) verifyFindings(ctx context.Context, runDir string, findings []
 	var reasons []string
 	tasks := 0
 	for i := range findings {
-		verified := false
+		findings[i].EvidenceStatus = trustedEvidenceStatus(findings[i].EvidenceStatus)
 		for _, reference := range findings[i].Evidence {
 			if tasks >= s.Config.Limits.MaxVerification {
 				reasons = append(reasons, "verification_cap_reached")
@@ -44,27 +44,42 @@ func (s *Service) verifyFindings(ctx context.Context, runDir string, findings []
 			if name := s.Config.Workers.WebSearchAuthEnv; target.Provider == "websearch" && name != "" && os.Getenv(name) != "" {
 				headers["Authorization"] = "Bearer " + os.Getenv(name)
 			}
-			worker := adapters.WorkerService{AllowedDomains: allowed, MaxBytes: 2 << 20, Timeout: s.Config.Limits.CallTimeout, Clock: s.Clock, Headers: headers}
-			item, fetchErr := worker.Fetch(ctx, target.URL, target.Provider, "post-review-verification")
+			item, fetchErr := s.fetchEvidence(ctx, target, allowed, headers)
 			tasks++
 			if fetchErr != nil {
 				parsed, _ := url.Parse(target.URL)
 				item = domain.EvidenceItem{SchemaVersion: 1, ID: fmt.Sprintf("evidence:failed-%03d", tasks), Task: target.Provider, Phase: "post-review-verification", Source: parsed.String(), RetrievedAt: s.now(), Status: "failed", Error: fetchErr.Error()}
 				reasons = append(reasons, "verification_failed")
 			} else {
-				verified = true
+				// Retrieval proves provenance and availability only. Until a real
+				// claim-to-source verifier emits a typed support verdict, the host
+				// must not promote model-selected material to worker-verified.
+				item.Status = "retrieved-unverified"
+				reasons = append(reasons, "evidence_support_unverified")
 			}
 			evidence = append(evidence, item)
 		}
-		if verified {
-			findings[i].EvidenceStatus = domain.EvidenceWorkerVerified
-		}
 	}
-	payload := map[string]any{"schema_version": 1, "evidence": evidence, "verification_hash": hashText(string(marshal(evidence)))}
-	if err := storage.WriteJSON(filepath.Join(runDir, "verification-evidence.json"), payload); err != nil {
-		return nil, nil, err
+	artifact := verificationArtifact{SchemaVersion: 1, Evidence: evidence, VerificationHash: hashText(string(marshal(evidence)))}
+	if err := storage.WriteJSON(filepath.Join(runDir, "verification-evidence.json"), artifact); err != nil {
+		return verificationArtifact{}, nil, err
 	}
-	return evidence, unique(reasons), nil
+	return artifact, unique(reasons), nil
+}
+
+func (s *Service) fetchEvidence(ctx context.Context, target adapters.EvidenceTarget, allowed []string, headers map[string]string) (domain.EvidenceItem, error) {
+	if s.EvidenceFetch != nil {
+		return s.EvidenceFetch(ctx, target, allowed, headers)
+	}
+	worker := adapters.WorkerService{AllowedDomains: allowed, MaxBytes: 2 << 20, Timeout: s.Config.Limits.CallTimeout, Clock: s.Clock, Headers: headers}
+	return worker.Fetch(ctx, target.URL, target.Provider, "post-review-verification")
+}
+
+func trustedEvidenceStatus(status domain.EvidenceStatus) domain.EvidenceStatus {
+	if status == domain.EvidenceWorkerVerified {
+		return domain.EvidenceUnevidenced
+	}
+	return status
 }
 
 func (s *Service) resolveVerificationTarget(reference string) (adapters.EvidenceTarget, error) {

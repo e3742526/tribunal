@@ -20,15 +20,16 @@ const (
 )
 
 type Request struct {
-	RunDir         string
-	SystemPrompt   string
-	Prompt         string
-	Schema         string
-	SchemaPath     string
-	OutputPath     string
-	MaxOutputBytes int64
-	TimeoutSeconds int
-	EnvSecrets     map[string]string
+	RunDir          string
+	SystemPrompt    string
+	Prompt          string
+	Schema          string
+	SchemaPath      string
+	OutputPath      string
+	MaxOutputBytes  int64
+	MaxOutputTokens int
+	TimeoutSeconds  int
+	EnvSecrets      map[string]string
 }
 
 type Response struct {

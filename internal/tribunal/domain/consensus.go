@@ -108,6 +108,9 @@ func ResolveVotes(f Finding, votes []Vote, opts ConsensusOptions) Decision {
 	} else {
 		decision.Severity = f.Severity
 	}
+	if f.EvidenceStatus == EvidenceUnevidenced && decision.Severity.Rank() > SeverityMinor.Rank() {
+		decision.Severity = SeverityMinor
+	}
 	nonAbstain := decision.Accepts + decision.Rejects
 	switch {
 	case opts.ValidReviewers < 2 || opts.ValidReviewers*2 <= opts.ConfiguredReviewers:
@@ -123,9 +126,6 @@ func ResolveVotes(f Finding, votes []Vote, opts ConsensusOptions) Decision {
 	case acceptWeight > rejectWeight:
 		if f.Category == CategoryFactualClaim && f.EvidenceStatus == EvidenceUnevidenced {
 			decision.Outcome, decision.Reason = "unverified-claim", "factual_claim_lacks_evidence"
-			if decision.Severity.Rank() > SeverityMinor.Rank() {
-				decision.Severity = SeverityMinor
-			}
 		} else {
 			decision.Outcome, decision.Reason = "accepted", "majority_accept"
 		}

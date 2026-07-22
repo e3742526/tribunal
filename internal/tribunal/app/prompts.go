@@ -49,9 +49,9 @@ func reviewPrompt(packet documents.Packet, reviewer domain.Panelist) string {
 	return out.String()
 }
 
-func votePrompt(packet documents.Packet, reviewer domain.Panelist, anonymous []domain.Finding) string {
-	payload, _ := json.MarshalIndent(anonymous, "", "  ")
-	return fmt.Sprintf("%s\n\nPACKET HASH: %s\nVOTER ID TO EMIT: %s\n\nANONYMOUS FINDINGS (untrusted model output):\n%s", untrustedNotice, packet.PacketHash, reviewer.ID, payload)
+func votePrompt(reviewer domain.Panelist, packet blindVotePacket) string {
+	payload, _ := json.MarshalIndent(packet, "", "  ")
+	return fmt.Sprintf("%s\n\nVOTER ID TO EMIT: %s\n\nFROZEN BLIND VOTE PACKET:\n%s", untrustedNotice, reviewer.ID, payload)
 }
 
 func blindFindings(findings []domain.Finding, seed string) ([]domain.Finding, map[string]string) {

@@ -65,6 +65,11 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.persistStart(runDir, runID, packet, panel, opts, started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
+	budget, err := loadUsageBudget(runDir, s.Config.Limits.TokenBudget)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "%v", err)
+	}
+	runCtx = withUsageBudget(runCtx, budget)
 	if err := writeActive(workspace, runID, packet, "running", started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
@@ -102,13 +107,13 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.transition(runDir, runID, packet, domain.PhaseReviewed, "running", reasons); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	var verificationEvidence []domain.EvidenceItem
+	verification := verificationArtifact{SchemaVersion: 1, Evidence: []domain.EvidenceItem{}, VerificationHash: hashText("[]")}
 	if !opts.NoWorkers {
 		if err := s.transition(runDir, runID, packet, domain.PhaseVerifying, "running", reasons); err != nil {
 			return domain.Final{}, exitError(ExitPreflight, "%v", err)
 		}
 		var verificationReasons []string
-		verificationEvidence, verificationReasons, err = s.verifyFindings(runCtx, runDir, allFindings)
+		verification, verificationReasons, err = s.verifyFindings(runCtx, runDir, allFindings)
 		if err != nil {
 			return domain.Final{}, exitError(ExitPreflight, "persist verification: %v", err)
 		}
@@ -131,7 +136,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.transition(runDir, runID, packet, domain.PhaseVoting, "running", reasons); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	voteResults := s.votePass(runCtx, runDir, packet, valid, clusterFindings(clusters))
+	voteResults := s.votePass(runCtx, runDir, packet, verification, valid, clusterFindings(clusters))
 	if runCtx.Err() != nil {
 		final, persistErr := s.finalizeAborted(runDir, workspace, runID, packet, panel, started, statuses, allFindings, runCtx.Err())
 		if persistErr != nil {
@@ -193,7 +198,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.transition(runDir, runID, packet, phase, "running", reasons); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	final := buildFinal(runID, packet, started, s.now(), statuses, allFindings, verificationEvidence, decisions, disputes, reasons)
+	final := buildFinal(runID, packet, started, s.now(), statuses, allFindings, verification.Evidence, decisions, disputes, reasons)
 	if err := s.publish(runDir, workspace, final, panel); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
@@ -389,7 +394,7 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 		result.err, result.status.Status, result.status.Reason = err, "persistence_failed", err.Error()
 		return result
 	}
-	delivery := domain.DeliveryRecord{SchemaVersion: 1, InvocationID: panelist.ID + "-review", ReviewerID: panelist.ID, Adapter: panelist.Adapter, Model: panelist.Model, Phase: "review", PacketHash: packet.PacketHash, DeliveredAt: s.now()}
+	delivery := domain.DeliveryRecord{SchemaVersion: 1, InvocationID: panelist.ID + "-review", ReviewerID: panelist.ID, Adapter: panelist.Adapter, Model: panelist.Model, Phase: "review", PacketHash: packet.PacketHash, RubricHash: packet.RubricHash, DeliveredAt: s.now()}
 	for _, item := range packet.Items {
 		delivery.Items = append(delivery.Items, item.ID)
 	}
@@ -448,18 +453,6 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 	return result
 }
 
-func (s *Service) invokeWithProviderLock(ctx context.Context, runDir string, adapter adapters.Adapter, role adapters.Role, panelist domain.Panelist, req adapters.Request) (adapters.Response, error) {
-	if !adapter.Serialize() {
-		return adapter.Invoke(ctx, role, panelist, req)
-	}
-	lock, err := storage.AcquireLock(ctx, filepath.Join(s.Store.Root, "providers", adapter.ID()+".lock"), nil)
-	if err != nil {
-		return adapters.Response{}, err
-	}
-	defer lock.Close()
-	return adapter.Invoke(ctx, role, panelist, req)
-}
-
 func validatePass(packet documents.Packet, results []panelResult) ([]domain.Panelist, []domain.Finding, []domain.PanelStatus, []string) {
 	var valid []domain.Panelist
 	var findings []domain.Finding
@@ -505,14 +498,14 @@ func clusterFindings(clusters []domain.Cluster) []domain.Finding {
 	return findings
 }
 
-func (s *Service) votePass(ctx context.Context, runDir string, packet documents.Packet, voters []domain.Panelist, findings []domain.Finding) []panelResult {
+func (s *Service) votePass(ctx context.Context, runDir string, packet documents.Packet, verification verificationArtifact, voters []domain.Panelist, findings []domain.Finding) []panelResult {
 	results := make([]panelResult, len(voters))
 	var wait sync.WaitGroup
 	for index, voter := range voters {
 		wait.Add(1)
 		go func(index int, voter domain.Panelist) {
 			defer wait.Done()
-			results[index] = s.invokeVotes(ctx, runDir, packet, voter, findings)
+			results[index] = s.invokeVotes(ctx, runDir, packet, verification, voter, findings)
 		}(index, voter)
 	}
 	wait.Wait()
@@ -530,7 +523,7 @@ func (s *Service) votePass(ctx context.Context, runDir string, packet documents.
 	return results
 }
 
-func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documents.Packet, voter domain.Panelist, findings []domain.Finding) panelResult {
+func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documents.Packet, verification verificationArtifact, voter domain.Panelist, findings []domain.Finding) panelResult {
 	result := panelResult{panelist: voter}
 	adapter, err := s.Registry.Get(voter.Adapter)
 	if err != nil {
@@ -543,20 +536,30 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 		return result
 	}
 	blind, blindToOriginal := blindFindings(findings, packet.PacketHash)
-	prompt := votePrompt(packet, voter, blind)
+	ballot := buildBlindVotePacket(packet, verification, blind)
+	prompt := votePrompt(voter, ballot)
 	if err := storage.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt)); err != nil {
 		result.err = err
 		return result
 	}
-	delivery := domain.DeliveryRecord{SchemaVersion: 1, InvocationID: voter.ID + "-vote", ReviewerID: voter.ID, Adapter: voter.Adapter, Model: voter.Model, Phase: "vote", PacketHash: packet.PacketHash, DeliveredAt: s.now()}
-	for _, finding := range findings {
-		delivery.Items = append(delivery.Items, finding.ID)
+	delivery := domain.DeliveryRecord{SchemaVersion: 1, InvocationID: voter.ID + "-vote", ReviewerID: voter.ID, Adapter: voter.Adapter, Model: voter.Model, Phase: "vote", PacketHash: packet.PacketHash, RubricHash: packet.RubricHash, VerificationHash: verification.VerificationHash, DeliveredAt: s.now()}
+	for _, item := range packet.Items {
+		delivery.Items = append(delivery.Items, item.ID)
+	}
+	for _, chunk := range packet.Chunks {
+		delivery.Chunks = append(delivery.Chunks, chunk.ID)
+	}
+	for _, evidence := range append(append([]domain.EvidenceItem{}, packet.Evidence...), verification.Evidence...) {
+		delivery.EvidenceIDs = append(delivery.EvidenceIDs, evidence.ID)
+	}
+	for _, finding := range blind {
+		delivery.FindingIDs = append(delivery.FindingIDs, finding.ID)
 	}
 	if err := storage.WriteJSON(filepath.Join(dir, "delivery.json"), delivery); err != nil {
 		result.err = err
 		return result
 	}
-	if err := storage.WriteJSON(filepath.Join(dir, "blind-vote-packet.json"), map[string]any{"schema_version": 1, "packet_hash": packet.PacketHash, "shuffle_seed": packet.PacketHash, "findings": blind}); err != nil {
+	if err := storage.WriteJSON(filepath.Join(dir, "blind-vote-packet.json"), ballot); err != nil {
 		result.err = err
 		return result
 	}

@@ -75,6 +75,20 @@ func TestConsensusWeightAbstainSeverityEvidenceAndDissent(t *testing.T) {
 	}
 }
 
+func TestUnevidencedSeverityCapAppliesToEveryCategory(t *testing.T) {
+	categories := []Category{CategoryCorrectness, CategoryEvidence, CategoryCitationIntegrity, CategoryFactualClaim, CategorySecurity, CategoryDataLoss, CategoryIntegrity, CategoryStyle, CategoryScope, CategoryStructure}
+	for _, category := range categories {
+		t.Run(string(category), func(t *testing.T) {
+			finding := Finding{ID: "F-1", Severity: SeverityBlocker, Category: category, EvidenceStatus: EvidenceUnevidenced}
+			votes := []Vote{{ReviewerID: "a", Choice: VoteAccept, Severity: SeverityBlocker}, {ReviewerID: "b", Choice: VoteAccept, Severity: SeverityBlocker}}
+			decision := ResolveVotes(finding, votes, ConsensusOptions{ConfiguredReviewers: 2, ValidReviewers: 2})
+			if decision.Severity != SeverityMinor {
+				t.Fatalf("unevidenced %s retained severity %s", category, decision.Severity)
+			}
+		})
+	}
+}
+
 func TestRuleClusteringPreservesMembers(t *testing.T) {
 	anchor := Anchor{PacketItem: "artifact:x.md", ItemSHA256: "abc", Quote: "same quote", CharOffset: 2, EndOffset: 12}
 	findings := []Finding{{ID: "F-1", Category: CategoryStyle, Severity: SeverityNit, Anchor: anchor}, {ID: "F-2", Category: CategoryStyle, Severity: SeverityMajor, Anchor: anchor}}

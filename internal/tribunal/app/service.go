@@ -39,10 +39,11 @@ func (e *ExitError) Error() string {
 func (e *ExitError) Unwrap() error { return e.Err }
 
 type Service struct {
-	Config   config.Config
-	Store    *storage.Store
-	Registry *adapters.Registry
-	Clock    func() time.Time
+	Config        config.Config
+	Store         *storage.Store
+	Registry      *adapters.Registry
+	Clock         func() time.Time
+	EvidenceFetch func(context.Context, adapters.EvidenceTarget, []string, map[string]string) (domain.EvidenceItem, error)
 }
 
 type ReviewOptions struct {

@@ -212,17 +212,21 @@ type PanelStatus struct {
 }
 
 type DeliveryRecord struct {
-	SchemaVersion int       `json:"schema_version"`
-	InvocationID  string    `json:"invocation_id"`
-	ReviewerID    string    `json:"reviewer_id"`
-	Adapter       string    `json:"adapter"`
-	Model         string    `json:"model"`
-	Phase         string    `json:"phase"`
-	PacketHash    string    `json:"packet_hash"`
-	Items         []string  `json:"items"`
-	Chunks        []string  `json:"chunks,omitempty"`
-	Truncated     bool      `json:"truncated"`
-	DeliveredAt   time.Time `json:"delivered_at"`
+	SchemaVersion    int       `json:"schema_version"`
+	InvocationID     string    `json:"invocation_id"`
+	ReviewerID       string    `json:"reviewer_id"`
+	Adapter          string    `json:"adapter"`
+	Model            string    `json:"model"`
+	Phase            string    `json:"phase"`
+	PacketHash       string    `json:"packet_hash"`
+	RubricHash       string    `json:"rubric_hash"`
+	VerificationHash string    `json:"verification_hash,omitempty"`
+	Items            []string  `json:"items"`
+	Chunks           []string  `json:"chunks,omitempty"`
+	EvidenceIDs      []string  `json:"evidence_ids,omitempty"`
+	FindingIDs       []string  `json:"finding_ids,omitempty"`
+	Truncated        bool      `json:"truncated"`
+	DeliveredAt      time.Time `json:"delivered_at"`
 }
 
 type RunPhase string

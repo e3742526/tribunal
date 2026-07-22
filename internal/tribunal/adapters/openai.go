@@ -40,6 +40,9 @@ func (a *OpenAICompatible) Invoke(ctx context.Context, role Role, panelist domai
 	}
 	messages := []map[string]string{{"role": "system", "content": req.SystemPrompt}, {"role": "user", "content": req.Prompt}}
 	payload := map[string]any{"model": panelist.Model, "messages": messages, "temperature": 0}
+	if req.MaxOutputTokens > 0 {
+		payload["max_tokens"] = req.MaxOutputTokens
+	}
 	if req.Schema != "" {
 		var schema any
 		if err := json.Unmarshal([]byte(req.Schema), &schema); err != nil {

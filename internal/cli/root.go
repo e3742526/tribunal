@@ -53,7 +53,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&f.TrustWorkspace, "trust-workspace-config", false, "trust .tribunal.toml in the document workspace")
 	root.PersistentFlags().Int64Var(&f.MaxOutputBytes, "max-output-bytes", 0, "maximum bytes accepted from one model call")
 	root.PersistentFlags().DurationVar(&f.RunTimeout, "max-wall-time", 0, "maximum total review time")
-	root.PersistentFlags().IntVar(&f.TokenBudget, "token-budget", 0, "maximum estimated tokens for the run")
+	root.PersistentFlags().IntVar(&f.TokenBudget, "token-budget", 0, "maximum accounted tokens for the run")
 	root.AddCommand(newReviewCommand(f, false), newReviewCommand(f, true))
 	root.AddCommand(newArbitrateCommand(f), newEditCommand(f), newRevertCommand(f))
 	root.AddCommand(newResumeCommand(f), newReplayCommand(f), newExplainCommand(f))

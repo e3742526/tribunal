@@ -73,6 +73,11 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 			if strings.Contains(req.Prompt, "reviewer\":\"R-") || strings.Contains(req.Prompt, "persona\":\"") {
 				t.Errorf("vote prompt leaked reviewer identity: %s", req.Prompt)
 			}
+			for _, required := range []string{"The launch date is unsupported.", rubric, packet.RubricHash, "verification_hash", "FROZEN BLIND VOTE PACKET"} {
+				if !strings.Contains(req.Prompt, required) {
+					t.Errorf("vote prompt omitted frozen context %q", required)
+				}
+			}
 			payload := map[string]any{"schema_version": 1, "votes": []domain.Vote{{SchemaVersion: 1, ReviewerID: panelist.ID, FindingID: "B-0001", Choice: domain.VoteAccept, Severity: domain.SeverityMajor, Reason: "The claim needs support."}}}
 			return jsonResponse(t, payload), nil
 		default:
@@ -103,6 +108,25 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 			t.Errorf("missing %s: %v", name, err)
 		}
 	}
+	var firstBallot []byte
+	for _, reviewer := range panel.Reviewers {
+		ballot, err := os.ReadFile(filepath.Join(runDir, "calls", reviewer.ID, "vote", "blind-vote-packet.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if firstBallot == nil {
+			firstBallot = ballot
+		} else if string(firstBallot) != string(ballot) {
+			t.Fatalf("voters received different frozen ballot packets")
+		}
+		var delivery domain.DeliveryRecord
+		if err := storage.ReadJSON(filepath.Join(runDir, "calls", reviewer.ID, "vote", "delivery.json"), &delivery); err != nil {
+			t.Fatal(err)
+		}
+		if delivery.RubricHash != packet.RubricHash || delivery.VerificationHash == "" || len(delivery.Items) != len(packet.Items) || len(delivery.FindingIDs) == 0 {
+			t.Fatalf("incomplete vote delivery: %#v", delivery)
+		}
+	}
 	for _, name := range []string{"active.json", "latest.json", "findings.json"} {
 		if _, err := os.Stat(filepath.Join(workspace.Root, name)); err != nil {
 			t.Errorf("missing workspace artifact %s: %v", name, err)
@@ -130,6 +154,43 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 	restarted, restartErr := service.Resume(context.Background(), RunRef{Input: documentPath, RunID: replayed.RunID})
 	if !errors.As(restartErr, &exit) || exit.Code != ExitBlockingFindings || restarted.RunID != replayed.RunID || restarted.PacketHash != final.PacketHash {
 		t.Fatalf("incomplete resume = %#v, %v", restarted, restartErr)
+	}
+}
+
+func TestModelCannotSelfDeclareWorkerVerifiedEvidence(t *testing.T) {
+	if got := trustedEvidenceStatus(domain.EvidenceWorkerVerified); got != domain.EvidenceUnevidenced {
+		t.Fatalf("worker-verified model claim was trusted: %q", got)
+	}
+	if got := trustedEvidenceStatus(domain.EvidenceAnchored); got != domain.EvidenceAnchored {
+		t.Fatalf("anchored status changed: %q", got)
+	}
+}
+
+func TestRetrievedEvidenceRemainsSemanticallyUnverified(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Workers.AllowedDomains = []string{"example.com"}
+	service, err := New(cfg, store, adapters.NewRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.EvidenceFetch = func(_ context.Context, target adapters.EvidenceTarget, _ []string, _ map[string]string) (domain.EvidenceItem, error) {
+		return domain.EvidenceItem{SchemaVersion: 1, ID: "evidence:unrelated", Task: target.Provider, Phase: "post-review-verification", Source: target.URL, Status: "ok", Excerpt: "Unrelated source content", ContentSHA256: "abc"}, nil
+	}
+	findings := []domain.Finding{{ID: "F-1", Evidence: []string{"https://example.com/source"}, EvidenceStatus: domain.EvidenceWorkerVerified}}
+	runDir := t.TempDir()
+	artifact, reasons, err := service.verifyFindings(context.Background(), runDir, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings[0].EvidenceStatus != domain.EvidenceUnevidenced || len(artifact.Evidence) != 1 || artifact.Evidence[0].Status != "retrieved-unverified" || artifact.VerificationHash == "" {
+		t.Fatalf("retrieved evidence was promoted: finding=%#v artifact=%#v", findings[0], artifact)
+	}
+	if !strings.Contains(strings.Join(reasons, ","), "evidence_support_unverified") {
+		t.Fatalf("reason codes = %v", reasons)
 	}
 }
 

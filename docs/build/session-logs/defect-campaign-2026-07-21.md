@@ -42,7 +42,36 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
 
 ## Stage results
 
-To be appended as each group passes Gates 3–8.
+### Group 1 — decision integrity
+
+- Fixed ARC-TRIBUNAL-002 with a versioned blind vote packet containing the frozen
+  rubric, item/chunk content, pre-review evidence, post-review evidence/hash, shuffle
+  seed, and blinded findings. Delivery records attest every item, chunk, evidence ID,
+  finding ID, and hash. Synthetic voters received byte-identical ballot artifacts.
+- Fixed LLM-TRIBUNAL-001 fail-closed: successful retrieval is recorded as
+  `retrieved-unverified`; provider output cannot self-declare `worker-verified`.
+  A deterministic fetch seam proves an unrelated successful source is not promoted.
+- Fixed LLM-TRIBUNAL-002 with a durable `usage.json` reservation/reconciliation ledger
+  at the central provider boundary. Calls stop before exceeding the run budget; actual
+  OpenAI usage is accounted, unknown failed-call use is charged conservatively, and
+  OpenAI-compatible requests receive `max_tokens`.
+- Fixed ARC-TRIBUNAL-003 by applying the minor cap to every unevidenced category before
+  category-specific consensus outcomes.
+- Focused verification: `go test ./internal/tribunal/domain
+  ./internal/tribunal/adapters ./internal/tribunal/app` and focused `go vet` passed.
+- Concurrency verification: `go test -race ./internal/tribunal/app
+  ./internal/tribunal/adapters ./internal/tribunal/domain` passed.
+- Repository gate: `scripts/check.sh` passed; `govulncheck` unavailable and explicitly
+  skipped.
+- Adversarial review: checked identity blindness, fetched-content trust labels,
+  concurrent budget reservations, failed-call charging, provider output truncation,
+  retry paths, and all-category consensus behavior. No residual in-scope defect found.
+- Change review: diff is limited to the four findings, their regression tests, CLI help,
+  and closure records. No deferred behavior or unrelated formatting was touched.
+- Record closure: audit overview rows ARC-TRIBUNAL-002, LLM-TRIBUNAL-001,
+  LLM-TRIBUNAL-002, and ARC-TRIBUNAL-003 changed open → resolved; native ledger rows
+  D-019 through D-022 added with passing evidence.
+- Intended commit: `repair: restore deliberation integrity and usage limits`.
 
 ## Record closure
 
