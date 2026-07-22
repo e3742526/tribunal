@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-21T00:00:00-04:00","revision":"4a8003c790857fbc3d7c5d7adacebda6fe030f32","mode":"bootstrap","health":null,"health_reason":"no scope-bearing invariant registry; numeric normalization unavailable","violation_mass":{"critical":0,"high":1,"medium":3,"low":0,"info":0},"coupling_aggregates":null,"baseline_ref":null,"trend":null}

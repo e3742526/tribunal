@@ -1,0 +1,38 @@
+{
+  "ARC-TRIBUNAL-001": {
+    "aid_code": "AID-014",
+    "additional_aid_codes": ["AID-012"],
+    "composite_label": "AID-014/architecture.registry.present/repo.tribunal",
+    "invariant_id": "architecture.registry.present",
+    "node_ids": ["repo.tribunal"],
+    "trace_basis": "inferred",
+    "confidence_caps_applied": ["bootstrap inferred-intent ceiling: Likely"]
+  },
+  "ARC-TRIBUNAL-002": {
+    "aid_code": "AID-009",
+    "additional_aid_codes": ["AID-001", "AID-010", "AID-011"],
+    "composite_label": "AID-009/spec.vote-packet.complete/app.vote-pass",
+    "invariant_id": "spec.vote-packet.complete",
+    "node_ids": ["app.review.vote-pass", "app.prompts.vote-prompt", "artifact.vote-delivery"],
+    "trace_basis": "declared",
+    "confidence_caps_applied": []
+  },
+  "ARC-TRIBUNAL-003": {
+    "aid_code": "AID-009",
+    "additional_aid_codes": ["AID-011"],
+    "composite_label": "AID-009/spec.consensus.unevidenced-cap/domain.resolve-votes",
+    "invariant_id": "spec.consensus.unevidenced-cap",
+    "node_ids": ["domain.resolve-votes"],
+    "trace_basis": "declared",
+    "confidence_caps_applied": []
+  },
+  "ARC-TRIBUNAL-004": {
+    "aid_code": "AID-009",
+    "additional_aid_codes": ["AID-011"],
+    "composite_label": "AID-009/spec.persistence.schema-fail-closed/storage.artifact-readers",
+    "invariant_id": "spec.persistence.schema-fail-closed",
+    "node_ids": ["storage.read-json", "app.read-final", "storage.load-ledger"],
+    "trace_basis": "declared",
+    "confidence_caps_applied": []
+  }
+}
