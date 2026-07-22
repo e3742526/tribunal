@@ -194,3 +194,15 @@ reviewedItems scope from packet.json; "disputed" added to sticky statuses).
 Tests: durability_test.go (torn tail quarantine/recovery, transition
 validation, in-scope/out-of-scope staleness, darwin case-variant
 containment). check.sh + race suites green.
+
+### Stage 7 — edit-retry
+
+D-041/066 fixed. Leftover recovery backups no longer block edit retries
+forever: identical-content backups are reused, mismatched backups are
+archived under content-addressed .superseded names (prefix widened to 24 hex
+after adversarial review noted a theoretical 48-bit collision degrading the
+fail-closed property). Revert runs crash recovery before reading the edit
+record, so a rolled-back apply reports "rolled back" instead of accusing the
+user of foreign changes. Adversarial review verified all three new tests
+fail against pre-fix sources with the exact predicted defect messages.
+Tests: edit_retry_test.go. check.sh + app race suite green.

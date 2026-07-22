@@ -50,8 +50,17 @@ func (s *Service) executeEditTransaction(runDir, runID, packetHash, operation st
 		return tx, err
 	}
 	for i, plan := range plans {
-		if _, err := os.Stat(plan.recovery); err == nil {
-			return tx, fmt.Errorf("recovery backup already exists for %s", plan.source)
+		// A leftover backup from a rolled-back or reverted transaction must
+		// not block retry forever. Identical content is safely reused;
+		// different content is archived under a content-addressed name so
+		// nothing an old record references is ever destroyed.
+		if existing, err := os.ReadFile(plan.recovery); err == nil {
+			if hashText(string(existing)) != tx.Files[i].BeforeSHA256 {
+				archived := plan.recovery + ".superseded-" + hashText(string(existing))[:24]
+				if err := os.Rename(plan.recovery, archived); err != nil {
+					return tx, fmt.Errorf("archive stale recovery backup for %s: %w", plan.source, err)
+				}
+			}
 		} else if !os.IsNotExist(err) {
 			return tx, err
 		}

@@ -107,7 +107,7 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	record := EditRecord{SchemaVersion: 1, RunID: runID, PacketHash: packet.PacketHash, AppliedAt: s.now()}
 	transactionPlans := make([]transactionPlan, 0, len(plans))
 	for _, plan := range plans {
-		backup := filepath.Join(runDir, "backups", hashText(plan.item.SourcePath)[:12]+".original")
+		backup := filepath.Join(runDir, "backups", hashText(plan.item.SourcePath)[:24]+".original")
 		record.Files = append(record.Files, EditFileRecord{SchemaVersion: 1, PacketItem: plan.item.ID, SourcePath: plan.item.SourcePath, BackupPath: backup, BeforeSHA256: hashText(string(plan.live)), AfterSHA256: hashText(string(plan.after))})
 		transactionPlans = append(transactionPlans, transactionPlan{source: plan.item.SourcePath, recovery: backup, before: plan.live, after: plan.after, mode: plan.mode})
 	}
@@ -165,20 +165,23 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
 		return EditRecord{}, exitError(ExitPreflight, "revalidate run: %v", err)
 	}
+	final, err := readFinal(filepath.Join(runDir, "final.json"))
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	}
+	// Crash recovery runs before the edit record is read: a rolled-back
+	// apply stamps RolledBackAt during recovery, and validating a stale
+	// pre-recovery copy would misreport it as foreign user changes.
+	if err := s.recoverEditTransaction(runDir, final); err != nil {
+		return EditRecord{}, exitError(ExitAborted, "%v", err)
+	}
 	var record EditRecord
 	path := filepath.Join(runDir, "edit-record.json")
 	if err := storage.ReadJSONStrict(path, &record); err != nil {
 		return EditRecord{}, exitError(ExitPreflight, "load edit record: %v", err)
 	}
 	if err := validateEditRecord(record); err != nil || record.RevertedAt != nil || record.RolledBackAt != nil {
-		return EditRecord{}, exitError(ExitInvalidArguments, "edit record is unsupported or already reverted")
-	}
-	final, err := readFinal(filepath.Join(runDir, "final.json"))
-	if err != nil {
-		return EditRecord{}, exitError(ExitPreflight, "%v", err)
-	}
-	if err := s.recoverEditTransaction(runDir, final); err != nil {
-		return EditRecord{}, exitError(ExitAborted, "%v", err)
+		return EditRecord{}, exitError(ExitInvalidArguments, "edit record is unsupported, already reverted, or was rolled back")
 	}
 	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
 	if err != nil {
@@ -202,7 +205,7 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 		if err != nil {
 			return EditRecord{}, exitError(ExitAborted, "%v", err)
 		}
-		recovery := filepath.Join(runDir, "backups", hashText(file.SourcePath)[:12]+".pre-revert")
+		recovery := filepath.Join(runDir, "backups", hashText(file.SourcePath)[:24]+".pre-revert")
 		plans = append(plans, transactionPlan{source: file.SourcePath, recovery: recovery, before: live, after: backup, mode: info.Mode()})
 	}
 	tx, err := s.executeEditTransaction(runDir, record.RunID, record.PacketHash, "revert", plans)
