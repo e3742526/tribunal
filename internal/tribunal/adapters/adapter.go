@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"time"
 
 	"github.com/e3742526/tribunal/internal/tribunal/domain"
 )
@@ -114,6 +115,15 @@ func detect(ctx context.Context, adapter, binary string) VersionInfo {
 	if err != nil {
 		return VersionInfo{Adapter: adapter, Hint: "install " + binary}
 	}
-	output, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
-	return VersionInfo{Adapter: adapter, Found: true, Runnable: err == nil, Version: stringTrim(output), Binary: path, Hint: "authenticate with the provider CLI"}
+	// A wedged or rogue CLI must not hang doctor or stream unbounded output.
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(callCtx, path, "--version")
+	// Without WaitDelay a descendant inheriting the pipe could hold Run open
+	// past the kill — the exact doctor hang this timeout exists to prevent.
+	cmd.WaitDelay = 5 * time.Second
+	output := newBoundedBuffer(64 << 10)
+	cmd.Stdout, cmd.Stderr = output, output
+	err = cmd.Run()
+	return VersionInfo{Adapter: adapter, Found: true, Runnable: err == nil, Version: stringTrim(output.Bytes()), Binary: path, Hint: "authenticate with the provider CLI"}
 }

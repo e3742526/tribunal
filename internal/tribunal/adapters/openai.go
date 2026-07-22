@@ -71,9 +71,14 @@ func (a *OpenAICompatible) Invoke(ctx context.Context, role Role, panelist domai
 	for key, value := range a.Headers {
 		httpReq.Header.Set(key, value)
 	}
-	client := a.Client
-	if client == nil {
-		client = &http.Client{CheckRedirect: sameOriginRedirect}
+	// The redirect guard is overlaid on a shallow copy of any injected
+	// client too, so custom transports cannot silently follow a redirect
+	// that would repost the document body to another origin.
+	client := &http.Client{CheckRedirect: sameOriginRedirect}
+	if a.Client != nil {
+		clone := *a.Client
+		clone.CheckRedirect = sameOriginRedirect
+		client = &clone
 	}
 	response, err := client.Do(httpReq)
 	if err != nil {
@@ -105,8 +110,11 @@ func (a *OpenAICompatible) Invoke(ctx context.Context, role Role, panelist domai
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Choices) == 0 {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return Response{Raw: raw}, fmt.Errorf("decode openai-compatible envelope: %w", err)
+	}
+	if len(envelope.Choices) == 0 {
+		return Response{Raw: raw}, fmt.Errorf("openai-compatible response contained no choices (possibly filtered)")
 	}
 	content := []byte(envelope.Choices[0].Message.Content)
 	return Response{Raw: content, Text: strings.TrimSpace(string(content)), InputTok: envelope.Usage.PromptTokens, OutputTok: envelope.Usage.CompletionTokens, Command: []string{"POST", base.String() + "/chat/completions"}}, nil

@@ -201,6 +201,11 @@ func exactDomainAllowed(host string, allowed []string) bool {
 	return false
 }
 
+// maxWorkerFindings bounds each deterministic worker's output so a
+// pathological document cannot bloat run state; the application layer caps
+// the combined worker list again at Limits.MaxFindings.
+const maxWorkerFindings = 100
+
 func Spellcheck(packet documents.Packet) []domain.Finding {
 	replacer := misspell.New()
 	var findings []domain.Finding
@@ -208,6 +213,9 @@ func Spellcheck(packet documents.Packet) []domain.Finding {
 		_, differences := replacer.Replace(item.Content)
 		searchAt := 0
 		for _, difference := range differences {
+			if len(findings) >= maxWorkerFindings {
+				return findings
+			}
 			rel := strings.Index(item.Content[searchAt:], difference.Original)
 			if rel < 0 {
 				continue
@@ -234,6 +242,9 @@ func ReferenceCheck(packet documents.Packet) []domain.Finding {
 		}
 		seen := map[string]bool{}
 		for _, loc := range numericCitation.FindAllStringSubmatchIndex(item.Content, -1) {
+			if len(findings) >= maxWorkerFindings {
+				return findings
+			}
 			key := item.Content[loc[2]:loc[3]]
 			if definitions[key] || seen[key] {
 				continue

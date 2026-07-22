@@ -153,3 +153,25 @@ errors). Release-note items routed to Stage 8: md/txt >16MB now rejected
 quarantine on resume, split packet hashes change (%08d). Tests:
 integrity_test.go (ambiguity, disambiguation, fuzzy prefix, duplicate
 entries, caps, chunk order). check.sh green.
+
+### Stage 5 — adapters-hardening
+
+D-036/037/048/052-059 fixed. agy prompts fail closed pre-exec at a
+platform-aware argv cap (100KiB Linux / 900KiB darwin) with honest remedy
+text — the agy CLI was empirically verified to have no stdin/file prompt
+mode, so full stdin delivery and the process-table prompt exposure remain
+blocked upstream (partial repair, routed follow-up). Subprocess environments
+no longer receive EnvSecrets (redaction-only now); provider CLIs auth via
+allowlisted HOME. Kill/wait rewritten to cmd.Cancel + WaitDelay (pid-reuse
+race and escaped-grandchild hang closed; ErrWaitDelay treated as success
+with truncated pipes); detect() bounded 10s/64KiB with WaitDelay; output
+files read via handle-checked bounded reader; OpenAI adapter reports empty
+choices distinctly and overlays the same-origin redirect guard on injected
+clients; sub-second timeouts and non-positive verification/arbitration caps
+rejected at config normalize; worker findings capped at 100 per worker;
+persona names slug-validated before path join. Adversarial review found the
+first agy cap was itself a darwin regression with wrong advice (fixed:
+platform cap + corrected message), the ErrWaitDelay failure conversion,
+detect's missing WaitDelay, and the output-file TOCTOU — all fixed
+pre-commit. Tests: hardening_test.go, limits_test.go. check.sh + adapters
+race suite green.
