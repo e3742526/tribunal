@@ -100,6 +100,31 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
 - Record closure: audit overview rows FSR-TRIBUNAL-001, SEC-TRIBUNAL-001,
   ARC-TRIBUNAL-004, and FSR-TRIBUNAL-003 changed open → resolved; ledger rows
   D-023 through D-026 record passing evidence.
+- Commit: `2c6f654` (`repair: make recovery and publication fail closed`).
+
+### Group 3 — edit transaction recovery
+
+- Fixed FSR-TRIBUNAL-002 with a durable edit transaction written and fsynced before
+  document mutation. It records operation, phase, per-file before/after hashes,
+  recovery paths, modes, and applied progress.
+- Apply and revert now prepare recovery copies before the first source replacement,
+  reconcile mixed crash states from live hashes, roll back pre-terminal mutations,
+  leave post-terminal projection failures resumable, and enter a visible manual hold
+  when user changes or missing recovery material make automatic action ambiguous.
+- `resume`, `edit`, and `revert` reconcile incomplete transactions against the
+  terminal `EditsApplied` state. Rolled-back edit records are explicit and cannot be
+  mistaken for revertable committed edits.
+- Fault tests interrupt immediately after a source replacement and recover from a
+  fresh service instance; terminal-match tests prove an applied transaction commits
+  only when the durable final agrees. Existing stale hash, scope, user-change, and
+  full revert tests remain green.
+- `scripts/check.sh` and focused `go test -race` passed. `govulncheck` remained
+  unavailable and was explicitly skipped.
+- Adversarial review covered crash-before-backup, write-before-progress-marker,
+  record-before-final, final-before-projection, revert symmetry, user changes,
+  corrupt backups, and state rollback. No residual in-scope defect found.
+- Record closure: FSR-TRIBUNAL-002 changed open → resolved and ledger D-027 records
+  the regression evidence.
 - Commit: pending local group checkpoint.
 
 ## Record closure

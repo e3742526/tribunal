@@ -26,11 +26,12 @@ type EditOptions struct {
 }
 
 type EditFileRecord struct {
-	PacketItem   string `json:"packet_item"`
-	SourcePath   string `json:"source_path"`
-	BackupPath   string `json:"backup_path"`
-	BeforeSHA256 string `json:"before_sha256"`
-	AfterSHA256  string `json:"after_sha256"`
+	SchemaVersion int    `json:"schema_version"`
+	PacketItem    string `json:"packet_item"`
+	SourcePath    string `json:"source_path"`
+	BackupPath    string `json:"backup_path"`
+	BeforeSHA256  string `json:"before_sha256"`
+	AfterSHA256   string `json:"after_sha256"`
 }
 
 type EditRecord struct {
@@ -40,6 +41,7 @@ type EditRecord struct {
 	Files         []EditFileRecord `json:"files"`
 	AppliedAt     time.Time        `json:"applied_at"`
 	RevertedAt    *time.Time       `json:"reverted_at,omitempty"`
+	RolledBackAt  *time.Time       `json:"rolled_back_at,omitempty"`
 }
 
 type EditResult struct {
@@ -80,6 +82,9 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	if err != nil {
 		return EditResult{}, exitError(ExitPreflight, "%v", err)
 	}
+	if err := s.recoverEditTransaction(runDir, final); err != nil {
+		return EditResult{}, exitError(ExitAborted, "%v", err)
+	}
 	proposal, err := s.loadOrCreateProposal(ctx, runDir, runID, packet, final, opts.ProposalPath)
 	if err != nil {
 		return EditResult{}, exitError(ExitPreflight, "%v", err)
@@ -95,23 +100,49 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	if !opts.Apply {
 		return result, nil
 	}
-	record, err := applyPlans(runDir, runID, packet.PacketHash, plans, s.now())
-	if err != nil {
-		return EditResult{}, exitError(ExitAborted, "apply edits: %v", err)
-	}
-	result.Applied, result.Record = true, &record
-	final.EditsApplied = true
-	final.FinishedAt = s.now()
-	if err := s.transition(runDir, runID, packet, domain.PhaseEdited, "edited", nil); err != nil {
-		return result, exitError(ExitAborted, "%v", err)
-	}
 	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
 	if err != nil {
 		return result, exitError(ExitAborted, "%v", err)
 	}
+	record := EditRecord{SchemaVersion: 1, RunID: runID, PacketHash: packet.PacketHash, AppliedAt: s.now()}
+	transactionPlans := make([]transactionPlan, 0, len(plans))
+	for _, plan := range plans {
+		backup := filepath.Join(runDir, "backups", hashText(plan.item.SourcePath)[:12]+".original")
+		record.Files = append(record.Files, EditFileRecord{SchemaVersion: 1, PacketItem: plan.item.ID, SourcePath: plan.item.SourcePath, BackupPath: backup, BeforeSHA256: hashText(string(plan.live)), AfterSHA256: hashText(string(plan.after))})
+		transactionPlans = append(transactionPlans, transactionPlan{source: plan.item.SourcePath, recovery: backup, before: plan.live, after: plan.after, mode: plan.mode})
+	}
+	tx, err := s.executeEditTransaction(runDir, runID, packet.PacketHash, "apply", transactionPlans)
+	if err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return EditResult{}, exitError(ExitAborted, "apply edits: %v", transactionFailure(err, rollbackErr))
+	}
+	if err := storage.WriteJSON(filepath.Join(runDir, "edit-record.json"), record); err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return EditResult{}, exitError(ExitAborted, "persist edit record: %v", transactionFailure(err, rollbackErr))
+	}
+	if err := s.setTransactionPhase(runDir, &tx, "committing", ""); err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return EditResult{}, exitError(ExitAborted, "%v", transactionFailure(err, rollbackErr))
+	}
+	result.Record = &record
+	final.EditsApplied = true
+	final.FinishedAt = s.now()
+	if err := s.transition(runDir, runID, packet, domain.PhaseEdited, "edited", nil); err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return result, exitError(ExitAborted, "%v", transactionFailure(err, rollbackErr))
+	}
 	if err := s.publish(runDir, workspace, final, meta.Panel); err != nil {
+		persisted, finalErr := readFinal(filepath.Join(runDir, "final.json"))
+		if finalErr != nil || !persisted.EditsApplied {
+			rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+			return result, exitError(ExitAborted, "%v", transactionFailure(err, rollbackErr))
+		}
+		return result, exitError(ExitAborted, "edit committed; publication remains resumable: %v", err)
+	}
+	if err := s.setTransactionPhase(runDir, &tx, "committed", ""); err != nil {
 		return result, exitError(ExitAborted, "%v", err)
 	}
+	result.Applied = true
 	if opts.Rereview {
 		rereview, reviewErr := s.Review(ctx, ReviewOptions{Input: packet.InputRoot, Kind: packet.Kind, PanelValue: &meta.Panel})
 		result.Rereview = &rereview
@@ -138,16 +169,21 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 	if err := storage.ReadJSONStrict(path, &record); err != nil {
 		return EditRecord{}, exitError(ExitPreflight, "load edit record: %v", err)
 	}
-	if record.SchemaVersion != 1 || record.RevertedAt != nil {
+	if err := validateEditRecord(record); err != nil || record.RevertedAt != nil || record.RolledBackAt != nil {
 		return EditRecord{}, exitError(ExitInvalidArguments, "edit record is unsupported or already reverted")
 	}
-	type restore struct {
-		file EditFileRecord
-		data []byte
-		live []byte
-		mode os.FileMode
+	final, err := readFinal(filepath.Join(runDir, "final.json"))
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "%v", err)
 	}
-	var restores []restore
+	if err := s.recoverEditTransaction(runDir, final); err != nil {
+		return EditRecord{}, exitError(ExitAborted, "%v", err)
+	}
+	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
+	if err != nil {
+		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	}
+	var plans []transactionPlan
 	for _, file := range record.Files {
 		canonical, err := filepath.EvalSymlinks(file.SourcePath)
 		if err != nil || canonical != file.SourcePath {
@@ -165,34 +201,39 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 		if err != nil {
 			return EditRecord{}, exitError(ExitAborted, "%v", err)
 		}
-		restores = append(restores, restore{file: file, data: backup, live: live, mode: info.Mode()})
+		recovery := filepath.Join(runDir, "backups", hashText(file.SourcePath)[:12]+".pre-revert")
+		plans = append(plans, transactionPlan{source: file.SourcePath, recovery: recovery, before: live, after: backup, mode: info.Mode()})
 	}
-	var restored []restore
-	for _, item := range restores {
-		if err := storage.WriteFileMode(item.file.SourcePath, item.data, item.mode); err != nil {
-			for _, prior := range restored {
-				_ = storage.WriteFileMode(prior.file.SourcePath, prior.live, prior.mode)
-			}
-			return EditRecord{}, exitError(ExitAborted, "restore %s: %v", item.file.SourcePath, err)
-		}
-		restored = append(restored, item)
+	tx, err := s.executeEditTransaction(runDir, record.RunID, record.PacketHash, "revert", plans)
+	if err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return EditRecord{}, exitError(ExitAborted, "revert: %v", transactionFailure(err, rollbackErr))
 	}
 	now := s.now()
 	record.RevertedAt = &now
 	if err := storage.WriteJSON(path, record); err != nil {
-		return EditRecord{}, exitError(ExitAborted, "persist revert record: %v", err)
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		return EditRecord{}, exitError(ExitAborted, "persist revert record: %v", transactionFailure(err, rollbackErr))
 	}
-	final, err := readFinal(filepath.Join(runDir, "final.json"))
-	if err != nil {
-		return EditRecord{}, exitError(ExitPreflight, "%v", err)
-	}
-	meta, err := readMeta(filepath.Join(runDir, "meta.json"))
-	if err != nil {
-		return EditRecord{}, exitError(ExitPreflight, "%v", err)
+	if err := s.setTransactionPhase(runDir, &tx, "committing", ""); err != nil {
+		rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+		record.RevertedAt = nil
+		_ = storage.WriteJSON(path, record)
+		return EditRecord{}, exitError(ExitAborted, "%v", transactionFailure(err, rollbackErr))
 	}
 	final.EditsApplied, final.FinishedAt = false, now
 	if err := s.publish(runDir, workspace, final, meta.Panel); err != nil {
-		return EditRecord{}, exitError(ExitPreflight, "persist reverted final: %v", err)
+		persisted, finalErr := readFinal(filepath.Join(runDir, "final.json"))
+		if finalErr != nil || persisted.EditsApplied {
+			rollbackErr := s.rollbackEditTransaction(runDir, &tx, err.Error())
+			record.RevertedAt = nil
+			_ = storage.WriteJSON(path, record)
+			return EditRecord{}, exitError(ExitAborted, "persist reverted final: %v", transactionFailure(err, rollbackErr))
+		}
+		return record, exitError(ExitAborted, "revert committed; publication remains resumable: %v", err)
+	}
+	if err := s.setTransactionPhase(runDir, &tx, "committed", ""); err != nil {
+		return EditRecord{}, exitError(ExitAborted, "%v", err)
 	}
 	return record, nil
 }
@@ -383,51 +424,6 @@ func markdownSection(content string, anchor int) (int, int) {
 		return start, len(content)
 	}
 	return start, min(anchor, len(content)) + rel
-}
-
-func applyPlans(runDir, runID, packetHash string, plans []plannedEdit, now time.Time) (EditRecord, error) {
-	record := EditRecord{SchemaVersion: 1, RunID: runID, PacketHash: packetHash, AppliedAt: now}
-	for _, plan := range plans {
-		backup := filepath.Join(runDir, "backups", hashText(plan.item.SourcePath)[:12]+".original")
-		if _, err := os.Stat(backup); err == nil {
-			return EditRecord{}, fmt.Errorf("backup already exists for %s", plan.item.SourcePath)
-		} else if !os.IsNotExist(err) {
-			return EditRecord{}, err
-		}
-		if err := storage.WriteFileMode(backup, plan.live, plan.mode); err != nil {
-			return EditRecord{}, err
-		}
-		record.Files = append(record.Files, EditFileRecord{PacketItem: plan.item.ID, SourcePath: plan.item.SourcePath, BackupPath: backup, BeforeSHA256: hashText(string(plan.live)), AfterSHA256: hashText(string(plan.after))})
-	}
-	var applied []plannedEdit
-	for _, plan := range plans {
-		canonical, err := filepath.EvalSymlinks(plan.item.SourcePath)
-		if err != nil || canonical != plan.item.SourcePath {
-			rollbackPlans(applied)
-			return EditRecord{}, fmt.Errorf("source path changed before atomic apply")
-		}
-		current, err := os.ReadFile(plan.item.SourcePath)
-		if err != nil || hashText(string(current)) != hashText(string(plan.live)) {
-			rollbackPlans(applied)
-			return EditRecord{}, fmt.Errorf("source content changed before atomic apply")
-		}
-		if err := storage.WriteFileMode(plan.item.SourcePath, plan.after, plan.mode); err != nil {
-			rollbackPlans(applied)
-			return EditRecord{}, err
-		}
-		applied = append(applied, plan)
-	}
-	if err := storage.WriteJSON(filepath.Join(runDir, "edit-record.json"), record); err != nil {
-		rollbackPlans(applied)
-		return EditRecord{}, err
-	}
-	return record, nil
-}
-
-func rollbackPlans(plans []plannedEdit) {
-	for _, plan := range plans {
-		_ = storage.WriteFileMode(plan.item.SourcePath, plan.live, plan.mode)
-	}
 }
 
 func utf8Boundary(value []byte, index int) bool {

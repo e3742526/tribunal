@@ -44,6 +44,7 @@ type Service struct {
 	Registry      *adapters.Registry
 	Clock         func() time.Time
 	EvidenceFetch func(context.Context, adapters.EvidenceTarget, []string, map[string]string) (domain.EvidenceItem, error)
+	EditFault     func(string) error
 }
 
 type ReviewOptions struct {

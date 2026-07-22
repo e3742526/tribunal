@@ -34,7 +34,7 @@ No target program, provider, test suite, network request, fault injection, or ho
 | 2 | LLM-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 1 | LLM-014, SEC-005 | Transport success is promoted to semantic evidence verification |
 | 3 | FSR-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 2 | FSR-009, FSR-014, SC-INT/SC-COR | Resume reruns and overwrites instead of continuing a checkpoint |
 | 4 | SEC-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 2 | SEC-005, SEC-008 | Persisted packet identity is not cryptographically revalidated |
-| 5 | FSR-TRIBUNAL-002 | High | Likely | open | FSR-005, FSR-014, FSR-015, SC-INT | Edit/revert mutations are not transactionally coupled to lifecycle records |
+| 5 | FSR-TRIBUNAL-002 | High | Likely | resolved 2026-07-21 — campaign group 3 | FSR-005, FSR-014, FSR-015, SC-INT | Edit/revert mutations are not transactionally coupled to lifecycle records |
 | 6 | LLM-TRIBUNAL-002 | Medium | Confirmed | resolved 2026-07-21 — campaign group 1 | LLM-012, FSR-007 | Token budget is an estimate, not a runtime circuit breaker |
 | 7 | ARC-TRIBUNAL-003 | Medium | Confirmed | resolved 2026-07-21 — campaign group 1 | AID-009 | Unevidenced major/blocker findings are capped only for one category |
 | 8 | ARC-TRIBUNAL-004 | Medium | Confirmed | resolved 2026-07-21 — campaign group 2 | AID-009, AID-011 | Persisted readers validate outer versions but accept unknown nested versions |

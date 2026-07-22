@@ -161,6 +161,9 @@ func (s *Service) Resume(ctx context.Context, ref RunRef) (domain.Final, error) 
 		if err := s.completePublication(runDir, workspace, final, meta.Panel); err != nil {
 			return domain.Final{}, exitError(ExitPreflight, "resume publication: %v", err)
 		}
+		if err := s.recoverEditTransaction(runDir, final); err != nil {
+			return domain.Final{}, exitError(ExitAborted, "resume edit transaction: %v", err)
+		}
 		return finalResult(final)
 	} else if !os.IsNotExist(readErr) {
 		return domain.Final{}, exitError(ExitPreflight, "resume final: %v", readErr)
@@ -171,6 +174,9 @@ func (s *Service) Resume(ctx context.Context, ref RunRef) (domain.Final, error) 
 		}
 		if err := s.publish(runDir, workspace, candidate, meta.Panel); err != nil {
 			return domain.Final{}, exitError(ExitPreflight, "resume publication: %v", err)
+		}
+		if err := s.recoverEditTransaction(runDir, candidate); err != nil {
+			return domain.Final{}, exitError(ExitAborted, "resume edit transaction: %v", err)
 		}
 		return finalResult(candidate)
 	} else if !os.IsNotExist(readErr) {
