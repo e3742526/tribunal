@@ -2,7 +2,9 @@ package domain
 
 import (
 	"fmt"
+	"math"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -24,10 +26,12 @@ func ParsePanel(raw string) (Panel, error) {
 		persona := "plain"
 		if at := strings.LastIndexByte(rest, '@'); at >= 0 {
 			candidate := rest[at+1:]
-			if !personaSlug.MatchString(candidate) {
-				return Panel{}, fmt.Errorf("panel persona %q is not a valid slug", candidate)
+			// The persona marker is optional. A trailing @ only separates a
+			// persona when it has the documented slug form; otherwise it is
+			// part of the verbatim model identifier.
+			if personaSlug.MatchString(candidate) {
+				persona, rest = candidate, rest[:at]
 			}
-			persona, rest = candidate, rest[:at]
 		}
 		if strings.TrimSpace(rest) == "" {
 			return Panel{}, fmt.Errorf("panel entry %q has an empty model", part)
@@ -73,6 +77,9 @@ func NormalizePanel(panel *Panel) error {
 			return fmt.Errorf("duplicate reviewer id %q", r.ID)
 		}
 		seen[r.ID] = struct{}{}
+		if math.IsNaN(r.Weight) || math.IsInf(r.Weight, 0) {
+			return fmt.Errorf("reviewer %q has a non-finite weight", r.ID)
+		}
 		if r.Weight < 0.5 {
 			r.Weight = 0.5
 		}
@@ -97,10 +104,16 @@ func DiversityNote(panel Panel) string {
 	if len(families) == 1 {
 		return "single-family panel: agreement is strongly correlated"
 	}
+	duplicated := make([]string, 0, len(families))
 	for family, count := range families {
 		if count > 1 {
-			return fmt.Sprintf("%d of %d reviewers share the %s family; treat agreement as correlated", count, len(panel.Reviewers), family)
+			duplicated = append(duplicated, family)
 		}
+	}
+	sort.Strings(duplicated)
+	if len(duplicated) > 0 {
+		family := duplicated[0]
+		return fmt.Sprintf("%d of %d reviewers share the %s family; treat agreement as correlated", families[family], len(panel.Reviewers), family)
 	}
 	return fmt.Sprintf("%d reviewers from %d distinct families", len(panel.Reviewers), len(families))
 }

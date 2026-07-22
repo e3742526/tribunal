@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestParsePanelPreservesModelGrammar(t *testing.T) {
 	panel, err := ParsePanel("ollama/gemma4:27b,codex/hf/meta-llama/Llama-3-70B@methodologist")
@@ -15,6 +18,34 @@ func TestParsePanelPreservesModelGrammar(t *testing.T) {
 	}
 }
 
+func TestParsePanelPreservesNonPersonaAtSuffix(t *testing.T) {
+	panel, err := ParsePanel("openai-compatible/vendor/model@2026.07,codex/gpt-5.6-sol@methodologist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panel.Reviewers[0].Model != "vendor/model@2026.07" || panel.Reviewers[0].Persona != "plain" {
+		t.Fatalf("non-persona suffix was not preserved: %#v", panel.Reviewers[0])
+	}
+	if panel.Reviewers[1].Model != "gpt-5.6-sol" || panel.Reviewers[1].Persona != "methodologist" {
+		t.Fatalf("valid persona suffix was not parsed: %#v", panel.Reviewers[1])
+	}
+}
+
+func TestDiversityNoteIsDeterministicForMultipleDuplicateFamilies(t *testing.T) {
+	panel := Panel{SchemaVersion: SchemaVersion, Reviewers: []Panelist{
+		{ID: "R-001", Adapter: "a", Model: "one", Family: "zeta", Weight: 1, MaxContextTokens: 2, ReservedOutputTokens: 1},
+		{ID: "R-002", Adapter: "b", Model: "two", Family: "alpha", Weight: 1, MaxContextTokens: 2, ReservedOutputTokens: 1},
+		{ID: "R-003", Adapter: "c", Model: "three", Family: "zeta", Weight: 1, MaxContextTokens: 2, ReservedOutputTokens: 1},
+		{ID: "R-004", Adapter: "d", Model: "four", Family: "alpha", Weight: 1, MaxContextTokens: 2, ReservedOutputTokens: 1},
+	}}
+	const want = "2 of 4 reviewers share the alpha family; treat agreement as correlated"
+	for i := 0; i < 64; i++ {
+		if got := DiversityNote(panel); got != want {
+			t.Fatalf("diversity note = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestNormalizePanelClampsWeights(t *testing.T) {
 	panel, _ := ParsePanel("a/one,b/two")
 	panel.Reviewers[0].Weight = 0.1
@@ -24,6 +55,19 @@ func TestNormalizePanelClampsWeights(t *testing.T) {
 	}
 	if panel.Reviewers[0].Weight != 0.5 || panel.Reviewers[1].Weight != 2 {
 		t.Fatalf("weights were not clamped: %#v", panel.Reviewers)
+	}
+}
+
+func TestNormalizePanelRejectsNonFiniteWeight(t *testing.T) {
+	for _, weight := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		panel, err := ParsePanel("a/one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		panel.Reviewers[0].Weight = weight
+		if err := NormalizePanel(&panel); err == nil {
+			t.Fatalf("NormalizePanel accepted non-finite weight %v", weight)
+		}
 	}
 }
 
