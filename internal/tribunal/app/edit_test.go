@@ -30,7 +30,7 @@ func TestEditAppliesAcceptedScopeAndRevertProtectsUserChanges(t *testing.T) {
 	}
 	start := strings.Index(original, "unsupported")
 	finding := domain.Finding{SchemaVersion: 2, ID: "F-1", Reviewer: "R-001", Origin: "panel", Severity: domain.SeverityMajor, Category: domain.CategoryCorrectness, Anchor: domain.Anchor{Kind: "quote", PacketItem: packet.Items[0].ID, Quote: "unsupported", ItemSHA256: packet.Items[0].PacketSHA256, CharOffset: start, EndOffset: start + len("unsupported")}, Issue: "The date lacks support.", Recommendation: "Qualify the statement.", EvidenceStatus: domain.EvidenceAnchored, Confidence: "high"}
-	decision := domain.Decision{SchemaVersion: 1, FindingID: finding.ID, Outcome: "accepted", Severity: domain.SeverityMajor, Accepts: 3, Configured: 3, Valid: 3}
+	decision := domain.Decision{SchemaVersion: 1, FindingID: finding.ID, Outcome: "accepted", Severity: domain.SeverityMajor, Accepts: 3, Configured: 3, Valid: 3, WeightedLean: "accept"}
 	store, err := storage.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

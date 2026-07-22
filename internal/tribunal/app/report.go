@@ -50,6 +50,9 @@ func writeReports(runDir string, final domain.Final, panel domain.Panel) error {
 		markdown.WriteString("\n## Arbitration required\n")
 		for _, dispute := range final.Arbitration {
 			fmt.Fprintf(&markdown, "\n- **%s** %s — default: %s\n", dispute.ID, dispute.Finding.Issue, dispute.Default)
+			if dispute.MemoryHint != "" {
+				fmt.Fprintf(&markdown, "  - decision memory: %s\n", dispute.MemoryHint)
+			}
 		}
 	}
 	if err := storage.WriteFile(filepath.Join(runDir, "report.md"), []byte(markdown.String())); err != nil {

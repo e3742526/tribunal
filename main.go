@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -15,11 +14,6 @@ func main() {
 		if err.Error() != "" {
 			fmt.Fprintln(os.Stderr, err.Error())
 		}
-		code := app.ExitInvalidArguments
-		var exit *app.ExitError
-		if errors.As(err, &exit) {
-			code = exit.Code
-		}
-		os.Exit(code)
+		os.Exit(app.ExitCodeFor(err))
 	}
 }

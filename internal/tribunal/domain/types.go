@@ -179,18 +179,27 @@ type Dissent struct {
 }
 
 type Decision struct {
-	SchemaVersion int       `json:"schema_version"`
-	FindingID     string    `json:"finding_id"`
-	Outcome       string    `json:"outcome"`
-	Severity      Severity  `json:"severity"`
-	Accepts       int       `json:"accepts"`
-	Rejects       int       `json:"rejects"`
-	Abstains      int       `json:"abstains"`
-	Configured    int       `json:"configured_reviewers"`
-	Valid         int       `json:"valid_reviewers"`
-	Strict        bool      `json:"category_strict"`
-	Reason        string    `json:"reason"`
-	Dissent       []Dissent `json:"dissent,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	FindingID     string   `json:"finding_id"`
+	Outcome       string   `json:"outcome"`
+	Severity      Severity `json:"severity"`
+	Accepts       int      `json:"accepts"`
+	Rejects       int      `json:"rejects"`
+	Abstains      int      `json:"abstains"`
+	Configured    int      `json:"configured_reviewers"`
+	Valid         int      `json:"valid_reviewers"`
+	Strict        bool     `json:"category_strict"`
+	Reason        string   `json:"reason"`
+	// WeightedLean records which side the weighted vote comparison actually
+	// favored ("accept", "reject", or "tie"), independent of Outcome/Reason
+	// and independent of the raw Accepts/Rejects counts, which can diverge
+	// from the weighted comparison under any non-uniform panel weighting.
+	// This is the sole source of truth for arbitration recommendation text;
+	// deriving that text from Accepts/Rejects instead is the exact defect
+	// this field exists to prevent (a weighted tie or non-unanimous strict
+	// decision could otherwise be mislabeled "accept majority").
+	WeightedLean string    `json:"weighted_lean"`
+	Dissent      []Dissent `json:"dissent,omitempty"`
 }
 
 type ArbitrationDispute struct {
@@ -201,6 +210,11 @@ type ArbitrationDispute struct {
 	ForArgument   string   `json:"for_argument,omitempty"`
 	Against       string   `json:"against_argument,omitempty"`
 	Default       string   `json:"default_recommendation"`
+	// MemoryHint carries a matched prior ruling from decision memory. It is
+	// advisory context for the operator and must never replace Default:
+	// --accept-majority parses Default's "accept …"/"reject …" prefix, so
+	// overwriting it with "previous ruling: accepted" would invert outcomes.
+	MemoryHint string `json:"memory_hint,omitempty"`
 }
 
 type PanelStatus struct {

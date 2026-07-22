@@ -28,5 +28,23 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
       - name: Run repository gate
         run: scripts/check.sh
+
+  race:
+    name: Race detector (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run race suite
+        run: go test -race ./...

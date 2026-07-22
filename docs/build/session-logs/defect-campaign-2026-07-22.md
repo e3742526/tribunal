@@ -1,0 +1,252 @@
+# Defect repair campaign — 2026-07-22
+
+Source: fresh four-lens code evaluation of 2026-07-22 (app core, adapters/config,
+storage/domain/documents, CLI/CI/docs), each finding re-verified against source
+before inclusion. Baseline: `main` @ `6709276`, `scripts/check.sh` green,
+coverage measured (storage 31.0%, cli 32.3%, domain 43.1%).
+Branch: `repair/eval-findings-20260722`. Authority: local repair and
+verification; no push, tag, release, or history rewrite.
+
+## Gate 1 — Defect inventory
+
+IDs continue the native ledger sequence (next: D-030). Priority: P0 highest.
+
+| ID | P | Cx | Finding | Touch set |
+|---|---|---|---|---|
+| D-030 | P0 | med | `Resume` mutates run state (publication completion, edit-transaction recovery) without `run.lock` | app/operations.go |
+| D-031 | P0 | med | `arbitrate --accept-majority` rejects disputes whose `Default` was overwritten with `previous ruling: accepted` | app/operations.go, review.go, recovery.go |
+| D-032 | P0 | low | `--json` failure paths print a zero-value `schema_version:0`, `exit_code:0` object on stdout | cli/review_commands.go, edit_commands.go, state_commands.go, admin_commands.go |
+| D-033 | P0 | low | interactive `arbitrate` with no final returns nil → silent exit 0 | cli/review_commands.go |
+| D-034 | P1 | low | model-declared `worker-verified` evidence status survives `--no-workers` and degraded finalization | app/review.go (validatePass) |
+| D-035 | P1 | low | `Replay` of a `--split` run always fails context preflight (no Split passthrough) | app/operations.go, review.go |
+| D-036 | P1 | med | agy prompt (document content) passed as one argv element: E2BIG >~128KiB, visible in `ps` | adapters/subprocess.go |
+| D-037 | P1 | low | OpenAI-compatible API key exported into every provider subprocess environment | adapters/subprocess.go, app/review.go, edit.go |
+| D-038 | P1 | med | DOCX/PDF source hash and extracted content come from two independent file reads | documents/packet.go |
+| D-039 | P1 | med | anchor resolution: first-occurrence quote binding with no uniqueness check; fuzzy-path ambiguity guard provably dead | documents/anchors.go |
+| D-040 | P1 | low | `UpdateLedger` stale-record loop is a no-op; unseen findings keep stale status forever | storage/state.go |
+| D-041 | P1 | med | rolled-back edit apply leaves `backups/<hash>.original` forever, permanently blocking retry | app/edit.go, edit_transaction.go |
+| D-042 | P1 | med | torn trailing JSONL line permanently bricks decisions append / transcript read | storage/store.go, state.go, app/operations.go |
+| D-043 | P1 | low | CI never runs `-race`; govulncheck soft-skips everywhere including release gate | .github/workflows/ci.yml, scripts/check.sh |
+| D-044 | P2 | low | docs claim weighted panel files, custom rubrics, per-hunk confirmation/mandatory rereview — none implemented | docs/SPEC.md, docs/io-contract.md |
+| D-045 | P2 | low | consensus tie check uses exact float equality on weight sums (latent while all weights are 1) | domain/consensus.go |
+| D-046 | P2 | low | 32-bit finding fingerprint is ledger/defer/decision-memory identity | domain/consensus.go |
+| D-047 | P2 | low | 1-char cluster ID panics `RankArbitration` (`cluster.ID[2:]`); `ValidateCluster` accepts it | domain/validation.go, consensus.go |
+| D-048 | P2 | low | sub-second `call_timeout` truncates to 0 → silently becomes 15-minute default | config/config.go |
+| D-049 | P2 | low | `recommend --kind` silently dead (`--rubric` default always wins) | cli/review_commands.go |
+| D-050 | P2 | low | transcript timestamp layout has literal `Z`; non-UTC event times print falsely as UTC | cli/state_commands.go |
+| D-051 | P2 | low | non-ExitError failures default to exit 4 "invalid arguments", mislabeling runtime faults | main.go |
+| D-052 | P2 | low | spellcheck worker findings uncapped (panel reviews cap at 25) | adapters/workers.go |
+| D-053 | P2 | low | empty `choices` OpenAI response wraps nil error (`%!w(<nil>)`) | adapters/openai.go |
+| D-054 | P2 | low | subprocess output file read unbounded; read errors silently fall back to stdout | adapters/subprocess.go |
+| D-055 | P2 | med | hand-rolled kill/wait select: pid-reuse race and escaped-grandchild pipe hang | adapters/process_unix.go, subprocess.go |
+| D-056 | P2 | low | `detect` runs `--version` with unbounded CombinedOutput, no per-call deadline | adapters/adapter.go |
+| D-057 | P2 | low | redirect guard only on fallback HTTP client; injected client follows cross-origin redirects | adapters/openai.go |
+| D-058 | P2 | low | `MaxVerification`/`MaxArbitration` unvalidated; negative silently disables evidence verification | config/config.go |
+| D-059 | P2 | low | `ResolvePersona` joins caller name into path without slug validation (defense in depth) | config/rubric.go |
+| D-060 | P2 | low | `Transition` never validates `next`; one bad caller bricks the run directory | storage/state.go |
+| D-061 | P2 | low | `appendJSONLine` Lstat-then-open TOCTOU; `LockStatus` follows symlinks | storage/store.go, lock_unix.go |
+| D-062 | P2 | med | state/document disjointness check is byte-exact; case-insensitive APFS defeats it | storage/store.go |
+| D-063 | P2 | low | raw document read and pdftotext stderr unbounded; DOCX XML cap hardcoded | documents/packet.go |
+| D-064 | P2 | low | duplicate `word/document.xml` zip entries: first wins vs consumers honoring last | documents/packet.go |
+| D-065 | P2 | low | `chunk:%04d` IDs sort lexicographically; >9999 chunks scramble delivery order | documents/anchors.go |
+| D-066 | P2 | low | `Revert` validates the stale pre-recovery record → misleading "user changes" error after crash rollback | app/edit.go |
+| D-067 | P2 | low | review-abort final omits persisted worker findings and drops accumulated reason codes | app/review.go |
+| D-068 | P2 | low | `check.sh` mutates the tree via `go mod tidy` and needs git; `gh release create` not re-run-safe; goreleaser changelog block dead | scripts/check.sh, .github/workflows/release.yml, .goreleaser.yaml |
+| D-069 | P2 | low | ARCHITECTURE.md module table lists `config.ResolvePanel` and `tui.Run`, neither exists | docs/ARCHITECTURE.md |
+
+Excluded / deferred (not reopened, feature-shaped, or judgment-call design):
+
+- unbounded silent lock waits (design: publish must survive ctx abort; feedback improvement routed to backlog);
+- reduced-trust posture for JSON-repaired model output (behavior change needing design);
+- `tui` vs `status` duplication (feature decision);
+- `PersistTerminal` same-identity replacement journaling (intentional edit/re-review support; needs design);
+- sticky `rejected` ledger status (design decision on disposition semantics);
+- darwin workspace-ID normalization (identity migration; only the containment guard is repaired here as D-062);
+- weighted panel file input (feature work; docs corrected instead, D-044);
+- x/ dependency bumps (maintenance, not defect);
+- consensus-tail duplication between review.go and recovery.go (routed: simplification pass; D-031 patches both copies consistently).
+
+## Gate 2 — Group plan (ordered)
+
+- Stage 1 `cli-contract`: D-032, D-033, D-049, D-050, D-051. Files: internal/cli/*, main.go. Regression: cli tests + new JSON-failure tests.
+- Stage 2 `arbitration-resume-core`: D-030, D-031, D-034, D-035, D-067. Files: app/operations.go, review.go, recovery.go. Regression: app suite + new lock/memory/evidence/replay tests.
+- Stage 3 `domain-identity`: D-045, D-046, D-047. Files: domain/consensus.go, validation.go. Note: fingerprint widening changes ledger/decision-memory identity; acceptable pre-release, recorded here.
+- Stage 4 `documents-integrity`: D-038, D-039, D-063, D-064, D-065. Files: documents/packet.go, anchors.go.
+- Stage 5 `adapters-hardening`: D-036, D-037, D-048, D-052, D-053, D-054, D-055, D-056, D-057, D-058, D-059. Files: adapters/*, config/*.go, Request construction sites in app.
+- Stage 6 `storage-durability`: D-040, D-042, D-060, D-061, D-062. Files: storage/state.go, store.go, lock_unix.go.
+- Stage 7 `edit-retry`: D-041, D-066. Files: app/edit.go, edit_transaction.go.
+- Stage 8 `ci-release-docs`: D-043, D-044, D-068, D-069 + record closure (defect ledger, CHANGELOG, TEST_LEDGER, io-contract error envelope).
+
+Modularization decisions: none — every touched file is under the repo's own
+800-line gate, below this campaign's 1000-line threshold.
+
+Cross-stage risks: Stage 1's JSON error envelope changes the documented IO
+contract (doc lands in Stage 8); Stage 2 and Stage 5 both touch `Request`
+construction lines in app (kept disjoint: Stage 2 edits logic, Stage 5 edits
+`EnvSecrets`/timeout fields); Stage 3 fingerprint widening invalidates
+pre-existing workspace ledgers (pre-release state break, no migration).
+
+Commit boundary: one commit per stage, `repair:` prefix per repo convention.
+
+## Per-stage results
+
+(appended as stages complete)
+
+### Stage 1 — cli-contract (commit 88f0555)
+
+D-032/033/049/050/051 fixed. New: `ExitInternal=7`, `app.ExitCodeFor`, JSON
+error envelope (`renderError`), zero-final guard (`renderFinalOutcome`), RunE
+decorator guaranteeing an envelope for every command failure in `--json` mode.
+Adversarial review (fresh agent) found two real issues in the first cut, both
+fixed before commit: cobra parse errors regressed from exit 4 to 7 (default
+restored to invalid-arguments; runtime-fault sites wrapped explicitly) and
+early errors bypassed the envelope (central decorator added). Regression tests:
+`internal/cli/contract_test.go` (envelope, zero-final impersonation, parse-error
+codes, rubric/kind exclusivity, decorator path). `scripts/check.sh` green.
+Interactive-only arbitrate nil-final guard is reasoned, not TTY-tested.
+
+### Stage 2 — arbitration-resume-core (commit 0673151)
+
+D-030/031/034/035/067 fixed. Resume now takes `run.lock` (bounded by the run
+timeout) + ValidateRunDir before its mutating branches; the inner
+resumeCheckpoint lock was removed (sole caller holds it; double flock would
+self-deadlock). Decision-memory hints moved to a new `MemoryHint` dispute
+field so `--accept-majority` reads the true panel default; legacy finals with
+"previous ruling:" in Default are honored explicitly. `validatePass` enforces
+the worker-verified downgrade host-side. Replay and edit `--rereview` re-enable
+splitting for chunked packets. Abort finals now include worker findings,
+canonical IDs, and accumulated reason codes. finalize helpers extracted to
+`finalize.go` (review.go had crossed the 800-line gate). Adversarial review
+found four residuals (unbounded lock wait, edit-rereview split gap, hint
+missing from report.md, legacy-final inversion) — all fixed pre-commit.
+Tests: `arbitration_resume_test.go` (5 tests incl. real flock contention and
+split replay). check.sh + `go test -race ./internal/tribunal/app` green.
+
+### Stage 3 — domain-identity
+
+D-045/046/047 fixed. Vote weights accumulate as integer hundredths (NaN-proof
+clamp), making vote_tie exact; FindingFingerprint widened to 16 hex; cluster
+IDs shape-validated (`C-` + 16 lowercase hex) and the `[2:]` slice replaced
+with TrimPrefix. Adversarial review flagged that the workspace ledger and
+decision memory would accept legacy 8-hex fingerprints and silently duplicate
+records — both stores now fail closed with an explicit incompatibility error
+(deliberate pre-release state break, no migration). Residuals routed to later
+stages/backlog: quantization wording lands with the D-044 doc pass;
+defaultRecommendation/gap-sort use unweighted counts while ties are weighted
+(pre-existing; backlog). Tests: identity_test.go (exact weighted tie,
+16-hex length, malformed cluster IDs). Full suite + check.sh green.
+
+### Stage 4 — documents-integrity
+
+D-038/039/063/064/065 fixed. DOCX extracts from the already-read bytes
+(zip.NewReader) and PDF from a private 0600 temp copy, so SourceSHA256 and
+content share one read; raw reads capped at 128MB (stat + post-read),
+md/txt/DOCX extraction honor MaxExtractedByte (DOCX cap violations reported
+explicitly, not as XML EOF); DOCX duplicate entries rejected with
+slash-normalized/cleaned names; anchors bind only provably unique spans
+(repeated quotes need isolating prefix+quote+suffix; fuzzy path rejects
+repeated prefixes; the dead ambiguity check removed); chunk IDs are
+chunk:%08d. Adversarial review: no findings above Low; took its three
+hardening wins (post-read size re-check, name normalization, cap-labeled DOCX
+errors). Release-note items routed to Stage 8: md/txt >16MB now rejected
+(previously unbounded), in-flight pre-upgrade runs with ambiguous anchors
+quarantine on resume, split packet hashes change (%08d). Tests:
+integrity_test.go (ambiguity, disambiguation, fuzzy prefix, duplicate
+entries, caps, chunk order). check.sh green.
+
+### Stage 5 — adapters-hardening
+
+D-036/037/048/052-059 fixed. agy prompts fail closed pre-exec at a
+platform-aware argv cap (100KiB Linux / 900KiB darwin) with honest remedy
+text — the agy CLI was empirically verified to have no stdin/file prompt
+mode, so full stdin delivery and the process-table prompt exposure remain
+blocked upstream (partial repair, routed follow-up). Subprocess environments
+no longer receive EnvSecrets (redaction-only now); provider CLIs auth via
+allowlisted HOME. Kill/wait rewritten to cmd.Cancel + WaitDelay (pid-reuse
+race and escaped-grandchild hang closed; ErrWaitDelay treated as success
+with truncated pipes); detect() bounded 10s/64KiB with WaitDelay; output
+files read via handle-checked bounded reader; OpenAI adapter reports empty
+choices distinctly and overlays the same-origin redirect guard on injected
+clients; sub-second timeouts and non-positive verification/arbitration caps
+rejected at config normalize; worker findings capped at 100 per worker;
+persona names slug-validated before path join. Adversarial review found the
+first agy cap was itself a darwin regression with wrong advice (fixed:
+platform cap + corrected message), the ErrWaitDelay failure conversion,
+detect's missing WaitDelay, and the output-file TOCTOU — all fixed
+pre-commit. Tests: hardening_test.go, limits_test.go. check.sh + adapters
+race suite green.
+
+### Stage 6 — storage-durability
+
+D-040/042/060/061/062 fixed. Torn JSONL tails are quarantined to a .corrupt
+sidecar and truncated on the next append (all appends verified to run under
+exclusive flocks); readers (decisions, transcript) skip an unterminated
+trailing fragment via shared ReadCompleteJSONLines (also fixes the latent
+64KB bufio.Scanner line limit). Transition validates the next state before
+persisting. Journal opens and LockStatus use O_NOFOLLOW. The state/document
+containment guard case-folds on darwin (residuals documented: Unicode
+normalization variants; false positives on case-sensitive APFS volumes —
+fail closed). UpdateLedger implements the stale-record disposition the old
+no-op loop only promised: unseen records go stale ONLY when this run's
+packet actually re-examined their item (adversarial review caught that the
+first version staled records outside subset-run scope — fixed with a
+reviewedItems scope from packet.json; "disputed" added to sticky statuses).
+Tests: durability_test.go (torn tail quarantine/recovery, transition
+validation, in-scope/out-of-scope staleness, darwin case-variant
+containment). check.sh + race suites green.
+
+### Stage 7 — edit-retry
+
+D-041/066 fixed. Leftover recovery backups no longer block edit retries
+forever: identical-content backups are reused, mismatched backups are
+archived under content-addressed .superseded names (prefix widened to 24 hex
+after adversarial review noted a theoretical 48-bit collision degrading the
+fail-closed property). Revert runs crash recovery before reading the edit
+record, so a rolled-back apply reports "rolled back" instead of accusing the
+user of foreign changes. Adversarial review verified all three new tests
+fail against pre-fix sources with the exact predicted defect messages.
+Tests: edit_retry_test.go. check.sh + app race suite green.
+
+### Stage 8 — ci-release-docs and record closure
+
+D-043/044/068/069 fixed. CI gains a race-detector job and installs
+govulncheck (check.sh now fails in CI without it, still soft-skips locally);
+check.sh uses `go mod tidy -diff` (no tree mutation, no git dependence);
+release publication re-runs converge (create-if-missing + upload --clobber,
+smoke-before-publish ordering test still green); dead GoReleaser changelog
+block replaced with an explicit disable. SPEC/io-contract no longer claim
+panel files, custom rubrics, or per-hunk confirmation; weight quantization
+documented; ARCHITECTURE module table matches exported symbols; io-contract
+documents exit 7, the JSON error envelope, torn-tail quarantine, and backup
+reuse. Record closure: CHANGELOG Unreleased section lists all behavior
+changes; defect ledger rows D-030–D-069 appended; TEST_LEDGER updated with
+the campaign suites and the corrected gate/race rows.
+
+## Gate 9 — Closeout
+
+Final regression: `go test -race -count=1 ./...` and `scripts/check.sh` green
+at closeout (govulncheck soft-skipped locally; required in CI). Cross-stage
+adversarial walkthrough (fresh agent over the full branch) verified the
+review→publish→resume→replay, edit-crash-recovery, JSON-envelope, identity,
+and size-cap paths compose correctly, spot-checked ten ledger rows against
+code, and found one genuine composition regression the per-stage reviews
+could not see: aborted/degraded finals staled ledger records for items the
+run never finished examining (Stage 2 abort publication × Stage 6 staleness).
+Fixed at closeout: ledger staleness now requires a completed-review final
+status (`ledgerScopeEligible`), with a regression test; the D-040 ledger row
+wording holds again. Also corrected the Stage 1 commit hash in this log
+(88f0555; the earlier value was a pre-amend object).
+
+Residual risks and routed follow-ups: agy prompt-in-argv confidentiality
+(blocked on upstream stdin support); darwin workspace-ID Unicode
+normalization and case-fold variants beyond simple folding; unbounded
+lock-wait feedback (publish.lock ff.); reduced-trust posture for
+JSON-repaired model output; tui/status duplication; PersistTerminal
+same-identity replacement journaling; sticky rejected ledger status;
+consensus-tail duplication between review.go and recovery.go (simplification
+pass); defaultRecommendation/gap-sort use unweighted counts while ties are
+weighted; x/ dependency bumps pending first push; real-provider and OS-kill
+matrices remain outside local verification, as in the previous campaign.
+
+Final status: completed_verified (local contracts; release workflow not
+executed — publication outside campaign authority). Branch local, unpushed.

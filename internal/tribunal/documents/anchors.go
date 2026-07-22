@@ -19,8 +19,23 @@ func ResolveAnchor(packet Packet, anchor *domain.Anchor) error {
 	if anchor.Quote == "" {
 		return fmt.Errorf("anchor quote is empty")
 	}
+	// Anchors define edit windows, so binding must be unambiguous: a repeated
+	// quote resolves only when prefix+quote+suffix isolates one occurrence.
 	if at := strings.Index(item.Content, anchor.Quote); at >= 0 {
-		anchor.CharOffset, anchor.EndOffset = at, at+len(anchor.Quote)
+		if strings.Index(item.Content[at+1:], anchor.Quote) < 0 {
+			anchor.CharOffset, anchor.EndOffset = at, at+len(anchor.Quote)
+			return nil
+		}
+		if anchor.Prefix == "" || anchor.Suffix == "" {
+			return fmt.Errorf("anchor quote occurs more than once and lacks disambiguating context")
+		}
+		composite := anchor.Prefix + anchor.Quote + anchor.Suffix
+		at = strings.Index(item.Content, composite)
+		if at < 0 || strings.Index(item.Content[at+1:], composite) >= 0 {
+			return fmt.Errorf("anchor quote occurs more than once and context does not isolate one occurrence")
+		}
+		anchor.CharOffset = at + len(anchor.Prefix)
+		anchor.EndOffset = anchor.CharOffset + len(anchor.Quote)
 		return nil
 	}
 	// Bounded fuzzy resolution accepts a unique span bracketed by both context
@@ -28,9 +43,12 @@ func ResolveAnchor(packet Packet, anchor *domain.Anchor) error {
 	if anchor.Prefix == "" || anchor.Suffix == "" {
 		return fmt.Errorf("quote not found and bounded context is incomplete")
 	}
-	prefix := strings.LastIndex(item.Content, anchor.Prefix)
+	prefix := strings.Index(item.Content, anchor.Prefix)
 	if prefix < 0 {
 		return fmt.Errorf("anchor prefix not found")
+	}
+	if strings.Index(item.Content[prefix+1:], anchor.Prefix) >= 0 {
+		return fmt.Errorf("anchor context is ambiguous")
 	}
 	start := prefix + len(anchor.Prefix)
 	relEnd := strings.Index(item.Content[start:], anchor.Suffix)
@@ -38,9 +56,6 @@ func ResolveAnchor(packet Packet, anchor *domain.Anchor) error {
 		return fmt.Errorf("anchor suffix not uniquely reachable within bound")
 	}
 	end := start + relEnd
-	if strings.Contains(item.Content[end+len(anchor.Suffix):], anchor.Prefix) {
-		return fmt.Errorf("anchor context is ambiguous")
-	}
 	anchor.Quote = item.Content[start:end]
 	anchor.CharOffset, anchor.EndOffset = start, end
 	return nil
@@ -77,7 +92,9 @@ func Split(packet *Packet, maxBytes int) error {
 			if end <= start {
 				return fmt.Errorf("could not create a UTF-8-safe chunk")
 			}
-			packet.Chunks = append(packet.Chunks, Chunk{SchemaVersion: 1, ID: fmt.Sprintf("chunk:%04d", len(packet.Chunks)+1), PacketItem: item.ID, Start: start, End: end, Content: item.Content[start:end]})
+			// Eight digits keep lexicographic ID order equal to numeric
+			// order well past any realistic chunk count.
+			packet.Chunks = append(packet.Chunks, Chunk{SchemaVersion: 1, ID: fmt.Sprintf("chunk:%08d", len(packet.Chunks)+1), PacketItem: item.ID, Start: start, End: end, Content: item.Content[start:end]})
 			start = end
 		}
 	}

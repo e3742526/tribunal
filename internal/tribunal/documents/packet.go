@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	zippath "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -154,13 +155,23 @@ func Build(ctx context.Context, input string, opts BuildOptions) (Packet, error)
 		if err := ensureStillCanonical(path, canonical, info.IsDir()); err != nil {
 			return Packet{}, err
 		}
+		if size, err := os.Lstat(path); err != nil {
+			return Packet{}, fmt.Errorf("stat %s: %w", path, err)
+		} else if size.Size() > maxRawDocumentBytes {
+			return Packet{}, fmt.Errorf("%s is %d bytes, above the %d-byte raw document cap", path, size.Size(), int64(maxRawDocumentBytes))
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return Packet{}, fmt.Errorf("read %s: %w", path, err)
 		}
+		if int64(len(raw)) > maxRawDocumentBytes {
+			return Packet{}, fmt.Errorf("%s grew past the %d-byte raw document cap during read", path, int64(maxRawDocumentBytes))
+		}
 		if err := ensureStillCanonical(path, canonical, info.IsDir()); err != nil {
 			return Packet{}, err
 		}
+		// Extraction consumes the same raw bytes that SourceSHA256 attests,
+		// so a file swapped between reads cannot decouple hash and content.
 		content, mediaType, editable, err := extract(ctx, path, raw, opts)
 		if err != nil {
 			return Packet{}, err
@@ -254,37 +265,59 @@ func supported(path string) bool {
 	}
 }
 
+// maxRawDocumentBytes bounds the bytes read from any single candidate
+// document before extraction; the extracted content is separately bounded by
+// BuildOptions.MaxExtractedByte.
+const maxRawDocumentBytes int64 = 128 << 20
+
 func extract(ctx context.Context, path string, raw []byte, opts BuildOptions) (string, string, bool, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".md", ".markdown":
-		if !utf8.Valid(raw) {
-			return "", "", false, fmt.Errorf("%s is not valid UTF-8", path)
-		}
-		return string(raw), "text/markdown", true, nil
+		text, err := extractText(path, raw, opts.MaxExtractedByte)
+		return text, "text/markdown", true, err
 	case ".txt":
-		if !utf8.Valid(raw) {
-			return "", "", false, fmt.Errorf("%s is not valid UTF-8", path)
-		}
-		return string(raw), "text/plain", true, nil
+		text, err := extractText(path, raw, opts.MaxExtractedByte)
+		return text, "text/plain", true, err
 	case ".docx":
-		text, err := extractDOCX(path)
+		text, err := extractDOCX(path, raw, opts.MaxExtractedByte)
 		return text, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false, err
 	case ".pdf":
-		text, err := extractPDF(ctx, path, opts.PDFTimeout, opts.MaxExtractedByte)
+		text, err := extractPDF(ctx, path, raw, opts.PDFTimeout, opts.MaxExtractedByte)
 		return text, "application/pdf", false, err
 	default:
 		return "", "", false, fmt.Errorf("unsupported document %s", path)
 	}
 }
 
-func extractDOCX(path string) (string, error) {
-	reader, err := zip.OpenReader(path)
+func extractText(path string, raw []byte, maxBytes int64) (string, error) {
+	if int64(len(raw)) > maxBytes {
+		return "", fmt.Errorf("%s exceeds the %d-byte extraction cap", path, maxBytes)
+	}
+	if !utf8.Valid(raw) {
+		return "", fmt.Errorf("%s is not valid UTF-8", path)
+	}
+	return string(raw), nil
+}
+
+func extractDOCX(path string, raw []byte, maxBytes int64) (string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		return "", fmt.Errorf("open DOCX %s: %w", path, err)
 	}
-	defer reader.Close()
+	// Duplicate entry names let one consumer read benign content while
+	// another renders the real payload; reject the ambiguity outright.
+	// Names are slash-normalized and cleaned so "./word/document.xml" and
+	// "word//document.xml" cannot alias past the check.
+	seen := map[string]bool{}
 	for _, file := range reader.File {
-		if file.Name != "word/document.xml" {
+		name := zippath.Clean(strings.ReplaceAll(file.Name, "\\", "/"))
+		if seen[name] {
+			return "", fmt.Errorf("DOCX %s has duplicate archive entry %q", path, file.Name)
+		}
+		seen[name] = true
+	}
+	for _, file := range reader.File {
+		if zippath.Clean(strings.ReplaceAll(file.Name, "\\", "/")) != "word/document.xml" {
 			continue
 		}
 		stream, err := file.Open()
@@ -292,7 +325,8 @@ func extractDOCX(path string) (string, error) {
 			return "", err
 		}
 		defer stream.Close()
-		decoder := xml.NewDecoder(io.LimitReader(stream, 32<<20))
+		limited := &countingReader{reader: io.LimitReader(stream, maxBytes)}
+		decoder := xml.NewDecoder(limited)
 		var out strings.Builder
 		for {
 			token, err := decoder.Token()
@@ -300,6 +334,9 @@ func extractDOCX(path string) (string, error) {
 				break
 			}
 			if err != nil {
+				if limited.count >= maxBytes {
+					return "", fmt.Errorf("DOCX %s document stream exceeds the %d-byte extraction cap", path, maxBytes)
+				}
 				return "", fmt.Errorf("parse DOCX XML: %w", err)
 			}
 			switch value := token.(type) {
@@ -316,18 +353,30 @@ func extractDOCX(path string) (string, error) {
 	return "", fmt.Errorf("DOCX %s has no word/document.xml", path)
 }
 
-func extractPDF(ctx context.Context, path string, timeout time.Duration, maxBytes int64) (string, error) {
+// extractPDF feeds pdftotext a private copy of the already-read bytes rather
+// than re-opening the source path, keeping hash and extraction on one read.
+// pdftotext needs a seekable file, so the copy is a 0600 temp file.
+func extractPDF(ctx context.Context, path string, raw []byte, timeout time.Duration, maxBytes int64) (string, error) {
 	binary, err := exec.LookPath("pdftotext")
 	if err != nil {
 		return "", fmt.Errorf("PDF review requires pdftotext: %w", err)
 	}
+	tempDir, err := os.MkdirTemp("", "tribunal-pdf-")
+	if err != nil {
+		return "", fmt.Errorf("stage PDF copy: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	staged := filepath.Join(tempDir, "document.pdf")
+	if err := os.WriteFile(staged, raw, 0o600); err != nil {
+		return "", fmt.Errorf("stage PDF copy: %w", err)
+	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(callCtx, binary, "-enc", "UTF-8", "-layout", "--", path, "-")
+	cmd := exec.CommandContext(callCtx, binary, "-enc", "UTF-8", "-layout", "--", staged, "-")
 	var stdout bytes.Buffer
 	cmd.Stdout = &limitedBuffer{buffer: &stdout, remaining: maxBytes}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &truncatedBuffer{limit: 8 << 10}
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		if callCtx.Err() != nil {
 			return "", fmt.Errorf("pdftotext timed out: %w", callCtx.Err())
@@ -339,6 +388,38 @@ func extractPDF(ctx context.Context, path string, timeout time.Duration, maxByte
 	}
 	return stdout.String(), nil
 }
+
+// countingReader tracks bytes consumed so cap-truncated XML streams can be
+// reported as cap violations instead of opaque syntax errors.
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (r *countingReader) Read(data []byte) (int, error) {
+	n, err := r.reader.Read(data)
+	r.count += int64(n)
+	return n, err
+}
+
+// truncatedBuffer keeps the first limit bytes and silently discards the rest,
+// so diagnostic streams cannot grow without bound.
+type truncatedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (w *truncatedBuffer) Write(data []byte) (int, error) {
+	if keep := w.limit - w.buffer.Len(); keep > 0 {
+		if keep > len(data) {
+			keep = len(data)
+		}
+		w.buffer.Write(data[:keep])
+	}
+	return len(data), nil
+}
+
+func (w *truncatedBuffer) String() string { return w.buffer.String() }
 
 type limitedBuffer struct {
 	buffer    *bytes.Buffer

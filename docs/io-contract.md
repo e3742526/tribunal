@@ -7,9 +7,10 @@ text formats are `.md`, `.markdown`, and `.txt`; `.docx` and `.pdf` are
 extracted for review. Direct binary editing is rejected. Folder logical paths
 are slash-separated relative paths sorted lexically.
 
-Panel strings use `adapter/model[@persona]`; panel files are schema-versioned
-TOML. Personas and custom rubrics are schema-versioned TOML. Model responses
-are JSON and validated against the exact role schema.
+Panel strings use `adapter/model[@persona]` and enter via flag, environment,
+or config key. Personas are schema-versioned TOML; rubrics are built-in
+(generic, manuscript, strategy, governance). Model responses are JSON and
+validated against the exact role schema.
 
 ## State location
 
@@ -36,9 +37,13 @@ error. Readers ignore unknown fields within a supported version.
 ## Atomicity and overwrite
 
 Canonical JSON snapshots use temp file, file sync, rename, and directory sync.
-Journal and decision records append complete JSON lines and sync. Review never
-writes to the artifact root. Edit refuses stale sources and an existing backup
-collision; revert refuses a live file changed since the Tribunal edit.
+Journal and decision records append complete JSON lines and sync; a torn
+trailing line left by a crash is quarantined to a `.corrupt` sidecar and the
+journal truncated to its last complete record on the next append, while
+readers skip the torn fragment. Review never writes to the artifact root.
+Edit refuses stale sources; a leftover recovery backup with identical content
+is reused on retry and a mismatched one is archived, never destroyed. Revert
+refuses a live file changed since the Tribunal edit.
 
 ## Exit codes
 
@@ -51,4 +56,11 @@ collision; revert refuses a live file changed since the Tribunal edit.
 | 4 | invalid arguments |
 | 5 | preflight failure |
 | 6 | aborted by budget, timeout, or user |
+| 7 | internal runtime fault |
+
+In `--json` mode a failed command emits a schema-versioned error envelope on
+stdout — `{"schema_version": 1, "error": "...", "exit_code": N}` — whenever no
+result object was produced; a populated result (for example a degraded final)
+still renders alongside its non-zero exit code. Flag and argument parse errors
+print usage to stderr and exit 4 without an envelope.
 

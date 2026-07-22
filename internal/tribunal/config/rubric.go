@@ -55,7 +55,14 @@ func StarterPersonas() []Persona {
 	return values
 }
 
+var personaSlug = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
 func ResolvePersona(name, workspace string, trustWorkspace bool) (Persona, error) {
+	// The name is joined into filesystem paths below; the slug check keeps
+	// traversal out even if a future caller bypasses domain.ParsePanel.
+	if !personaSlug.MatchString(name) {
+		return Persona{}, fmt.Errorf("invalid persona name %q", name)
+	}
 	if trustWorkspace && workspace != "" {
 		path := filepath.Join(workspace, ".tribunal", "personas", name+".toml")
 		if exists(path) {

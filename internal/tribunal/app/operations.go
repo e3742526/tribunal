@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -86,24 +85,20 @@ func (s *Service) Transcript(ref RunRef) (Transcript, error) {
 		return Transcript{}, exitError(ExitPreflight, "%v", err)
 	}
 	result := Transcript{SchemaVersion: 1, RunID: runID}
-	file, err := os.Open(filepath.Join(runDir, "events.jsonl"))
+	// ReadCompleteJSONLines skips a torn trailing fragment (crash mid-append)
+	// so one interrupted write cannot permanently brick the transcript.
+	lines, err := storage.ReadCompleteJSONLines(filepath.Join(runDir, "events.jsonl"))
 	if err != nil {
 		return Transcript{}, exitError(ExitPreflight, "open transcript: %v", err)
 	}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
+	for _, line := range lines {
 		var event storage.StateEvent
-		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		decoder := json.NewDecoder(bytes.NewReader(line))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&event); err != nil || event.SchemaVersion != 1 || event.RunID != runID || event.To == "" || event.Status == "" || event.At.IsZero() {
-			file.Close()
 			return Transcript{}, exitError(ExitPreflight, "invalid transcript event")
 		}
 		result.Events = append(result.Events, event)
-	}
-	closeErr := file.Close()
-	if err := firstError(scanner.Err(), closeErr); err != nil {
-		return Transcript{}, exitError(ExitPreflight, "read transcript: %v", err)
 	}
 	deliveryPaths, _ := filepath.Glob(filepath.Join(runDir, "calls", "*", "*", "delivery.json"))
 	sort.Strings(deliveryPaths)
@@ -156,6 +151,21 @@ func (s *Service) Resume(ctx context.Context, ref RunRef) (domain.Final, error) 
 	}
 	if meta.RunID != runID || meta.WorkspaceID != packet.WorkspaceID || meta.InputRoot != packet.InputRoot {
 		return domain.Final{}, exitError(ExitPreflight, "resume metadata identity mismatch")
+	}
+	// Resume mutates run state (publication completion, edit-transaction
+	// recovery, checkpoint continuation) and must exclude concurrent Review,
+	// Edit, Revert, and Arbitrate processes on the same run. The wait is
+	// bounded by the run timeout so a wedged lock holder cannot hang a
+	// scripted resume forever.
+	lockCtx, lockCancel := withRunTimeout(ctx, s.Config.Limits.RunTimeout)
+	defer lockCancel()
+	lock, err := storage.AcquireLock(lockCtx, filepath.Join(runDir, "run.lock"), nil)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "acquire run lock: %v", err)
+	}
+	defer lock.Close()
+	if err := storage.ValidateRunDir(workspace, runDir); err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "revalidate run directory: %v", err)
 	}
 	if final, readErr := readFinal(filepath.Join(runDir, "final.json")); readErr == nil {
 		if err := s.completePublication(runDir, workspace, final, meta.Panel); err != nil {
@@ -223,7 +233,9 @@ func (s *Service) Replay(ctx context.Context, ref RunRef) (domain.Final, error) 
 	if err != nil || meta.PacketHash != packet.PacketHash {
 		return domain.Final{}, exitError(ExitPreflight, "replay metadata does not match packet")
 	}
-	return s.Review(ctx, ReviewOptions{Packet: &packet, PanelValue: &meta.Panel, Workspace: &workspace, ReplayOf: runID})
+	// A packet frozen with --split still carries full item content, so the
+	// context preflight would re-trip without re-enabling splitting here.
+	return s.Review(ctx, ReviewOptions{Packet: &packet, PanelValue: &meta.Panel, Workspace: &workspace, ReplayOf: runID, Split: len(packet.Chunks) > 0})
 }
 
 func (s *Service) Findings(ref RunRef) (storage.FindingsLedger, error) {
@@ -442,7 +454,15 @@ func arbitrationRulings(opts ArbitrationOptions, final domain.Final) ([]Arbitrat
 			continue
 		}
 		outcome := "rejected"
-		if strings.HasPrefix(dispute.Default, "accept") {
+		// Finals persisted before MemoryHint existed carry a decision-memory
+		// ruling in Default ("previous ruling: accepted"); honor that ruling
+		// instead of misreading it as a reject recommendation.
+		if prior, ok := strings.CutPrefix(dispute.Default, "previous ruling: "); ok {
+			switch prior {
+			case "accepted", "rejected", "deferred":
+				outcome = prior
+			}
+		} else if strings.HasPrefix(dispute.Default, "accept") {
 			outcome = "accepted"
 		}
 		rulings = append(rulings, ArbitrationRuling{ID: dispute.ID, Outcome: outcome, Reason: "applied recorded panel recommendation", Operator: opts.Operator})

@@ -243,8 +243,17 @@ func normalize(cfg *Config) error {
 	if cfg.Limits.Passes < 1 || cfg.Limits.Passes > 3 {
 		return fmt.Errorf("limits.passes must be between 1 and 3")
 	}
-	if cfg.Limits.MaxFindings < 1 || cfg.Limits.MaxOutputBytes < 1024 || cfg.Limits.CallTimeout <= 0 || cfg.Limits.RunTimeout <= 0 || cfg.Limits.TokenBudget < 1 {
+	if cfg.Limits.MaxFindings < 1 || cfg.Limits.MaxOutputBytes < 1024 || cfg.Limits.TokenBudget < 1 {
 		return fmt.Errorf("configured limits must be positive and max_output_bytes at least 1024")
+	}
+	// Sub-second timeouts truncate to zero seconds at the adapter boundary,
+	// which the adapters would then read as "use the 15-minute default" —
+	// the opposite of the configured intent.
+	if cfg.Limits.CallTimeout < time.Second || cfg.Limits.RunTimeout < time.Second {
+		return fmt.Errorf("limits.call_timeout and limits.run_timeout must be at least 1s")
+	}
+	if cfg.Limits.MaxVerification < 1 || cfg.Limits.MaxArbitration < 1 {
+		return fmt.Errorf("limits.max_verification and limits.max_arbitration must be at least 1; a non-positive value would silently disable the pipeline it gates")
 	}
 	if _, ok := BuiltinRubric(cfg.Kind); !ok {
 		return fmt.Errorf("unknown document kind %q", cfg.Kind)

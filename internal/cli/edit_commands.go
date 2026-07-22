@@ -24,7 +24,10 @@ func newEditCommand(f *flags) *cobra.Command {
 			ctx, stop := commandContext(cmd)
 			defer stop()
 			result, editErr := service.Edit(ctx, app.EditOptions{RunRef: app.RunRef{Input: input, RunID: runID}, ProposalPath: proposal, Apply: apply, ConfirmDocument: confirmDocument, Rereview: rereview})
-			if err := printValue(cmd, f.JSON, result, fmt.Sprintf("run=%s hunks=%d applied=%t", result.RunID, len(result.Proposal.Hunks), result.Applied)); err != nil {
+			if editErr != nil && result.SchemaVersion == 0 {
+				return renderError(cmd, f, editErr)
+			}
+			if err := printValue(cmd, f, result, fmt.Sprintf("run=%s hunks=%d applied=%t", result.RunID, len(result.Proposal.Hunks), result.Applied)); err != nil {
 				return err
 			}
 			return editErr
@@ -54,7 +57,7 @@ func newRevertCommand(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printValue(cmd, f.JSON, record, fmt.Sprintf("reverted run %s (%d files)", record.RunID, len(record.Files)))
+			return printValue(cmd, f, record, fmt.Sprintf("reverted run %s (%d files)", record.RunID, len(record.Files)))
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "edited run ID (default latest)")

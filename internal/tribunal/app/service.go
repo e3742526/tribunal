@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +24,23 @@ const (
 	ExitInvalidArguments = 4
 	ExitPreflight        = 5
 	ExitAborted          = 6
+	ExitInternal         = 7
 )
+
+// ExitCodeFor maps an error to its contract exit code. Unclassified errors
+// default to ExitInvalidArguments because the only producer of plain errors
+// at the CLI boundary is cobra's flag/argument parsing; genuine runtime
+// faults must be wrapped as ExitInternal at their source.
+func ExitCodeFor(err error) int {
+	if err == nil {
+		return ExitSuccess
+	}
+	var exit *ExitError
+	if errors.As(err, &exit) {
+		return exit.Code
+	}
+	return ExitInvalidArguments
+}
 
 type ExitError struct {
 	Code int

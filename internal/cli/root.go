@@ -30,6 +30,10 @@ type flags struct {
 	MaxOutputBytes int64
 	RunTimeout     time.Duration
 	TokenBudget    int
+	// rendered records whether this invocation already wrote a result or
+	// error envelope to stdout, so the JSON failure decorator emits an
+	// envelope exactly once per command.
+	rendered bool
 }
 
 func NewRootCommand() *cobra.Command {
@@ -61,7 +65,27 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newStatusCommand(f), newTranscriptCommand(f), newTUICommand(f))
 	root.AddCommand(newPersonaCommand(f), newBenchCommand(f), newDoctorCommand(f), newAdoptCommand(f))
 	root.AddCommand(newVersionCommand(f), newVerifyInstallCommand(f))
+	decorateJSONFailures(root, f)
 	return root
+}
+
+// decorateJSONFailures wraps every RunE so that a command failing before it
+// rendered anything still emits the schema-versioned error envelope in
+// --json mode. Flag/argument parse errors never reach RunE and keep their
+// usage-on-stderr behavior.
+func decorateJSONFailures(cmd *cobra.Command, f *flags) {
+	if run := cmd.RunE; run != nil {
+		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			err := run(cmd, args)
+			if err != nil && f.JSON && !f.rendered {
+				return renderError(cmd, f, err)
+			}
+			return err
+		}
+	}
+	for _, child := range cmd.Commands() {
+		decorateJSONFailures(child, f)
+	}
 }
 
 func serviceFor(input string, f *flags) (*app.Service, error) {
@@ -96,8 +120,9 @@ func printJSON(w io.Writer, value any) error {
 	return err
 }
 
-func printValue(cmd *cobra.Command, jsonMode bool, value any, human string) error {
-	if jsonMode {
+func printValue(cmd *cobra.Command, f *flags, value any, human string) error {
+	f.rendered = true
+	if f.JSON {
 		return printJSON(cmd.OutOrStdout(), value)
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), human)
