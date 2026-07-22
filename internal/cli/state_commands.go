@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,7 +27,7 @@ func newStatusCommand(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printValue(cmd, f.JSON, snapshot, tribunaltui.RenderSnapshot(snapshot))
+			return printValue(cmd, f, snapshot, tribunaltui.RenderSnapshot(snapshot))
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -51,9 +52,9 @@ func newTranscriptCommand(f *flags) *cobra.Command {
 			}
 			var lines []string
 			for _, event := range transcript.Events {
-				lines = append(lines, fmt.Sprintf("%s  %s -> %s  %s", event.At.Format("2006-01-02T15:04:05Z"), event.From, event.To, event.Status))
+				lines = append(lines, fmt.Sprintf("%s  %s -> %s  %s", event.At.UTC().Format(time.RFC3339), event.From, event.To, event.Status))
 			}
-			return printValue(cmd, f.JSON, transcript, strings.Join(lines, "\n"))
+			return printValue(cmd, f, transcript, strings.Join(lines, "\n"))
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -76,7 +77,7 @@ func newTUICommand(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printValue(cmd, f.JSON, snapshot, tribunaltui.RenderSnapshot(snapshot))
+			return printValue(cmd, f, snapshot, tribunaltui.RenderSnapshot(snapshot))
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -98,10 +99,7 @@ func newResumeCommand(f *flags) *cobra.Command {
 			ctx, stop := commandContext(cmd)
 			defer stop()
 			final, resumeErr := service.Resume(ctx, app.RunRef{Input: input, RunID: runID})
-			if err := renderFinal(cmd, f.JSON, final); err != nil {
-				return err
-			}
-			return resumeErr
+			return renderFinalOutcome(cmd, f, final, resumeErr)
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -123,10 +121,7 @@ func newReplayCommand(f *flags) *cobra.Command {
 			ctx, stop := commandContext(cmd)
 			defer stop()
 			final, replayErr := service.Replay(ctx, app.RunRef{Input: input, RunID: runID})
-			if err := renderFinal(cmd, f.JSON, final); err != nil {
-				return err
-			}
-			return replayErr
+			return renderFinalOutcome(cmd, f, final, replayErr)
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "source run ID (default latest)")
@@ -149,7 +144,7 @@ func newExplainCommand(f *flags) *cobra.Command {
 				return err
 			}
 			human := fmt.Sprintf("%s [%s/%s]\n%s\nRecommendation: %s", explanation.Finding.ID, explanation.Finding.Severity, explanation.Finding.Category, explanation.Finding.Issue, explanation.Finding.Recommendation)
-			return printValue(cmd, f.JSON, explanation, human)
+			return printValue(cmd, f, explanation, human)
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -176,7 +171,7 @@ func newFindingsCommand(f *flags) *cobra.Command {
 			for _, record := range ledger.Findings {
 				lines = append(lines, fmt.Sprintf("%s  %-16s  %-7s  %s", record.ID, record.Status, record.Finding.Severity, record.Finding.Issue))
 			}
-			return printValue(cmd, f.JSON, ledger, strings.Join(lines, "\n"))
+			return printValue(cmd, f, ledger, strings.Join(lines, "\n"))
 		},
 	}
 	var reason, operator string
@@ -192,7 +187,7 @@ func newFindingsCommand(f *flags) *cobra.Command {
 			if err := service.DeferFinding(app.RunRef{Input: args[0]}, args[1], reason, operator); err != nil {
 				return err
 			}
-			return printValue(cmd, f.JSON, map[string]any{"schema_version": 1, "finding_id": args[1], "status": "deferred"}, "deferred "+args[1])
+			return printValue(cmd, f, map[string]any{"schema_version": 1, "finding_id": args[1], "status": "deferred"}, "deferred "+args[1])
 		},
 	}
 	deferCmd.Flags().StringVar(&reason, "reason", "", "required defer reason")
@@ -217,7 +212,7 @@ func newDecisionsCommand(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printValue(cmd, f.JSON, map[string]any{"schema_version": 1, "decisions": records}, fmt.Sprintf("%d recorded decisions", len(records)))
+			return printValue(cmd, f, map[string]any{"schema_version": 1, "decisions": records}, fmt.Sprintf("%d recorded decisions", len(records)))
 		},
 	}
 	root.AddCommand(export)

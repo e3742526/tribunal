@@ -25,28 +25,28 @@ func newReviewCommand(f *flags, recommend bool) *cobra.Command {
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			kind := f.Kind
+			if recommend && rubric != "" {
+				if f.Kind != "" {
+					return &app.ExitError{Code: app.ExitInvalidArguments, Err: fmt.Errorf("--rubric and --kind are mutually exclusive")}
+				}
+				kind = rubric
+			}
 			service, err := serviceFor(args[0], f)
 			if err != nil {
 				return err
 			}
-			kind := f.Kind
-			if recommend && rubric != "" {
-				kind = rubric
-			}
 			ctx, stop := commandContext(cmd)
 			defer stop()
 			final, reviewErr := service.Review(ctx, app.ReviewOptions{Input: args[0], Kind: kind, Panel: f.Panel, Split: split, FailOnSecret: failOnSecret, NoWorkers: noWorkers})
-			if err := renderFinal(cmd, f.JSON, final); err != nil {
-				return err
-			}
-			return reviewErr
+			return renderFinalOutcome(cmd, f, final, reviewErr)
 		},
 	}
 	cmd.Flags().BoolVar(&split, "split", false, "split the frozen packet to the smallest panel context budget")
 	cmd.Flags().BoolVar(&failOnSecret, "fail-on-secret", false, "fail instead of length-preserving secret/PII redaction")
 	cmd.Flags().BoolVar(&noWorkers, "no-workers", false, "disable deterministic spelling and reference workers")
 	if recommend {
-		cmd.Flags().StringVar(&rubric, "rubric", "generic", "built-in rubric: generic, manuscript, strategy, or governance")
+		cmd.Flags().StringVar(&rubric, "rubric", "", "built-in rubric: generic, manuscript, strategy, or governance (default: the configured kind)")
 	}
 	return cmd
 }
@@ -71,8 +71,11 @@ func newArbitrateCommand(f *flags) *cobra.Command {
 					return &app.ExitError{Code: app.ExitInvalidArguments, Err: fmt.Errorf("non-interactive arbitration requires --decisions or --accept-majority")}
 				}
 				snapshot, statusErr := service.Status(opts.RunRef)
-				if statusErr != nil || snapshot.Final == nil {
+				if statusErr != nil {
 					return statusErr
+				}
+				if snapshot.Final == nil {
+					return &app.ExitError{Code: app.ExitPreflight, Err: fmt.Errorf("run has no final result; nothing to arbitrate")}
 				}
 				rulings, promptErr := promptRulings(cmd, snapshot.Final.Arbitration, operator)
 				if promptErr != nil {
@@ -81,10 +84,7 @@ func newArbitrateCommand(f *flags) *cobra.Command {
 				opts.Rulings = rulings
 			}
 			final, arbitrationErr := service.Arbitrate(opts)
-			if err := renderFinal(cmd, f.JSON, final); err != nil {
-				return err
-			}
-			return arbitrationErr
+			return renderFinalOutcome(cmd, f, final, arbitrationErr)
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default latest)")
@@ -105,7 +105,7 @@ func promptRulings(cmd *cobra.Command, disputes []domain.ArbitrationDispute, ope
 		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nDefault: %s\nChoose accept/reject/defer/skip: ", dispute.ID, dispute.Finding.Issue, dispute.Default)
 		choice, err := reader.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, &app.ExitError{Code: app.ExitInternal, Err: err}
 		}
 		choice = strings.TrimSpace(strings.ToLower(choice))
 		if choice == "skip" || choice == "s" {
@@ -119,17 +119,46 @@ func promptRulings(cmd *cobra.Command, disputes []domain.ArbitrationDispute, ope
 		fmt.Fprint(cmd.OutOrStdout(), "Reason: ")
 		reason, err := reader.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, &app.ExitError{Code: app.ExitInternal, Err: err}
 		}
 		rulings = append(rulings, app.ArbitrationRuling{ID: dispute.ID, Outcome: outcome, Reason: strings.TrimSpace(reason), Operator: operator})
 	}
 	return rulings, nil
 }
 
-func renderFinal(cmd *cobra.Command, jsonMode bool, final domain.Final) error {
-	if jsonMode {
+func renderFinal(cmd *cobra.Command, f *flags, final domain.Final) error {
+	f.rendered = true
+	if f.JSON {
 		return printJSON(cmd.OutOrStdout(), final)
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "run=%s status=%s exit=%d\n%s\n", final.RunID, final.Status, final.ExitCode, final.Summary)
 	return err
+}
+
+// renderFinalOutcome reports a command's final plus its error. A populated
+// final renders even when the command also failed (degraded finals carry
+// both), but a zero-value final from a failed command must not render as a
+// fake `schema_version: 0` success object; it renders as an error envelope.
+func renderFinalOutcome(cmd *cobra.Command, f *flags, final domain.Final, outcomeErr error) error {
+	if outcomeErr != nil && final.SchemaVersion == 0 {
+		return renderError(cmd, f, outcomeErr)
+	}
+	if err := renderFinal(cmd, f, final); err != nil {
+		return err
+	}
+	return outcomeErr
+}
+
+// renderError keeps stdout contract-honest in JSON mode: failures emit a
+// schema-versioned error envelope with the real exit code instead of nothing
+// or a zero-value result. Human-mode output stays on stderr via main.
+func renderError(cmd *cobra.Command, f *flags, outcomeErr error) error {
+	f.rendered = true
+	if f.JSON {
+		envelope := map[string]any{"schema_version": 1, "error": outcomeErr.Error(), "exit_code": app.ExitCodeFor(outcomeErr)}
+		if err := printJSON(cmd.OutOrStdout(), envelope); err != nil {
+			return err
+		}
+	}
+	return outcomeErr
 }

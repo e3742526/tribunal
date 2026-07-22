@@ -38,7 +38,7 @@ type InstallationReport struct {
 func newVersionCommand(f *flags) *cobra.Command {
 	return &cobra.Command{Use: "version", Short: "Print Tribunal build identity", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		report := InstallationReport{SchemaVersion: 1, Version: Version, CommitSHA: CommitSHA, BuildTime: BuildTime, Dirty: Dirty, Status: "identity"}
-		return printValue(cmd, f.JSON, report, Version)
+		return printValue(cmd, f, report, Version)
 	}}
 }
 
@@ -46,7 +46,7 @@ func newVerifyInstallCommand(f *flags) *cobra.Command {
 	var allowDev bool
 	cmd := &cobra.Command{Use: "verify-install", Short: "Verify embedded provenance and adjacent binary checksum", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		report, err := verifyInstallation(allowDev)
-		if printErr := printValue(cmd, f.JSON, report, fmt.Sprintf("status=%s version=%s executable=%s", report.Status, report.Version, report.Executable)); printErr != nil {
+		if printErr := printValue(cmd, f, report, fmt.Sprintf("status=%s version=%s executable=%s", report.Status, report.Version, report.Executable)); printErr != nil {
 			return printErr
 		}
 		if err != nil {
