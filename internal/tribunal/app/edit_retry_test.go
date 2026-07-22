@@ -170,3 +170,13 @@ func TestRevertAfterCrashRollbackReportsHonestly(t *testing.T) {
 		t.Fatalf("revert error not honest about rollback: %v", revertErr)
 	}
 }
+
+// Aborted and degraded finals must not stale ledger records: the run never
+// completed its examination of any item.
+func TestLedgerScopeRequiresCompletedReview(t *testing.T) {
+	for status, eligible := range map[string]bool{"final": true, "findings": true, "arbitration_pending": true, "aborted": false, "degraded": false} {
+		if ledgerScopeEligible(status) != eligible {
+			t.Fatalf("ledgerScopeEligible(%q) = %v, want %v", status, !eligible, eligible)
+		}
+	}
+}

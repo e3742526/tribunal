@@ -661,12 +661,16 @@ func (s *Service) publish(runDir string, workspace storage.Workspace, final doma
 	}
 	// Workspace ledgers and pointers are projections. They are updated only
 	// after the run's report, state, and final artifact have committed.
-	// Ledger staleness is scoped to the packet items this run examined; if
-	// the packet cannot be read, no scope means no staleness (conservative).
+	// Ledger staleness is scoped to the packet items this run examined —
+	// and only for finals whose review actually completed: an aborted or
+	// degraded run examined nothing conclusively, so it must not stale
+	// records it merely intended to revisit. No scope means no staleness.
 	var reviewedItems []string
-	if packet, packetErr := readPacket(filepath.Join(runDir, "packet.json")); packetErr == nil && packet.PacketHash == final.PacketHash {
-		for _, item := range packet.Items {
-			reviewedItems = append(reviewedItems, item.ID)
+	if ledgerScopeEligible(final.Status) {
+		if packet, packetErr := readPacket(filepath.Join(runDir, "packet.json")); packetErr == nil && packet.PacketHash == final.PacketHash {
+			for _, item := range packet.Items {
+				reviewedItems = append(reviewedItems, item.ID)
+			}
 		}
 	}
 	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions, reviewedItems); err != nil {

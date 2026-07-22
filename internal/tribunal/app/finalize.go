@@ -8,6 +8,13 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/storage"
 )
 
+// ledgerScopeEligible reports whether a final's status proves the panel
+// completed its examination, which is the precondition for marking absent
+// ledger records stale.
+func ledgerScopeEligible(status string) bool {
+	return status == "final" || status == "findings" || status == "arbitration_pending"
+}
+
 func buildFinal(runID string, packet documents.Packet, started, finished time.Time, statuses []domain.PanelStatus, findings []domain.Finding, evidence []domain.EvidenceItem, decisions []domain.Decision, disputes []domain.ArbitrationDispute, reasons []string) domain.Final {
 	exit, status := ExitSuccess, "final"
 	if len(disputes) > 0 {

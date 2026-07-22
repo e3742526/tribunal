@@ -92,7 +92,7 @@ Commit boundary: one commit per stage, `repair:` prefix per repo convention.
 
 (appended as stages complete)
 
-### Stage 1 — cli-contract (commit 7ecf4a2)
+### Stage 1 — cli-contract (commit 88f0555)
 
 D-032/033/049/050/051 fixed. New: `ExitInternal=7`, `app.ExitCodeFor`, JSON
 error envelope (`renderError`), zero-final guard (`renderFinalOutcome`), RunE
@@ -221,3 +221,32 @@ documents exit 7, the JSON error envelope, torn-tail quarantine, and backup
 reuse. Record closure: CHANGELOG Unreleased section lists all behavior
 changes; defect ledger rows D-030–D-069 appended; TEST_LEDGER updated with
 the campaign suites and the corrected gate/race rows.
+
+## Gate 9 — Closeout
+
+Final regression: `go test -race -count=1 ./...` and `scripts/check.sh` green
+at closeout (govulncheck soft-skipped locally; required in CI). Cross-stage
+adversarial walkthrough (fresh agent over the full branch) verified the
+review→publish→resume→replay, edit-crash-recovery, JSON-envelope, identity,
+and size-cap paths compose correctly, spot-checked ten ledger rows against
+code, and found one genuine composition regression the per-stage reviews
+could not see: aborted/degraded finals staled ledger records for items the
+run never finished examining (Stage 2 abort publication × Stage 6 staleness).
+Fixed at closeout: ledger staleness now requires a completed-review final
+status (`ledgerScopeEligible`), with a regression test; the D-040 ledger row
+wording holds again. Also corrected the Stage 1 commit hash in this log
+(88f0555; the earlier value was a pre-amend object).
+
+Residual risks and routed follow-ups: agy prompt-in-argv confidentiality
+(blocked on upstream stdin support); darwin workspace-ID Unicode
+normalization and case-fold variants beyond simple folding; unbounded
+lock-wait feedback (publish.lock ff.); reduced-trust posture for
+JSON-repaired model output; tui/status duplication; PersistTerminal
+same-identity replacement journaling; sticky rejected ledger status;
+consensus-tail duplication between review.go and recovery.go (simplification
+pass); defaultRecommendation/gap-sort use unweighted counts while ties are
+weighted; x/ dependency bumps pending first push; real-provider and OS-kill
+matrices remain outside local verification, as in the previous campaign.
+
+Final status: completed_verified (local contracts; release workflow not
+executed — publication outside campaign authority). Branch local, unpushed.
