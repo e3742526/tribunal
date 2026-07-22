@@ -112,7 +112,11 @@ func TestExtractDOCX(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	text, err := extractDOCX(path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := extractDOCX(path, raw, 32<<20)
 	if err != nil || text != "Hello\n" {
 		t.Fatalf("text=%q err=%v", text, err)
 	}
@@ -156,7 +160,11 @@ func TestExtractPDFWhenPopplerAvailable(t *testing.T) {
 	if err := os.WriteFile(path, minimalPDF("Hello Tribunal"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	text, err := extractPDF(context.Background(), path, 5*time.Second, 1<<20)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := extractPDF(context.Background(), path, raw, 5*time.Second, 1<<20)
 	if err != nil || !strings.Contains(text, "Hello Tribunal") {
 		t.Fatalf("extractPDF() = %q, %v", text, err)
 	}

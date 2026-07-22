@@ -135,3 +135,21 @@ stages/backlog: quantization wording lands with the D-044 doc pass;
 defaultRecommendation/gap-sort use unweighted counts while ties are weighted
 (pre-existing; backlog). Tests: identity_test.go (exact weighted tie,
 16-hex length, malformed cluster IDs). Full suite + check.sh green.
+
+### Stage 4 — documents-integrity
+
+D-038/039/063/064/065 fixed. DOCX extracts from the already-read bytes
+(zip.NewReader) and PDF from a private 0600 temp copy, so SourceSHA256 and
+content share one read; raw reads capped at 128MB (stat + post-read),
+md/txt/DOCX extraction honor MaxExtractedByte (DOCX cap violations reported
+explicitly, not as XML EOF); DOCX duplicate entries rejected with
+slash-normalized/cleaned names; anchors bind only provably unique spans
+(repeated quotes need isolating prefix+quote+suffix; fuzzy path rejects
+repeated prefixes; the dead ambiguity check removed); chunk IDs are
+chunk:%08d. Adversarial review: no findings above Low; took its three
+hardening wins (post-read size re-check, name normalization, cap-labeled DOCX
+errors). Release-note items routed to Stage 8: md/txt >16MB now rejected
+(previously unbounded), in-flight pre-upgrade runs with ambiguous anchors
+quarantine on resume, split packet hashes change (%08d). Tests:
+integrity_test.go (ambiguity, disambiguation, fuzzy prefix, duplicate
+entries, caps, chunk order). check.sh green.
