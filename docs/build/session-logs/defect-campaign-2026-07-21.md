@@ -71,7 +71,36 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
 - Record closure: audit overview rows ARC-TRIBUNAL-002, LLM-TRIBUNAL-001,
   LLM-TRIBUNAL-002, and ARC-TRIBUNAL-003 changed open → resolved; native ledger rows
   D-019 through D-022 added with passing evidence.
-- Intended commit: `repair: restore deliberation integrity and usage limits`.
+- Commit: `4a8b63b` (`repair: restore deliberation integrity and usage limits`).
+
+### Group 2 — durable recovery and schema integrity
+
+- Fixed FSR-TRIBUNAL-001 with a checkpoint reducer that strictly loads completed
+  review and vote attempts, preserves classified failures, reconstructs downstream
+  phases, and invokes providers only for absent work. A terminal-artifact deletion
+  regression proves recovery makes zero duplicate provider calls.
+- Fixed SEC-TRIBUNAL-001 with centralized persisted-packet validation: canonical
+  paths and workspace identity are re-established, item/rubric hashes and nested
+  versions are checked, and the canonical packet hash is recomputed before resume,
+  replay, or edit can consume the packet.
+- Fixed ARC-TRIBUNAL-004 with closed JSON decoding and recursive validation for
+  packet, meta, state, final, ledger, decision, transcript, delivery, review, vote,
+  cluster, evidence, and recovery artifacts. Corrupt known and unknown nested
+  versions fail before any provider call.
+- Fixed FSR-TRIBUNAL-003 by recording publication intent and the final candidate,
+  then committing reports and terminal state/final before updating idempotent
+  workspace projections. Pending publication is repairable by `resume`.
+- Crash-stranded token reservations are conservatively charged before resumed work.
+- Focused verification and `scripts/check.sh` passed. `go test -race` passed for
+  app, storage, documents, and domain. `govulncheck` remained unavailable and was
+  explicitly skipped.
+- Adversarial review covered stored-hash substitution, nested-version corruption,
+  missing final/candidate recovery, classified call failures, crash reservations,
+  terminal idempotency, and projection ordering. No residual in-scope defect found.
+- Record closure: audit overview rows FSR-TRIBUNAL-001, SEC-TRIBUNAL-001,
+  ARC-TRIBUNAL-004, and FSR-TRIBUNAL-003 changed open → resolved; ledger rows
+  D-023 through D-026 record passing evidence.
+- Commit: pending local group checkpoint.
 
 ## Record closure
 

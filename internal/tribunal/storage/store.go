@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -139,6 +140,31 @@ func ReadJSON(path string, value any) error {
 		return err
 	}
 	if err := json.Unmarshal(data, value); err != nil {
+		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+// ReadJSONStrict decodes a closed persisted schema. Unknown fields and trailing
+// values are rejected so a reader cannot silently reinterpret newer artifacts.
+func ReadJSONStrict(path string, value any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
+	}
+	if decoder.More() {
+		return fmt.Errorf("decode %s: trailing JSON value", filepath.Base(path))
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("decode %s: trailing JSON value", filepath.Base(path))
+		}
 		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
 	}
 	return nil

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -92,7 +93,9 @@ func (s *Service) Transcript(ref RunRef) (Transcript, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		var event storage.StateEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil || event.SchemaVersion != 1 {
+		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&event); err != nil || event.SchemaVersion != 1 || event.RunID != runID || event.To == "" || event.Status == "" || event.At.IsZero() {
 			file.Close()
 			return Transcript{}, exitError(ExitPreflight, "invalid transcript event")
 		}
@@ -106,7 +109,7 @@ func (s *Service) Transcript(ref RunRef) (Transcript, error) {
 	sort.Strings(deliveryPaths)
 	for _, path := range deliveryPaths {
 		var delivery domain.DeliveryRecord
-		if err := storage.ReadJSON(path, &delivery); err != nil || delivery.SchemaVersion != 1 {
+		if err := storage.ReadJSONStrict(path, &delivery); err != nil || domain.ValidateDeliveryRecord(delivery) != nil {
 			return Transcript{}, exitError(ExitPreflight, "invalid delivery record %s", path)
 		}
 		result.Deliveries = append(result.Deliveries, delivery)
@@ -143,12 +146,6 @@ func (s *Service) Resume(ctx context.Context, ref RunRef) (domain.Final, error) 
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	if final, err := readFinal(filepath.Join(runDir, "final.json")); err == nil {
-		if final.ExitCode == 0 {
-			return final, nil
-		}
-		return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("%s", final.Status)}
-	}
 	packet, err := readPacket(filepath.Join(runDir, "packet.json"))
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "resume packet: %v", err)
@@ -157,7 +154,54 @@ func (s *Service) Resume(ctx context.Context, ref RunRef) (domain.Final, error) 
 	if err != nil || meta.PacketHash != packet.PacketHash {
 		return domain.Final{}, exitError(ExitPreflight, "resume metadata does not match packet")
 	}
-	return s.Review(ctx, ReviewOptions{Packet: &packet, PanelValue: &meta.Panel, RunID: runID, RunDir: runDir, Workspace: &workspace, ReplayOf: meta.ReplayOf})
+	if meta.RunID != runID || meta.WorkspaceID != packet.WorkspaceID || meta.InputRoot != packet.InputRoot {
+		return domain.Final{}, exitError(ExitPreflight, "resume metadata identity mismatch")
+	}
+	if final, readErr := readFinal(filepath.Join(runDir, "final.json")); readErr == nil {
+		if err := s.completePublication(runDir, workspace, final, meta.Panel); err != nil {
+			return domain.Final{}, exitError(ExitPreflight, "resume publication: %v", err)
+		}
+		return finalResult(final)
+	} else if !os.IsNotExist(readErr) {
+		return domain.Final{}, exitError(ExitPreflight, "resume final: %v", readErr)
+	}
+	if candidate, readErr := readFinal(filepath.Join(runDir, "final-candidate.json")); readErr == nil {
+		if candidate.RunID != runID || candidate.PacketHash != packet.PacketHash {
+			return domain.Final{}, exitError(ExitPreflight, "resume final candidate identity mismatch")
+		}
+		if err := s.publish(runDir, workspace, candidate, meta.Panel); err != nil {
+			return domain.Final{}, exitError(ExitPreflight, "resume publication: %v", err)
+		}
+		return finalResult(candidate)
+	} else if !os.IsNotExist(readErr) {
+		return domain.Final{}, exitError(ExitPreflight, "resume final candidate: %v", readErr)
+	}
+	return s.resumeCheckpoint(ctx, workspace, runDir, runID, packet, meta)
+}
+
+func finalResult(final domain.Final) (domain.Final, error) {
+	if final.ExitCode == 0 {
+		return final, nil
+	}
+	return final, &ExitError{Code: final.ExitCode, Err: fmt.Errorf("%s", final.Status)}
+}
+
+func (s *Service) completePublication(runDir string, workspace storage.Workspace, final domain.Final, panel domain.Panel) error {
+	var marker publicationMarker
+	if err := storage.ReadJSONStrict(filepath.Join(runDir, "publication.json"), &marker); err == nil {
+		if marker.SchemaVersion != 1 || marker.RunID != final.RunID || marker.PacketHash != final.PacketHash || (marker.Status != "pending" && marker.Status != "committed") {
+			return fmt.Errorf("invalid publication marker")
+		}
+		if marker.Status == "committed" {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else {
+		// Runs created before publication markers are already terminal.
+		return nil
+	}
+	return s.publish(runDir, workspace, final, panel)
 }
 
 func (s *Service) Replay(ctx context.Context, ref RunRef) (domain.Final, error) {
@@ -343,7 +387,7 @@ func (s *Service) locateRun(ref RunRef) (storage.Workspace, string, string, erro
 			SchemaVersion int    `json:"schema_version"`
 			RunID         string `json:"run_id"`
 		}
-		if err := storage.ReadJSON(filepath.Join(workspace.Root, "latest.json"), &latest); err != nil {
+		if err := storage.ReadJSONStrict(filepath.Join(workspace.Root, "latest.json"), &latest); err != nil {
 			return storage.Workspace{}, "", "", fmt.Errorf("no latest Tribunal run: %w", err)
 		}
 		if latest.SchemaVersion != 1 || latest.RunID == "" {
@@ -402,11 +446,11 @@ func arbitrationRulings(opts ArbitrationOptions, final domain.Final) ([]Arbitrat
 
 func readFinal(path string) (domain.Final, error) {
 	var final domain.Final
-	if err := storage.ReadJSON(path, &final); err != nil {
+	if err := storage.ReadJSONStrict(path, &final); err != nil {
 		return domain.Final{}, err
 	}
-	if final.SchemaVersion != 1 || final.RunID == "" || final.PacketHash == "" {
-		return domain.Final{}, fmt.Errorf("unsupported or incomplete final artifact")
+	if err := domain.ValidateFinal(final); err != nil {
+		return domain.Final{}, fmt.Errorf("invalid final artifact: %w", err)
 	}
 	return final, nil
 }

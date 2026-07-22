@@ -73,6 +73,7 @@ type Meta struct {
 	TrustedSources []string     `json:"trusted_config_sources"`
 	IgnoredSources []string     `json:"ignored_config_sources"`
 	ReplayOf       string       `json:"replay_of,omitempty"`
+	NoWorkers      bool         `json:"no_workers"`
 	StartedAt      time.Time    `json:"started_at"`
 }
 

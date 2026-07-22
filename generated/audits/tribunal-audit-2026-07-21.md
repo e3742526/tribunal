@@ -32,13 +32,13 @@ No target program, provider, test suite, network request, fault injection, or ho
 |---:|---|---|---|---|---|---|
 | 1 | ARC-TRIBUNAL-002 | High | Confirmed | resolved 2026-07-21 — campaign group 1 | AID-001, AID-009, LLM-014 | Vote packets omit the frozen document, rubric, and verification evidence |
 | 2 | LLM-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 1 | LLM-014, SEC-005 | Transport success is promoted to semantic evidence verification |
-| 3 | FSR-TRIBUNAL-001 | High | Confirmed | open | FSR-009, FSR-014, SC-INT/SC-COR | Resume reruns and overwrites instead of continuing a checkpoint |
-| 4 | SEC-TRIBUNAL-001 | High | Confirmed | open | SEC-005, SEC-008 | Persisted packet identity is not cryptographically revalidated |
+| 3 | FSR-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 2 | FSR-009, FSR-014, SC-INT/SC-COR | Resume reruns and overwrites instead of continuing a checkpoint |
+| 4 | SEC-TRIBUNAL-001 | High | Confirmed | resolved 2026-07-21 — campaign group 2 | SEC-005, SEC-008 | Persisted packet identity is not cryptographically revalidated |
 | 5 | FSR-TRIBUNAL-002 | High | Likely | open | FSR-005, FSR-014, FSR-015, SC-INT | Edit/revert mutations are not transactionally coupled to lifecycle records |
 | 6 | LLM-TRIBUNAL-002 | Medium | Confirmed | resolved 2026-07-21 — campaign group 1 | LLM-012, FSR-007 | Token budget is an estimate, not a runtime circuit breaker |
 | 7 | ARC-TRIBUNAL-003 | Medium | Confirmed | resolved 2026-07-21 — campaign group 1 | AID-009 | Unevidenced major/blocker findings are capped only for one category |
-| 8 | ARC-TRIBUNAL-004 | Medium | Confirmed | open | AID-009, AID-011 | Persisted readers validate outer versions but accept unknown nested versions |
-| 9 | FSR-TRIBUNAL-003 | Medium | Confirmed | open | FSR-009, FSR-012, SC-INT | Workspace ledger is updated before terminal publication succeeds |
+| 8 | ARC-TRIBUNAL-004 | Medium | Confirmed | resolved 2026-07-21 — campaign group 2 | AID-009, AID-011 | Persisted readers validate outer versions but accept unknown nested versions |
+| 9 | FSR-TRIBUNAL-003 | Medium | Confirmed | resolved 2026-07-21 — campaign group 2 | FSR-009, FSR-012, SC-INT | Workspace ledger is updated before terminal publication succeeds |
 | 10 | SEC-TRIBUNAL-002 | Medium | Confirmed | open | SEC-009 | Release archive smoke occurs after the release is published |
 | 11 | ARC-TRIBUNAL-001 | Medium | Likely | open | AID-012, AID-014 | No machine-evaluable intent, invariant, exception, or baseline registry |
 

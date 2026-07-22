@@ -45,9 +45,13 @@ func TestEditAppliesAcceptedScopeAndRevertProtectsUserChanges(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC)
 	final := domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: "findings", ExitCode: 1, Findings: []domain.Finding{finding}, Decisions: []domain.Decision{decision}, StartedAt: now, FinishedAt: now}
+	panel, err := domain.ParsePanel("fake/editor")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for path, value := range map[string]any{
 		filepath.Join(runDir, "packet.json"):         packet,
-		filepath.Join(runDir, "meta.json"):           Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: domain.Panel{SchemaVersion: 1}, StartedAt: now},
+		filepath.Join(runDir, "meta.json"):           Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, StartedAt: now},
 		filepath.Join(workspace.Root, "latest.json"): map[string]any{"schema_version": 1, "run_id": runID},
 	} {
 		if err := storage.WriteJSON(path, value); err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,7 +42,9 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &adapters.FuncAdapter{AdapterID: "fake"}
+	var providerCalls atomic.Int64
 	fake.InvokeFn = func(_ context.Context, role adapters.Role, panelist domain.Panelist, req adapters.Request) (adapters.Response, error) {
+		providerCalls.Add(1)
 		switch role {
 		case adapters.RoleReviewer:
 			finding := domain.Finding{
@@ -151,9 +154,40 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 	if err := os.Remove(filepath.Join(workspace.RunsDir, replayed.RunID, "final.json")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(workspace.RunsDir, replayed.RunID, "final-candidate.json")); err != nil {
+		t.Fatal(err)
+	}
+	callsBeforeResume := providerCalls.Load()
 	restarted, restartErr := service.Resume(context.Background(), RunRef{Input: documentPath, RunID: replayed.RunID})
 	if !errors.As(restartErr, &exit) || exit.Code != ExitBlockingFindings || restarted.RunID != replayed.RunID || restarted.PacketHash != final.PacketHash {
 		t.Fatalf("incomplete resume = %#v, %v", restarted, restartErr)
+	}
+	if providerCalls.Load() != callsBeforeResume {
+		t.Fatalf("resume duplicated provider calls: before=%d after=%d", callsBeforeResume, providerCalls.Load())
+	}
+	finalPath := filepath.Join(workspace.RunsDir, replayed.RunID, "final.json")
+	finalData, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal(finalData, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	findings := persisted["findings"].([]any)
+	findings[0].(map[string]any)["schema_version"] = float64(99)
+	tampered, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(finalPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Resume(context.Background(), RunRef{Input: documentPath, RunID: replayed.RunID}); !errors.As(err, &exit) || exit.Code != ExitPreflight {
+		t.Fatalf("resume accepted unknown nested finding schema: %v", err)
+	}
+	if providerCalls.Load() != callsBeforeResume {
+		t.Fatal("corrupt checkpoint triggered provider call")
 	}
 }
 

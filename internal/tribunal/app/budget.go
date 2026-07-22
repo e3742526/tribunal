@@ -48,12 +48,21 @@ func loadUsageBudget(runDir string, tokenLimit int) (*usageBudget, error) {
 	}
 	path := filepath.Join(runDir, "usage.json")
 	budget := &usageBudget{path: path, pending: map[int]usageRecord{}, ledger: usageLedger{SchemaVersion: 1, TokenLimit: tokenLimit, Calls: []usageRecord{}}}
-	if err := storage.ReadJSON(path, &budget.ledger); err != nil {
+	if err := storage.ReadJSONStrict(path, &budget.ledger); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("read usage ledger: %w", err)
 		}
-	} else if budget.ledger.SchemaVersion != 1 || budget.ledger.TokenLimit != tokenLimit || budget.ledger.Reserved != 0 {
-		return nil, fmt.Errorf("usage ledger is unsupported, mismatched, or has an incomplete reservation")
+	} else if budget.ledger.SchemaVersion != 1 || budget.ledger.TokenLimit != tokenLimit {
+		return nil, fmt.Errorf("usage ledger is unsupported or mismatched")
+	} else if budget.ledger.Reserved != 0 {
+		// A crash can strand a reservation after the provider received the call.
+		// Charge it conservatively before any resumed invocation can start.
+		budget.ledger.Calls = append(budget.ledger.Calls, usageRecord{SchemaVersion: 1, Role: "recovery", ReviewerID: "unknown", Reserved: budget.ledger.Reserved, Input: budget.ledger.Reserved, Status: "recovered-reservation"})
+		budget.ledger.UsedTokens += budget.ledger.Reserved
+		budget.ledger.Reserved = 0
+	}
+	if budget.ledger.UsedTokens > budget.ledger.TokenLimit {
+		return nil, fmt.Errorf("usage ledger exceeds token budget after crash recovery")
 	}
 	if err := storage.WriteJSON(path, budget.ledger); err != nil {
 		return nil, fmt.Errorf("persist usage ledger: %w", err)

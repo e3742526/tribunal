@@ -135,7 +135,7 @@ func (s *Service) Revert(ref RunRef) (EditRecord, error) {
 	}
 	var record EditRecord
 	path := filepath.Join(runDir, "edit-record.json")
-	if err := storage.ReadJSON(path, &record); err != nil {
+	if err := storage.ReadJSONStrict(path, &record); err != nil {
 		return EditRecord{}, exitError(ExitPreflight, "load edit record: %v", err)
 	}
 	if record.SchemaVersion != 1 || record.RevertedAt != nil {

@@ -40,6 +40,39 @@ func TestBuildPacketIsDeterministicAndRedacts(t *testing.T) {
 	}
 }
 
+func TestValidatePacketRejectsPersistedTampering(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brief.md")
+	if err := os.WriteFile(path, []byte("# Frozen\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := Build(context.Background(), path, BuildOptions{Kind: "generic", Rubric: "rubric"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePacket(packet); err != nil {
+		t.Fatalf("valid packet rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Packet)
+	}{
+		{"content", func(value *Packet) { value.Items[0].Content += "tampered" }},
+		{"rubric", func(value *Packet) { value.Rubric = "changed" }},
+		{"nested version", func(value *Packet) { value.Items[0].SchemaVersion = 99 }},
+		{"stored identity", func(value *Packet) { value.PacketHash = strings.Repeat("0", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := packet
+			changed.Items = append([]Item(nil), packet.Items...)
+			test.mutate(&changed)
+			if err := ValidatePacket(changed); err == nil {
+				t.Fatal("tampered packet accepted")
+			}
+		})
+	}
+}
+
 func TestResolveAnchorAndChunkUTF8(t *testing.T) {
 	packet := Packet{Items: []Item{{ID: "artifact:x.md", PacketSHA256: "hash", Content: "αβ\n\nquoted text\n"}}}
 	anchor := domain.Anchor{PacketItem: "artifact:x.md", ItemSHA256: "hash", Quote: "quoted text"}

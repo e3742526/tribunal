@@ -60,6 +60,9 @@ func NormalizePanel(panel *Panel) error {
 	if panel.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("panel schema_version must be %d", SchemaVersion)
 	}
+	if len(panel.Reviewers) == 0 {
+		return fmt.Errorf("panel requires at least one reviewer")
+	}
 	seen := map[string]struct{}{}
 	for i := range panel.Reviewers {
 		r := &panel.Reviewers[i]

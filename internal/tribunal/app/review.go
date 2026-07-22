@@ -94,7 +94,10 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 		}
 		return final, exitError(ExitAborted, "%v", runCtx.Err())
 	}
-	workerFindings := readWorkerFindings(runDir)
+	workerFindings, err := readWorkerFindings(runDir)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "read worker findings: %v", err)
+	}
 	allFindings = append(allFindings, workerFindings...)
 	canonicalizeFindingIDs(allFindings)
 	if len(valid)*2 <= len(panel.Reviewers) || len(valid) < 2 {
@@ -249,8 +252,8 @@ func (s *Service) hydratePanel(panel domain.Panel) (domain.Panel, error) {
 
 func (s *Service) resolvePacket(ctx context.Context, opts ReviewOptions) (documents.Packet, error) {
 	if opts.Packet != nil {
-		if opts.Packet.SchemaVersion != domain.SchemaVersion || opts.Packet.PacketHash == "" {
-			return documents.Packet{}, fmt.Errorf("replay packet has unsupported schema or missing hash")
+		if err := documents.ValidatePacket(*opts.Packet); err != nil {
+			return documents.Packet{}, fmt.Errorf("invalid replay packet: %w", err)
 		}
 		return *opts.Packet, nil
 	}
@@ -327,7 +330,7 @@ func (s *Service) persistStart(runDir, runID string, packet documents.Packet, pa
 	if err := storage.WriteJSON(filepath.Join(runDir, "packet.json"), packet); err != nil {
 		return fmt.Errorf("persist packet: %w", err)
 	}
-	meta := Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, DiversityNote: domain.DiversityNote(panel), TrustedSources: s.Config.TrustedSources, IgnoredSources: s.Config.IgnoredSources, ReplayOf: opts.ReplayOf, StartedAt: started}
+	meta := Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, DiversityNote: domain.DiversityNote(panel), TrustedSources: s.Config.TrustedSources, IgnoredSources: s.Config.IgnoredSources, ReplayOf: opts.ReplayOf, NoWorkers: opts.NoWorkers, StartedAt: started}
 	if err := storage.WriteJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
 		return fmt.Errorf("persist meta: %w", err)
 	}
@@ -482,12 +485,23 @@ func validatePass(packet documents.Packet, results []panelResult) ([]domain.Pane
 	return valid, findings, statuses, unique(reasons)
 }
 
-func readWorkerFindings(runDir string) []domain.Finding {
-	var value struct {
-		Findings []domain.Finding `json:"findings"`
+func readWorkerFindings(runDir string) ([]domain.Finding, error) {
+	var value findingsArtifact
+	if err := storage.ReadJSONStrict(filepath.Join(runDir, "worker-findings.json"), &value); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	_ = storage.ReadJSON(filepath.Join(runDir, "worker-findings.json"), &value)
-	return value.Findings
+	if value.SchemaVersion != 1 {
+		return nil, fmt.Errorf("unsupported worker findings schema")
+	}
+	for _, finding := range value.Findings {
+		if err := domain.ValidateFinding(finding); err != nil {
+			return nil, err
+		}
+	}
+	return value.Findings, nil
 }
 
 func clusterFindings(clusters []domain.Cluster) []domain.Finding {
@@ -656,8 +670,12 @@ func (s *Service) publish(runDir string, workspace storage.Workspace, final doma
 		return fmt.Errorf("acquire publication lock: %w", err)
 	}
 	defer lock.Close()
-	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions); err != nil {
-		return fmt.Errorf("persist findings ledger: %w", err)
+	marker := publicationMarker{SchemaVersion: 1, RunID: final.RunID, PacketHash: final.PacketHash, Status: "pending", UpdatedAt: s.now()}
+	if err := storage.WriteJSON(filepath.Join(runDir, "publication.json"), marker); err != nil {
+		return fmt.Errorf("persist publication intent: %w", err)
+	}
+	if err := storage.WriteJSON(filepath.Join(runDir, "final-candidate.json"), final); err != nil {
+		return fmt.Errorf("persist final candidate: %w", err)
 	}
 	if err := writeReports(runDir, final, panel); err != nil {
 		return err
@@ -665,11 +683,28 @@ func (s *Service) publish(runDir string, workspace storage.Workspace, final doma
 	if err := storage.PersistTerminal(runDir, final); err != nil {
 		return err
 	}
+	// Workspace ledgers and pointers are projections. They are updated only
+	// after the run's report, state, and final artifact have committed.
+	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions); err != nil {
+		return fmt.Errorf("persist findings ledger: %w", err)
+	}
 	latest := map[string]any{"schema_version": 1, "run_id": final.RunID, "status": final.Status, "updated_at": final.FinishedAt}
 	if err := storage.WriteJSON(filepath.Join(workspace.Root, "latest.json"), latest); err != nil {
 		return err
 	}
-	return writeActive(workspace, final.RunID, documents.Packet{WorkspaceID: final.WorkspaceID, PacketHash: final.PacketHash}, final.Status, final.FinishedAt)
+	if err := writeActive(workspace, final.RunID, documents.Packet{WorkspaceID: final.WorkspaceID, PacketHash: final.PacketHash}, final.Status, final.FinishedAt); err != nil {
+		return err
+	}
+	marker.Status, marker.UpdatedAt = "committed", s.now()
+	return storage.WriteJSON(filepath.Join(runDir, "publication.json"), marker)
+}
+
+type publicationMarker struct {
+	SchemaVersion int       `json:"schema_version"`
+	RunID         string    `json:"run_id"`
+	PacketHash    string    `json:"packet_hash"`
+	Status        string    `json:"status"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func writeActive(workspace storage.Workspace, runID string, packet documents.Packet, status string, at time.Time) error {
@@ -749,28 +784,6 @@ func canonicalizeFindingIDs(findings []domain.Finding) {
 func hashText(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
-}
-
-func readPacket(path string) (documents.Packet, error) {
-	var packet documents.Packet
-	if err := storage.ReadJSON(path, &packet); err != nil {
-		return documents.Packet{}, err
-	}
-	if packet.SchemaVersion != 1 || packet.PacketHash == "" {
-		return documents.Packet{}, fmt.Errorf("unsupported packet schema or missing hash")
-	}
-	return packet, nil
-}
-
-func readMeta(path string) (Meta, error) {
-	var meta Meta
-	if err := storage.ReadJSON(path, &meta); err != nil {
-		return Meta{}, err
-	}
-	if meta.SchemaVersion != 1 {
-		return Meta{}, fmt.Errorf("unsupported meta schema_version %d", meta.SchemaVersion)
-	}
-	return meta, nil
 }
 
 func marshal(value any) []byte {

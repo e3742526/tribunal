@@ -208,10 +208,10 @@ func ValidateFinding(f Finding) error {
 	if f.SchemaVersion != FindingSchemaVersion {
 		return fmt.Errorf("finding schema_version must be %d", FindingSchemaVersion)
 	}
-	if f.ID == "" || f.Reviewer == "" || f.Issue == "" || f.Recommendation == "" {
-		return fmt.Errorf("finding requires id, reviewer, issue, and recommendation")
+	if f.ID == "" || f.Reviewer == "" || f.Origin == "" || f.Issue == "" || f.Recommendation == "" {
+		return fmt.Errorf("finding requires id, reviewer, origin, issue, and recommendation")
 	}
-	if f.Severity.Rank() == 0 {
+	if f.Severity.Rank() == 0 || !validCategory(f.Category) {
 		return fmt.Errorf("finding %q has invalid severity %q", f.ID, f.Severity)
 	}
 	if f.Anchor.PacketItem == "" || f.Anchor.ItemSHA256 == "" || f.Anchor.Quote == "" {
@@ -219,6 +219,14 @@ func ValidateFinding(f Finding) error {
 	}
 	if f.Confidence != "low" && f.Confidence != "med" && f.Confidence != "high" {
 		return fmt.Errorf("finding %q has invalid confidence", f.ID)
+	}
+	switch f.EvidenceStatus {
+	case EvidenceAnchored, EvidenceWorkerVerified, EvidenceUnevidenced:
+	default:
+		return fmt.Errorf("finding %q has invalid evidence status", f.ID)
+	}
+	if f.Quarantined && f.QuarantineWhy == "" {
+		return fmt.Errorf("finding %q is quarantined without a reason", f.ID)
 	}
 	return nil
 }
