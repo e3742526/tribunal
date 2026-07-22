@@ -4,14 +4,34 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
 
+// FindingFingerprint is identity-bearing: it keys the workspace ledger,
+// explicit deferrals, and decision memory. 16 hex chars (64 bits) keeps the
+// silent-collision probability negligible at realistic ledger sizes, where
+// the previous 32-bit form reached ~1% at ten thousand findings.
 func FindingFingerprint(f Finding) string {
 	payload := strings.Join([]string{string(f.Category), f.Anchor.PacketItem, f.Anchor.Quote, f.Issue}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(sum[:])[:8]
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// ValidFingerprint reports whether value has the exact shape FindingFingerprint
+// emits. Persisted stores must reject other shapes (notably the pre-v0.1.0
+// 8-hex form) instead of silently never matching recomputed identities.
+func ValidFingerprint(value string) bool {
+	if len(value) != 16 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func MatchesDecisionMemory(f Finding, packetItem, fingerprint string) bool {
@@ -87,7 +107,9 @@ func ResolveVotes(f Finding, votes []Vote, opts ConsensusOptions) Decision {
 		Strict:        f.Category.Strict(),
 	}
 	var severityRanks []int
-	acceptWeight, rejectWeight := 0.0, 0.0
+	// Weights accumulate as integer hundredths so tie detection is exact;
+	// float sums would make "vote_tie" depend on rounding and vote order.
+	acceptWeight, rejectWeight := 0, 0
 	for _, vote := range votes {
 		switch vote.Choice {
 		case VoteAccept, VoteModify:
@@ -142,18 +164,22 @@ func ResolveVotes(f Finding, votes []Vote, opts ConsensusOptions) Decision {
 	return decision
 }
 
-func voteWeight(reviewer string, opts ConsensusOptions) float64 {
+// voteWeight returns the reviewer's clamped weight in integer hundredths
+// (quantized to 0.01) so consensus arithmetic stays exact.
+func voteWeight(reviewer string, opts ConsensusOptions) int {
 	if !opts.Weighted {
-		return 1
+		return 100
 	}
 	weight := opts.Weights[reviewer]
-	if weight < 0.5 {
-		return 0.5
+	// The inverted comparison also catches NaN, which would otherwise pass
+	// both clamps and produce an implementation-defined int conversion.
+	if !(weight >= 0.5) {
+		weight = 0.5
 	}
 	if weight > 2 {
-		return 2
+		weight = 2
 	}
-	return weight
+	return int(math.Round(weight * 100))
 }
 
 func RankArbitration(clusters []Cluster, max int) ([]ArbitrationDispute, []string) {
@@ -171,7 +197,7 @@ func RankArbitration(clusters []Cluster, max int) ([]ArbitrationDispute, []strin
 				against = vote.Reason
 			}
 		}
-		disputes = append(disputes, ArbitrationDispute{SchemaVersion: SchemaVersion, ID: "A-" + cluster.ID[2:], Finding: cluster.Finding, Decision: *cluster.Decision, ForArgument: forArg, Against: against, Default: defaultRecommendation(*cluster.Decision)})
+		disputes = append(disputes, ArbitrationDispute{SchemaVersion: SchemaVersion, ID: "A-" + strings.TrimPrefix(cluster.ID, "C-"), Finding: cluster.Finding, Decision: *cluster.Decision, ForArgument: forArg, Against: against, Default: defaultRecommendation(*cluster.Decision)})
 	}
 	sort.SliceStable(disputes, func(i, j int) bool {
 		if disputes[i].Decision.Severity.Rank() != disputes[j].Decision.Severity.Rank() {

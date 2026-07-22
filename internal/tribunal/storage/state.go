@@ -125,8 +125,13 @@ func LoadLedger(workspace Workspace) (FindingsLedger, error) {
 		return FindingsLedger{}, fmt.Errorf("unsupported findings ledger schema_version %d", ledger.SchemaVersion)
 	}
 	for _, record := range ledger.Findings {
-		if record.SchemaVersion != domain.SchemaVersion || record.ID == "" || record.Fingerprint == "" || record.FirstRunID == "" || record.LastRunID == "" {
+		if record.SchemaVersion != domain.SchemaVersion || record.ID == "" || record.FirstRunID == "" || record.LastRunID == "" {
 			return FindingsLedger{}, fmt.Errorf("invalid finding ledger record")
+		}
+		// A legacy (pre-v0.1.0 8-hex) fingerprint would silently never match
+		// recomputed identities, duplicating records; fail closed instead.
+		if !domain.ValidFingerprint(record.Fingerprint) {
+			return FindingsLedger{}, fmt.Errorf("incompatible finding fingerprint %q; ledger predates the 16-hex identity format", record.Fingerprint)
 		}
 		if err := domain.ValidateFinding(record.Finding); err != nil {
 			return FindingsLedger{}, err
@@ -274,8 +279,11 @@ func ReadDecisions(workspace Workspace) ([]DecisionRecord, error) {
 		if err := decoder.Decode(&record); err != nil {
 			return nil, fmt.Errorf("decode decision record: %w", err)
 		}
-		if record.SchemaVersion != domain.SchemaVersion || record.Fingerprint == "" || record.Ruling == "" || record.Operator == "" || record.Date.IsZero() {
+		if record.SchemaVersion != domain.SchemaVersion || record.Ruling == "" || record.Operator == "" || record.Date.IsZero() {
 			return nil, fmt.Errorf("unsupported decision schema_version %d", record.SchemaVersion)
+		}
+		if !domain.ValidFingerprint(record.Fingerprint) {
+			return nil, fmt.Errorf("incompatible decision fingerprint %q; memory predates the 16-hex identity format", record.Fingerprint)
 		}
 		records = append(records, record)
 	}

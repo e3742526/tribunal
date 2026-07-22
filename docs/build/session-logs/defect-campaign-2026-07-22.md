@@ -105,7 +105,7 @@ early errors bypassed the envelope (central decorator added). Regression tests:
 codes, rubric/kind exclusivity, decorator path). `scripts/check.sh` green.
 Interactive-only arbitrate nil-final guard is reasoned, not TTY-tested.
 
-### Stage 2 — arbitration-resume-core (commit 81d33e4)
+### Stage 2 — arbitration-resume-core (commit 0673151)
 
 D-030/031/034/035/067 fixed. Resume now takes `run.lock` (bounded by the run
 timeout) + ValidateRunDir before its mutating branches; the inner
@@ -121,3 +121,17 @@ found four residuals (unbounded lock wait, edit-rereview split gap, hint
 missing from report.md, legacy-final inversion) — all fixed pre-commit.
 Tests: `arbitration_resume_test.go` (5 tests incl. real flock contention and
 split replay). check.sh + `go test -race ./internal/tribunal/app` green.
+
+### Stage 3 — domain-identity
+
+D-045/046/047 fixed. Vote weights accumulate as integer hundredths (NaN-proof
+clamp), making vote_tie exact; FindingFingerprint widened to 16 hex; cluster
+IDs shape-validated (`C-` + 16 lowercase hex) and the `[2:]` slice replaced
+with TrimPrefix. Adversarial review flagged that the workspace ledger and
+decision memory would accept legacy 8-hex fingerprints and silently duplicate
+records — both stores now fail closed with an explicit incompatibility error
+(deliberate pre-release state break, no migration). Residuals routed to later
+stages/backlog: quantization wording lands with the D-044 doc pass;
+defaultRecommendation/gap-sort use unweighted counts while ties are weighted
+(pre-existing; backlog). Tests: identity_test.go (exact weighted tie,
+16-hex length, malformed cluster IDs). Full suite + check.sh green.

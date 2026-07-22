@@ -6,6 +6,18 @@ import (
 
 func validSeverity(value Severity) bool { return value.Rank() != 0 }
 
+func validClusterID(id string) bool {
+	if len(id) != 2+16 || id[:2] != "C-" {
+		return false
+	}
+	for _, r := range id[2:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func validCategory(value Category) bool {
 	switch value {
 	case CategoryCorrectness, CategoryEvidence, CategoryCitationIntegrity,
@@ -64,8 +76,14 @@ func ValidateDecision(decision Decision) error {
 }
 
 func ValidateCluster(cluster Cluster) error {
-	if cluster.SchemaVersion != SchemaVersion || cluster.ID == "" || !validCategory(cluster.Category) || len(cluster.MemberIDs) == 0 {
+	if cluster.SchemaVersion != SchemaVersion || !validCategory(cluster.Category) || len(cluster.MemberIDs) == 0 {
 		return fmt.Errorf("invalid cluster schema or identity")
+	}
+	// Cluster IDs are derived ("C-" + finding fingerprint) and downstream
+	// consumers slice the prefix off, so the shape is validated here instead
+	// of trusting persisted state.
+	if !validClusterID(cluster.ID) {
+		return fmt.Errorf("invalid cluster id %q", cluster.ID)
 	}
 	if err := ValidateFinding(cluster.Finding); err != nil {
 		return err
