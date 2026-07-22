@@ -125,6 +125,26 @@ adversarial review, and full stage-diff review. No remote synchronization or pus
   corrupt backups, and state rollback. No residual in-scope defect found.
 - Record closure: FSR-TRIBUNAL-002 changed open → resolved and ledger D-027 records
   the regression evidence.
+- Commit: `c9a7d7d` (`repair: make edit and revert crash recoverable`).
+
+### Group 4 — release acceptance ordering
+
+- Fixed SEC-TRIBUNAL-002 by separating GoReleaser candidate construction from
+  GitHub Release creation. GoReleaser now runs with `--skip=publish`, uploads the
+  exact signed candidates, and the macOS/Linux matrix smoke-tests those workflow
+  artifacts before the publish job becomes eligible.
+- The publish job downloads the same candidates, creates provenance attestations,
+  and only then runs `gh release create`. A failed build, upload, platform smoke,
+  or attestation therefore leaves no published GitHub Release.
+- Added a checked-in workflow ordering regression and pinned official artifact
+  transfer actions by immutable commit. Ruby YAML parsing, the focused regression,
+  and `scripts/check.sh` passed; `actionlint` and `govulncheck` were unavailable and
+  explicitly skipped.
+- Adversarial review covered job dependencies, exact artifact handoff, missing-file
+  failure, tag verification, no-checkout repository resolution, and publish-command
+  placement. The workflow was not executed because no tag/release was authorized.
+- Record closure: SEC-TRIBUNAL-002 changed open → resolved and ledger D-028 records
+  the evidence.
 - Commit: pending local group checkpoint.
 
 ## Record closure

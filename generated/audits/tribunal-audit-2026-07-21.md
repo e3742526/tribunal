@@ -39,7 +39,7 @@ No target program, provider, test suite, network request, fault injection, or ho
 | 7 | ARC-TRIBUNAL-003 | Medium | Confirmed | resolved 2026-07-21 — campaign group 1 | AID-009 | Unevidenced major/blocker findings are capped only for one category |
 | 8 | ARC-TRIBUNAL-004 | Medium | Confirmed | resolved 2026-07-21 — campaign group 2 | AID-009, AID-011 | Persisted readers validate outer versions but accept unknown nested versions |
 | 9 | FSR-TRIBUNAL-003 | Medium | Confirmed | resolved 2026-07-21 — campaign group 2 | FSR-009, FSR-012, SC-INT | Workspace ledger is updated before terminal publication succeeds |
-| 10 | SEC-TRIBUNAL-002 | Medium | Confirmed | open | SEC-009 | Release archive smoke occurs after the release is published |
+| 10 | SEC-TRIBUNAL-002 | Medium | Confirmed | resolved 2026-07-21 — campaign group 4 | SEC-009 | Release archive smoke occurs after the release is published |
 | 11 | ARC-TRIBUNAL-001 | Medium | Likely | open | AID-012, AID-014 | No machine-evaluable intent, invariant, exception, or baseline registry |
 
 ## Detailed findings
