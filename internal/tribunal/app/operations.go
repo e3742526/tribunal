@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -86,24 +85,20 @@ func (s *Service) Transcript(ref RunRef) (Transcript, error) {
 		return Transcript{}, exitError(ExitPreflight, "%v", err)
 	}
 	result := Transcript{SchemaVersion: 1, RunID: runID}
-	file, err := os.Open(filepath.Join(runDir, "events.jsonl"))
+	// ReadCompleteJSONLines skips a torn trailing fragment (crash mid-append)
+	// so one interrupted write cannot permanently brick the transcript.
+	lines, err := storage.ReadCompleteJSONLines(filepath.Join(runDir, "events.jsonl"))
 	if err != nil {
 		return Transcript{}, exitError(ExitPreflight, "open transcript: %v", err)
 	}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
+	for _, line := range lines {
 		var event storage.StateEvent
-		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		decoder := json.NewDecoder(bytes.NewReader(line))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&event); err != nil || event.SchemaVersion != 1 || event.RunID != runID || event.To == "" || event.Status == "" || event.At.IsZero() {
-			file.Close()
 			return Transcript{}, exitError(ExitPreflight, "invalid transcript event")
 		}
 		result.Events = append(result.Events, event)
-	}
-	closeErr := file.Close()
-	if err := firstError(scanner.Err(), closeErr); err != nil {
-		return Transcript{}, exitError(ExitPreflight, "read transcript: %v", err)
 	}
 	deliveryPaths, _ := filepath.Glob(filepath.Join(runDir, "calls", "*", "*", "delivery.json"))
 	sort.Strings(deliveryPaths)

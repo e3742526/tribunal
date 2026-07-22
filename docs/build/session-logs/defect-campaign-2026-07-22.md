@@ -175,3 +175,22 @@ platform cap + corrected message), the ErrWaitDelay failure conversion,
 detect's missing WaitDelay, and the output-file TOCTOU — all fixed
 pre-commit. Tests: hardening_test.go, limits_test.go. check.sh + adapters
 race suite green.
+
+### Stage 6 — storage-durability
+
+D-040/042/060/061/062 fixed. Torn JSONL tails are quarantined to a .corrupt
+sidecar and truncated on the next append (all appends verified to run under
+exclusive flocks); readers (decisions, transcript) skip an unterminated
+trailing fragment via shared ReadCompleteJSONLines (also fixes the latent
+64KB bufio.Scanner line limit). Transition validates the next state before
+persisting. Journal opens and LockStatus use O_NOFOLLOW. The state/document
+containment guard case-folds on darwin (residuals documented: Unicode
+normalization variants; false positives on case-sensitive APFS volumes —
+fail closed). UpdateLedger implements the stale-record disposition the old
+no-op loop only promised: unseen records go stale ONLY when this run's
+packet actually re-examined their item (adversarial review caught that the
+first version staled records outside subset-run scope — fixed with a
+reviewedItems scope from packet.json; "disputed" added to sticky statuses).
+Tests: durability_test.go (torn tail quarantine/recovery, transition
+validation, in-scope/out-of-scope staleness, darwin case-variant
+containment). check.sh + race suites green.

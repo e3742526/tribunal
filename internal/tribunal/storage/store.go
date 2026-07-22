@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,7 @@ func (s *Store) Workspace(id, documentRoot string) (Workspace, error) {
 	if err != nil {
 		return Workspace{}, fmt.Errorf("canonicalize document root: %w", err)
 	}
-	if containsPath(docRoot, stateRoot) || containsPath(stateRoot, docRoot) {
+	if pathsOverlap(docRoot, stateRoot) {
 		return Workspace{}, fmt.Errorf("state root must be outside the document root")
 	}
 	root := filepath.Join(s.Root, id)
@@ -211,6 +212,11 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return directory.Sync()
 }
 
+// appendJSONLine appends one complete JSON line. A crash mid-append leaves a
+// torn, unterminated tail; left in place it would permanently brick every
+// subsequent read and append of the file, so the tail is quarantined to a
+// .corrupt sidecar and the file truncated back to its last complete line
+// before the new record lands.
 func appendJSONLine(path string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -226,15 +232,73 @@ func appendJSONLine(path string, value any) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openNoFollowReadWrite(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	existing, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		cut := bytes.LastIndexByte(existing, '\n') + 1
+		if err := quarantineTornTail(path, existing[cut:]); err != nil {
+			return err
+		}
+		if err := file.Truncate(int64(cut)); err != nil {
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			return err
+		}
+		if _, err := file.Seek(int64(cut), io.SeekStart); err != nil {
+			return err
+		}
+	}
 	if _, err := file.Write(append(data, '\n')); err != nil {
 		return err
 	}
 	return file.Sync()
+}
+
+// quarantineTornTail preserves a torn trailing fragment in a sidecar before
+// the journal is truncated, so crash artifacts are never silently destroyed.
+func quarantineTornTail(path string, fragment []byte) error {
+	sidecar, err := openNoFollowReadWrite(path + ".corrupt")
+	if err != nil {
+		return err
+	}
+	defer sidecar.Close()
+	if _, err := sidecar.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+	if _, err := sidecar.Write(append(append([]byte(nil), fragment...), '\n')); err != nil {
+		return err
+	}
+	return sidecar.Sync()
+}
+
+// ReadCompleteJSONLines returns the newline-terminated lines of a JSONL file,
+// skipping blanks. An unterminated trailing fragment — the signature of a
+// crash mid-append — is ignored; the next append quarantines it. Complete
+// lines that fail to decode remain the caller's fatal error.
+func ReadCompleteJSONLines(path string) ([][]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	end := bytes.LastIndexByte(data, '\n')
+	if end < 0 {
+		return nil, nil
+	}
+	var lines [][]byte
+	for _, line := range bytes.Split(data[:end], []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
 }
 
 func canonicalParent(path string) (string, error) {
@@ -266,6 +330,18 @@ func revalidateBelow(root, path string) error {
 func containsPath(root, candidate string) bool {
 	rel, err := filepath.Rel(root, candidate)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// pathsOverlap reports whether either path contains the other. On darwin the
+// default filesystem is case-insensitive, so byte-exact comparison would let
+// a case-variant spelling place state inside the reviewed documents; both
+// sides are case-folded there. Unicode-normalization variants (NFC vs NFD
+// spellings) remain a documented residual.
+func pathsOverlap(a, b string) bool {
+	if runtime.GOOS == "darwin" {
+		a, b = strings.ToLower(a), strings.ToLower(b)
+	}
+	return containsPath(a, b) || containsPath(b, a)
 }
 
 func StateForFinal(final domain.Final) domain.RunState {

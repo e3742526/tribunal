@@ -661,7 +661,15 @@ func (s *Service) publish(runDir string, workspace storage.Workspace, final doma
 	}
 	// Workspace ledgers and pointers are projections. They are updated only
 	// after the run's report, state, and final artifact have committed.
-	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions); err != nil {
+	// Ledger staleness is scoped to the packet items this run examined; if
+	// the packet cannot be read, no scope means no staleness (conservative).
+	var reviewedItems []string
+	if packet, packetErr := readPacket(filepath.Join(runDir, "packet.json")); packetErr == nil && packet.PacketHash == final.PacketHash {
+		for _, item := range packet.Items {
+			reviewedItems = append(reviewedItems, item.ID)
+		}
+	}
+	if err := storage.UpdateLedger(workspace, final.RunID, final.Findings, final.Decisions, reviewedItems); err != nil {
 		return fmt.Errorf("persist findings ledger: %w", err)
 	}
 	latest := map[string]any{"schema_version": 1, "run_id": final.RunID, "status": final.Status, "updated_at": final.FinishedAt}

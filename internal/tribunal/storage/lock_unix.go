@@ -78,12 +78,17 @@ func firstError(a, b error) error {
 }
 
 func LockStatus(path string) (bool, int, error) {
-	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
-	if os.IsNotExist(err) {
-		return false, 0, nil
-	}
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return false, 0, err
+		if os.IsNotExist(err) {
+			return false, 0, nil
+		}
+		return false, 0, fmt.Errorf("open lock %s: %w", path, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return false, 0, fmt.Errorf("open lock file")
 	}
 	defer file.Close()
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {

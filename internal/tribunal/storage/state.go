@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -24,8 +23,11 @@ type StateEvent struct {
 }
 
 func Transition(runDir string, next domain.RunState) error {
-	if next.SchemaVersion != domain.SchemaVersion {
-		return fmt.Errorf("run state schema_version must be %d", domain.SchemaVersion)
+	// Validating next before persisting keeps one buggy caller from writing
+	// a snapshot every later Transition and BuildSnapshot would refuse to
+	// read — an otherwise unrecoverable run directory.
+	if err := domain.ValidateRunState(next); err != nil {
+		return err
 	}
 	var previous domain.RunState
 	err := ReadJSONStrict(filepath.Join(runDir, "state.json"), &previous)
@@ -140,7 +142,11 @@ func LoadLedger(workspace Workspace) (FindingsLedger, error) {
 	return ledger, nil
 }
 
-func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding, decisions []domain.Decision) error {
+// UpdateLedger merges a run's findings into the workspace ledger.
+// reviewedItems lists the packet item IDs this run actually examined:
+// staleness only applies within that scope, because a subset run (one file of
+// a folder workspace) or a replay must not disturb records it never looked at.
+func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding, decisions []domain.Decision, reviewedItems []string) error {
 	lock, err := AcquireLock(context.Background(), filepath.Join(workspace.Root, "ledger.lock"), nil)
 	if err != nil {
 		return err
@@ -175,11 +181,28 @@ func UpdateLedger(workspace Workspace, runID string, findings []domain.Finding, 
 			ledger.Findings = append(ledger.Findings, FindingRecord{SchemaVersion: domain.SchemaVersion, ID: fingerprint, Fingerprint: fingerprint, Finding: finding, Status: statusForFinding(finding, outcome), FirstRunID: runID, LastRunID: runID})
 		}
 	}
+	reviewed := map[string]bool{}
+	for _, item := range reviewedItems {
+		reviewed[item] = true
+	}
 	for i := range ledger.Findings {
-		if !seen[ledger.Findings[i].Fingerprint] && (ledger.Findings[i].Finding.Severity == domain.SeverityBlocker || ledger.Findings[i].Finding.Severity == domain.SeverityMajor) && ledger.Findings[i].Status == "open" {
-			// Major findings remain open until explicitly disposed.
+		record := &ledger.Findings[i]
+		if seen[record.Fingerprint] || !reviewed[record.Finding.Anchor.PacketItem] {
 			continue
 		}
+		// Explicit dispositions and pending disputes survive absence from a
+		// later run, and open blocker/major findings stay open until
+		// explicitly disposed; every other record that this run re-examined
+		// and no longer observed is marked stale so the ledger cannot report
+		// fixed findings as live forever.
+		switch record.Status {
+		case "deferred", "rejected", "quarantined", "stale", "disputed":
+			continue
+		}
+		if record.Status == "open" && (record.Finding.Severity == domain.SeverityBlocker || record.Finding.Severity == domain.SeverityMajor) {
+			continue
+		}
+		record.Status = "stale"
 	}
 	return WriteJSON(filepath.Join(workspace.Root, "findings.json"), ledger)
 }
@@ -262,19 +285,17 @@ func AppendDecision(workspace Workspace, decision DecisionRecord) error {
 
 func ReadDecisions(workspace Workspace) ([]DecisionRecord, error) {
 	path := filepath.Join(workspace.Root, "decisions.jsonl")
-	file, err := os.Open(path)
+	lines, err := ReadCompleteJSONLines(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer file.Close()
 	var records []DecisionRecord
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
+	for _, line := range lines {
 		var record DecisionRecord
-		decoder := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		decoder := json.NewDecoder(bytes.NewReader(line))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&record); err != nil {
 			return nil, fmt.Errorf("decode decision record: %w", err)
@@ -287,7 +308,7 @@ func ReadDecisions(workspace Workspace) ([]DecisionRecord, error) {
 		}
 		records = append(records, record)
 	}
-	return records, scanner.Err()
+	return records, nil
 }
 
 type Snapshot struct {
