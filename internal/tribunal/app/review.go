@@ -483,6 +483,10 @@ func validatePass(packet documents.Packet, results []panelResult) ([]domain.Pane
 				finding.Quarantined = true
 				finding.QuarantineWhy = err.Error()
 				finding.EvidenceStatus = domain.EvidenceUnevidenced
+				// Quarantine silently removes a finding from voting; a run
+				// where that happened must say so in its reason codes
+				// instead of presenting an unqualified clean outcome.
+				reasons = append(reasons, "findings_quarantined")
 			} else {
 				documents.MarkRedactedOverlap(packet, &finding)
 			}
@@ -699,14 +703,27 @@ func writeActive(workspace storage.Workspace, runID string, packet documents.Pac
 	return storage.WriteJSON(filepath.Join(workspace.Root, "active.json"), map[string]any{"schema_version": 1, "run_id": runID, "workspace_id": packet.WorkspaceID, "packet_hash": packet.PacketHash, "status": status, "updated_at": at})
 }
 
-func summaryFor(decisions []domain.Decision, disputes []domain.ArbitrationDispute) string {
+func summaryFor(decisions []domain.Decision, disputes []domain.ArbitrationDispute, findings []domain.Finding) string {
 	accepted := 0
 	for _, decision := range decisions {
 		if decision.Outcome == "accepted" {
 			accepted++
 		}
 	}
-	return fmt.Sprintf("%d accepted recommendations; %d disputes require arbitration.", accepted, len(disputes))
+	summary := fmt.Sprintf("%d accepted recommendations; %d disputes require arbitration.", accepted, len(disputes))
+	// A run whose findings were quarantined before voting must not read as
+	// an unqualified clean result (live playtest L-02: a science run lost
+	// every finding to quarantine and still summarized as clean).
+	quarantined := 0
+	for _, finding := range findings {
+		if finding.Quarantined {
+			quarantined++
+		}
+	}
+	if quarantined > 0 {
+		summary += fmt.Sprintf(" %d finding(s) were quarantined before voting; inspect quarantine_reason per finding.", quarantined)
+	}
+	return summary
 }
 
 func panelIncomplete(statuses []domain.PanelStatus) bool {

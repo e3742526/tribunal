@@ -27,7 +27,7 @@ func buildFinal(runID string, packet documents.Packet, started, finished time.Ti
 			}
 		}
 	}
-	return domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: status, ExitCode: exit, Summary: summaryFor(decisions, disputes), PanelIncomplete: panelIncomplete(statuses), ReasonCodes: unique(reasons), PanelStatus: statuses, Findings: findings, Evidence: evidence, Decisions: decisions, Arbitration: disputes, StartedAt: started, FinishedAt: finished}
+	return domain.Final{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, PacketHash: packet.PacketHash, Status: status, ExitCode: exit, Summary: summaryFor(decisions, disputes, findings), PanelIncomplete: panelIncomplete(statuses), ReasonCodes: unique(reasons), PanelStatus: statuses, Findings: findings, Evidence: evidence, Decisions: decisions, Arbitration: disputes, StartedAt: started, FinishedAt: finished}
 }
 
 func (s *Service) finalizeDegraded(runDir string, workspace storage.Workspace, runID string, packet documents.Packet, panel domain.Panel, started time.Time, statuses []domain.PanelStatus, findings []domain.Finding, reasons []string) (domain.Final, error) {

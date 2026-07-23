@@ -13,6 +13,9 @@ func ResolveAnchor(packet Packet, anchor *domain.Anchor) error {
 	if !ok {
 		return fmt.Errorf("packet item %q not found", anchor.PacketItem)
 	}
+	// Canonicalize alias spellings to the item's real ID so clustering,
+	// ledger scoping, and edit windows all key on one identity.
+	anchor.PacketItem = item.ID
 	if anchor.ItemSHA256 != item.PacketSHA256 {
 		return fmt.Errorf("anchor item hash does not match packet")
 	}
@@ -107,9 +110,26 @@ func Split(packet *Packet, maxBytes int) error {
 	return nil
 }
 
+// findItem resolves a packet item by its canonical ID, then by the two
+// unambiguous alias spellings models emit in practice (live playtest L-02:
+// "C08.md" for "artifact:C08.md" quarantined otherwise-valid findings and
+// silently erased multi-model agreement). Aliases never weaken integrity:
+// the caller still verifies the anchor's item_sha256 against the resolved
+// item, and each alias form maps to at most one item because logical paths
+// are unique within a packet.
 func findItem(packet Packet, id string) (Item, bool) {
 	for _, item := range packet.Items {
 		if item.ID == id {
+			return item, true
+		}
+	}
+	for _, item := range packet.Items {
+		if item.ID == "artifact:"+id {
+			return item, true
+		}
+	}
+	for _, item := range packet.Items {
+		if item.LogicalPath != "" && item.LogicalPath == id {
 			return item, true
 		}
 	}
