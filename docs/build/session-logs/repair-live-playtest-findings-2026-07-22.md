@@ -123,7 +123,7 @@ Adversarial re-audit of the combined diff (fresh agent, probe suites run
 via build overlay against the real packages): patch set survives; "nothing
 here permits a finding to be accepted against, or displayed as validated
 against, an item other than the one whose content hash it carries."
-Two in-scope refinements applied at 8e4ec3d (canonicalize-after-hash-check
+Two in-scope refinements applied at eabc05c (canonicalize-after-hash-check
 so quarantined findings keep the emitted spelling; coercion comment states
 the full ParseFloat surface). Recorded follow-ups, not absorbed: (1)
 candidate-cap starvation can attribute a contract error to a decoy object
