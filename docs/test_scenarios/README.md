@@ -49,6 +49,7 @@ consensus outcome, and observations to capture.
 |---|---|---|---|
 | 1 | `01-review-workflow.md` | CLI-level review lifecycle (launch, save/persist, relaunch/resume, settings, navigation, errors) | none |
 | 2 | `02-consensus-scenarios.md` | Panel voting and consensus resolution (happy path, ties, splits, strict-category unanimity, quorum, weighted votes, arbitration, decision memory) | none |
+| 3 | `03-domain-deliberation.md` | Domain-themed deliberation (philosophy, ethics, science, coding): agreement, dissent, clustering, disagree→consensus | none |
 
 ## Pass shapes
 
@@ -56,6 +57,7 @@ consensus outcome, and observations to capture.
 |---|---|---|
 | Smoke | 01-C1, 02-S01..S05 | Confirm review lifecycle and core consensus math work |
 | Full | all files, all cards (50+ consensus scenarios) | Complete exploratory pass across the consensus decision space, including 5+ disagree-then-consensus (arbitration) cases |
+| Domain | 03 (100 domain cards + clustering + 5 arb) | Substantive issue documents across philosophy/ethics/science/coding; how panels agree, dissent, and arbitrate |
 
 ## Required coverage
 
