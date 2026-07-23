@@ -208,7 +208,7 @@ func RankArbitration(clusters []Cluster, max int) ([]ArbitrationDispute, []strin
 				against = vote.Reason
 			}
 		}
-		disputes = append(disputes, ArbitrationDispute{SchemaVersion: SchemaVersion, ID: "A-" + strings.TrimPrefix(cluster.ID, "C-"), Finding: cluster.Finding, Decision: *cluster.Decision, ForArgument: forArg, Against: against, Default: defaultRecommendation(*cluster.Decision)})
+		disputes = append(disputes, ArbitrationDispute{SchemaVersion: SchemaVersion, ID: "A-" + strings.TrimPrefix(cluster.ID, "C-"), Finding: cluster.Finding, Decision: *cluster.Decision, ForArgument: forArg, Against: against, Default: defaultRecommendation(*cluster.Decision), Context: disputeContext(cluster.Finding.Category, *cluster.Decision)})
 	}
 	sort.SliceStable(disputes, func(i, j int) bool {
 		if disputes[i].Decision.Severity.Rank() != disputes[j].Decision.Severity.Rank() {
@@ -252,6 +252,25 @@ func defaultRecommendation(decision Decision) string {
 		return "reject majority"
 	default:
 		return "review both arguments"
+	}
+}
+
+// disputeContext explains panel-geometry arbitration reasons that are easy
+// to misread as substantive splits (live playtest L-03: a security dispute
+// with every valid reviewer accepting still arbitrates when the configured
+// panel is incomplete, and the bare reason code looked like panel
+// conflict). Reasons that already read as what they are return no gloss.
+func disputeContext(category Category, decision Decision) string {
+	votes := fmt.Sprintf("%d accepted, %d rejected, %d abstained", decision.Accepts, decision.Rejects, decision.Abstains)
+	switch decision.Reason {
+	case "category_requires_full_panel_unanimity":
+		return fmt.Sprintf("strict category %q requires unanimous acceptance from the full configured panel; %d of %d configured reviewers were valid (%s) — this can reflect an incomplete panel rather than a substantive split", category, decision.Valid, decision.Configured, votes)
+	case "insufficient_non_abstain_votes":
+		return fmt.Sprintf("fewer than two non-abstain ballots reached this finding (%s); the panel did not decline it — it was not decidable", votes)
+	case "unanimity_not_reached":
+		return fmt.Sprintf("configured unanimity was not reached (%s)", votes)
+	default:
+		return ""
 	}
 }
 

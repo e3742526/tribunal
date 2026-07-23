@@ -53,6 +53,9 @@ func writeReports(runDir string, final domain.Final, panel domain.Panel) error {
 			if dispute.MemoryHint != "" {
 				fmt.Fprintf(&markdown, "  - decision memory: %s\n", dispute.MemoryHint)
 			}
+			if dispute.Context != "" {
+				fmt.Fprintf(&markdown, "  - context: %s\n", dispute.Context)
+			}
 		}
 	}
 	if err := storage.WriteFile(filepath.Join(runDir, "report.md"), []byte(markdown.String())); err != nil {

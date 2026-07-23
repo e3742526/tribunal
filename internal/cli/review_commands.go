@@ -106,6 +106,9 @@ func promptRulings(cmd *cobra.Command, disputes []domain.ArbitrationDispute, ope
 		if dispute.MemoryHint != "" {
 			hint = "\nMemory: " + dispute.MemoryHint
 		}
+		if dispute.Context != "" {
+			hint += "\nContext: " + dispute.Context
+		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nDefault: %s%s\nChoose accept/reject/defer/skip: ", dispute.ID, dispute.Finding.Issue, dispute.Default, hint)
 		choice, err := reader.ReadString('\n')
 		if err != nil {

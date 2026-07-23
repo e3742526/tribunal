@@ -215,6 +215,12 @@ type ArbitrationDispute struct {
 	// --accept-majority parses Default's "accept …"/"reject …" prefix, so
 	// overwriting it with "previous ruling: accepted" would invert outcomes.
 	MemoryHint string `json:"memory_hint,omitempty"`
+	// Context explains WHY the decision routed to arbitration when the bare
+	// reason code is easy to misread — e.g. a strict-category dispute where
+	// every valid reviewer accepted but the configured panel was incomplete
+	// looks like a substantive split without this gloss. Advisory display
+	// text only; never parsed.
+	Context string `json:"context,omitempty"`
 }
 
 type PanelStatus struct {
