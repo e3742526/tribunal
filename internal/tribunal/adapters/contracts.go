@@ -220,10 +220,12 @@ func jsonCandidates(raw []byte) [][]byte {
 	return candidates
 }
 
-// coerceSchemaVersionStrings rewrites every "schema_version" whose value is a
-// numeric string with an integral value into a JSON integer. Nothing else is
-// touched; a non-integral or non-numeric value is left for validation to
-// reject.
+// coerceSchemaVersionStrings rewrites every "schema_version" whose value is
+// a numeric string with an integral value (any spelling strconv.ParseFloat
+// accepts whole: "1", "1.0", "1e0", "+1", ...) into a JSON integer. Nothing
+// else is touched; non-integral or non-numeric values are left for
+// validation to reject, and the schema's const pins which integers are
+// acceptable.
 func coerceSchemaVersionStrings(candidate []byte) ([]byte, bool) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(candidate))

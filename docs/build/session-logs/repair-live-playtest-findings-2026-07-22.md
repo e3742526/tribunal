@@ -116,3 +116,27 @@ see closeout note appended below.
 - Deeper Claude-shape normalization (flat finding objects → contract
   shape) was deliberately NOT implemented: field-name remapping is
   semantic guesswork, and the prompt-side fix addresses the cause.
+
+## Gate 8/9 closeout (appended)
+
+Adversarial re-audit of the combined diff (fresh agent, probe suites run
+via build overlay against the real packages): patch set survives; "nothing
+here permits a finding to be accepted against, or displayed as validated
+against, an item other than the one whose content hash it carries."
+Two in-scope refinements applied at 8e4ec3d (canonicalize-after-hash-check
+so quarantined findings keep the emitted spelling; coercion comment states
+the full ParseFloat surface). Recorded follow-ups, not absorbed: (1)
+candidate-cap starvation can attribute a contract error to a decoy object
+when output contains 8+ JSON-shaped decoys (fail-closed; wrong error text
+only); (2) pre-existing confusable-ID hazard for files literally named
+"artifact:*" — a Build guard rejecting such logical paths is the cheap
+invariant; (3) pre-fix alias-spelled quarantined ledger records linger
+beside canonical successors (duplicate bookkeeping only). Final
+verification: scripts/check.sh green, `go test -race -count=1 ./...`
+green across all packages.
+
+Final status: completed_with_partial_verification — L-02/L-03/L-05 fully
+verified (including replay of the real quarantined live findings, 10/10
+recovered); L-01/L-04 verified to the limit of recorded logs, with the
+primary prompt-side repair awaiting a live provider re-run of the 8-doc
+stratified sample as its acceptance test.

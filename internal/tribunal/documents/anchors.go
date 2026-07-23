@@ -13,12 +13,14 @@ func ResolveAnchor(packet Packet, anchor *domain.Anchor) error {
 	if !ok {
 		return fmt.Errorf("packet item %q not found", anchor.PacketItem)
 	}
-	// Canonicalize alias spellings to the item's real ID so clustering,
-	// ledger scoping, and edit windows all key on one identity.
-	anchor.PacketItem = item.ID
 	if anchor.ItemSHA256 != item.PacketSHA256 {
-		return fmt.Errorf("anchor item hash does not match packet")
+		return fmt.Errorf("anchor item hash for %q does not match packet item %q", anchor.PacketItem, item.ID)
 	}
+	// Canonicalize alias spellings to the item's real ID so clustering,
+	// ledger scoping, and edit windows all key on one identity. This runs
+	// only after the hash binding passes: a quarantined finding keeps the
+	// spelling the model actually emitted, preserving forensics.
+	anchor.PacketItem = item.ID
 	if anchor.Quote == "" {
 		return fmt.Errorf("anchor quote is empty")
 	}

@@ -34,6 +34,11 @@ func TestResolveAnchorAliasStillEnforcesItemHash(t *testing.T) {
 	if err := ResolveAnchor(packet, &anchor); err == nil || !strings.Contains(err.Error(), "hash") {
 		t.Fatalf("alias resolution bypassed the item hash binding: %v", err)
 	}
+	// A hash-mismatch failure must preserve the spelling the model emitted
+	// (forensics); canonicalization happens only after the binding passes.
+	if anchor.PacketItem != "C08.md" {
+		t.Fatalf("failed resolution mutated the anchor spelling to %q", anchor.PacketItem)
+	}
 }
 
 func TestResolveAnchorUnknownItemStillFails(t *testing.T) {
