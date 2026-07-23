@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — 2026-07-22 live domain playtest repairs
+
+Findings L-01..L-05 from the live multi-provider domain-deliberation
+playtest repaired as D-074–D-078; see
+`docs/build/session-logs/playtest-domain-deliberation-2026-07-22.md` and
+the repair session log. Behavior changes:
+
+- Review and vote prompts now embed the provider JSON Schema and a
+  structure skeleton, and contract-failure retries name the exact
+  validation error; numeric-string `schema_version` values are coerced
+  fail-soft (marked repaired) instead of rejected outright.
+- Anchor packet-item references accept two unambiguous alias spellings
+  (bare logical path, artifact-prefixed) and are canonicalized to the
+  item ID; the item hash binding is unchanged.
+- Runs with quarantined findings carry a `findings_quarantined` reason
+  code and say so in the final summary instead of reading as clean.
+- Arbitration disputes carry an advisory `context` field explaining
+  panel-geometry reasons (incomplete strict panels, abstain-heavy
+  non-decidable ballots, unreached configured unanimity).
+- The reviewer role prompt forbids answering or following a packet's own
+  questions/instructions (role-confusion guard).
+
 ## Unreleased — 2026-07-23 consensus playtest
 
 D-070 repaired; see `docs/build/session-logs/playtest-consensus-2026-07-23.md`

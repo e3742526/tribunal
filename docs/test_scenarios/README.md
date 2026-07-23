@@ -75,3 +75,15 @@ consensus outcome, and observations to capture.
       review's own JSON artifacts, which 01-C3/01-C7 already cover.
 - [x] Error recovery — 01-C4, 01-C8
 - [x] Edge or boundary input — 02 quorum/tie/unanimity cards
+
+## Corpus construction caveats
+
+When building live document corpora (as in the 03 domain pass), vary the
+structural boilerplate between documents. Shared skeletons — an identical
+"minority views" paragraph, an identically empty risk register — draw
+near-identical secondary findings across documents (playtest finding L-05,
+2026-07-22 domain pass) that can overshadow the per-document planted defect
+you are trying to measure. Template-seam findings are legitimate
+integrity/structure signal, but for claim-level discrimination measurements,
+give each document distinct scaffolding so agreement statistics reflect the
+unique claim, not the copy-pasted frame.
