@@ -431,7 +431,7 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 	review, repaired, decodeErr := adapters.DecodeReview(response.Raw, panelist.ID)
 	if decodeErr != nil {
 		retryReq := req
-		retryReq.Prompt += "\n\nYour prior output failed validation: " + decodeErr.Error() + ". Return one valid JSON object only."
+		retryReq.Prompt += contractRetryNotice("review", decodeErr)
 		_ = storage.WriteFile(filepath.Join(invocationDir, "retry-prompt.txt"), []byte(retryReq.Prompt))
 		response, err = s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleReviewer, panelist, retryReq)
 		if err == nil {
@@ -596,7 +596,7 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 	}
 	votes, repaired, err := adapters.DecodeVotes(response.Raw, voter.ID)
 	if err != nil {
-		req.Prompt += "\n\nPrior vote output failed validation: " + err.Error()
+		req.Prompt += contractRetryNotice("vote", err)
 		response, invokeErr := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleVoter, voter, req)
 		if invokeErr == nil {
 			if writeErr := storage.WriteFile(filepath.Join(dir, "retry-raw.json"), response.Raw); writeErr != nil {

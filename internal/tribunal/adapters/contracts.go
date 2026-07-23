@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -206,7 +207,66 @@ func jsonCandidates(raw []byte) [][]byte {
 			candidates = append(candidates, bytes.TrimSpace(raw[start:end]))
 		}
 	}
+	// Fail-soft repair for one known, unambiguous provider deviation: emitting
+	// schema_version as a numeric string ("1", "1.0") instead of an integer
+	// (live playtest L-01). The coerced form is appended as an EXTRA candidate,
+	// so it is used only when the original fails schema validation, and the
+	// non-zero candidate index marks the result as repaired.
+	for _, candidate := range append([][]byte{}, candidates...) {
+		if coerced, changed := coerceSchemaVersionStrings(candidate); changed && len(candidates) < 12 {
+			candidates = append(candidates, coerced)
+		}
+	}
 	return candidates
+}
+
+// coerceSchemaVersionStrings rewrites every "schema_version" whose value is a
+// numeric string with an integral value into a JSON integer. Nothing else is
+// touched; a non-integral or non-numeric value is left for validation to
+// reject.
+func coerceSchemaVersionStrings(candidate []byte) ([]byte, bool) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(candidate))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil || ensureEOF(decoder) != nil {
+		return nil, false
+	}
+	changed := false
+	var walk func(node any) any
+	walk = func(node any) any {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, entry := range typed {
+				if key == "schema_version" {
+					if text, ok := entry.(string); ok {
+						if parsed, err := strconv.ParseFloat(text, 64); err == nil && parsed == float64(int(parsed)) {
+							typed[key] = int(parsed)
+							changed = true
+							continue
+						}
+					}
+				}
+				typed[key] = walk(entry)
+			}
+			return typed
+		case []any:
+			for i := range typed {
+				typed[i] = walk(typed[i])
+			}
+			return typed
+		default:
+			return node
+		}
+	}
+	value = walk(value)
+	if !changed {
+		return nil, false
+	}
+	coerced, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	return coerced, true
 }
 
 func balancedObject(raw []byte, start int) int {
