@@ -200,6 +200,77 @@ func TestModelCannotSelfDeclareWorkerVerifiedEvidence(t *testing.T) {
 	}
 }
 
+func TestInvokeReviewPersistsRawProviderFailure(t *testing.T) {
+	documentDir := t.TempDir()
+	documentPath := filepath.Join(documentDir, "brief.md")
+	if err := os.WriteFile(documentPath, []byte("# Brief\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rubric, _ := config.BuiltinRubric("generic")
+	packet, err := documents.Build(context.Background(), documentPath, documents.BuildOptions{Kind: "generic", Rubric: rubric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &adapters.FuncAdapter{AdapterID: "failing", InvokeFn: func(context.Context, adapters.Role, domain.Panelist, adapters.Request) (adapters.Response, error) {
+		return adapters.Response{Raw: []byte(`{"type":"result","subtype":"error_max_turns"}`)}, errors.New("claude reported error_max_turns: no result text")
+	}}
+	service, err := New(config.Default(), store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	panelist := domain.Panelist{ID: "R-001", Adapter: "failing", Model: "test", ReservedOutputTokens: 128}
+	runDir := t.TempDir()
+	result := service.invokeReview(context.Background(), runDir, packet, panelist)
+	if result.err == nil || result.status.Status != "invocation_failed" {
+		t.Fatalf("result = %#v, want classified invocation failure", result)
+	}
+	invocationDir := filepath.Join(runDir, "calls", panelist.ID, "review")
+	for _, name := range []string{"failed-raw-1.json", "failed-raw-2.json", "invocation-error-1.txt", "invocation-error-2.txt"} {
+		if _, err := os.Stat(filepath.Join(invocationDir, name)); err != nil {
+			t.Errorf("missing persisted provider failure %s: %v", name, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(invocationDir, "failed-raw-1.json"))
+	if err != nil || !strings.Contains(string(data), "error_max_turns") {
+		t.Fatalf("failed provider payload = %q, %v", data, err)
+	}
+}
+
+func TestInvokeReviewClassifiesContractRetryProviderFailure(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	fake := &adapters.FuncAdapter{AdapterID: "failing", InvokeFn: func(context.Context, adapters.Role, domain.Panelist, adapters.Request) (adapters.Response, error) {
+		if calls.Add(1) == 1 {
+			return adapters.Response{Raw: []byte("not-json")}, nil
+		}
+		return adapters.Response{Raw: []byte(`{"type":"result","subtype":"error_max_turns"}`)}, errors.New("claude reported error_max_turns: no result text")
+	}}
+	service, err := New(config.Default(), store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	panelist := domain.Panelist{ID: "R-001", Adapter: "failing", Model: "test", ReservedOutputTokens: 128}
+	result := service.invokeReview(context.Background(), runDir, documents.Packet{}, panelist)
+	if result.err == nil || result.status.Status != "invocation_failed" {
+		t.Fatalf("result = %#v, want contract-retry invocation failure", result)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("provider calls = %d, want contract retry", calls.Load())
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "calls", panelist.ID, "review", "failed-raw-contract-retry.json"))
+	if err != nil || !strings.Contains(string(data), "error_max_turns") {
+		t.Fatalf("failed contract retry payload = %q, %v", data, err)
+	}
+}
+
 func TestRetrievedEvidenceRemainsSemanticallyUnverified(t *testing.T) {
 	store, err := storage.New(t.TempDir())
 	if err != nil {

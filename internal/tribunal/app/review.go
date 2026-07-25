@@ -418,7 +418,10 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 		if err == nil {
 			break
 		}
-		_ = storage.WriteFile(filepath.Join(invocationDir, fmt.Sprintf("invocation-error-%d.txt", attempt)), []byte(err.Error()))
+		if persistErr := persistFailedInvocation(invocationDir, fmt.Sprintf("%d", attempt), response, err); persistErr != nil {
+			err = persistErr
+			break
+		}
 	}
 	if err != nil {
 		result.err, result.status.Status, result.status.Reason = err, "invocation_failed", err.Error()
@@ -432,17 +435,27 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 	if decodeErr != nil {
 		retryReq := req
 		retryReq.Prompt += contractRetryNotice("review", decodeErr)
-		_ = storage.WriteFile(filepath.Join(invocationDir, "retry-prompt.txt"), []byte(retryReq.Prompt))
+		if writeErr := storage.WriteFile(filepath.Join(invocationDir, "retry-prompt.txt"), []byte(retryReq.Prompt)); writeErr != nil {
+			result.err, result.status.Status, result.status.Reason = writeErr, "persistence_failed", writeErr.Error()
+			return result
+		}
 		response, err = s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleReviewer, panelist, retryReq)
 		if err == nil {
-			_ = storage.WriteFile(filepath.Join(invocationDir, "retry-raw.json"), response.Raw)
+			if writeErr := storage.WriteFile(filepath.Join(invocationDir, "retry-raw.json"), response.Raw); writeErr != nil {
+				result.err, result.status.Status, result.status.Reason = writeErr, "persistence_failed", writeErr.Error()
+				return result
+			}
 			review, repaired, decodeErr = adapters.DecodeReview(response.Raw, panelist.ID)
+		} else if persistErr := persistFailedInvocation(invocationDir, "contract-retry", response, err); persistErr != nil {
+			err = persistErr
 		}
 	}
-	if err != nil || decodeErr != nil {
-		if decodeErr != nil {
-			err = decodeErr
-		}
+	if err != nil {
+		result.err, result.status.Status, result.status.Reason = err, "invocation_failed", err.Error()
+		return result
+	}
+	if decodeErr != nil {
+		err = decodeErr
 		result.err, result.status.Status, result.status.Reason = err, "invalid_output", err.Error()
 		return result
 	}
@@ -457,6 +470,21 @@ func (s *Service) invokeReview(ctx context.Context, runDir string, packet docume
 	result.review, result.repaired = review, repaired
 	result.status.Status = "ok"
 	return result
+}
+
+// persistFailedInvocation preserves bounded provider output separately from the
+// diagnostic error. This keeps a self-reported adapter failure inspectable without
+// allowing the output to enter the review/vote contract parser.
+func persistFailedInvocation(dir, attempt string, response adapters.Response, invokeErr error) error {
+	if len(response.Raw) > 0 {
+		if err := storage.WriteFile(filepath.Join(dir, "failed-raw-"+attempt+".json"), response.Raw); err != nil {
+			return fmt.Errorf("persist failed provider output: %w", err)
+		}
+	}
+	if err := storage.WriteFile(filepath.Join(dir, "invocation-error-"+attempt+".txt"), []byte(invokeErr.Error())); err != nil {
+		return fmt.Errorf("persist provider invocation error: %w", err)
+	}
+	return nil
 }
 
 func validatePass(packet documents.Packet, results []panelResult) ([]domain.Panelist, []domain.Finding, []domain.PanelStatus, []string) {
@@ -591,6 +619,10 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 	req := adapters.Request{RunDir: dir, SystemPrompt: voterSystem, Prompt: prompt, Schema: adapters.ProviderVoteSchema, SchemaPath: filepath.Join(runDir, "vote.schema.json"), OutputPath: filepath.Join(dir, "output.json"), MaxOutputBytes: s.Config.Limits.MaxOutputBytes, TimeoutSeconds: int(s.Config.Limits.CallTimeout.Seconds()), EnvSecrets: trustedSecrets(s.Config)}
 	response, err := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleVoter, voter, req)
 	if err != nil {
+		if persistErr := persistFailedInvocation(dir, "1", response, err); persistErr != nil {
+			result.err = persistErr
+			return result
+		}
 		result.err = err
 		return result
 	}
@@ -608,6 +640,13 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 				return result
 			}
 			votes, repaired, err = adapters.DecodeVotes(response.Raw, voter.ID)
+		} else {
+			if persistErr := persistFailedInvocation(dir, "contract-retry", response, invokeErr); persistErr != nil {
+				result.err = persistErr
+				return result
+			}
+			result.err = invokeErr
+			return result
 		}
 	}
 	if err != nil {
@@ -701,64 +740,6 @@ type publicationMarker struct {
 
 func writeActive(workspace storage.Workspace, runID string, packet documents.Packet, status string, at time.Time) error {
 	return storage.WriteJSON(filepath.Join(workspace.Root, "active.json"), map[string]any{"schema_version": 1, "run_id": runID, "workspace_id": packet.WorkspaceID, "packet_hash": packet.PacketHash, "status": status, "updated_at": at})
-}
-
-func summaryFor(decisions []domain.Decision, disputes []domain.ArbitrationDispute, findings []domain.Finding) string {
-	accepted := 0
-	for _, decision := range decisions {
-		if decision.Outcome == "accepted" {
-			accepted++
-		}
-	}
-	summary := fmt.Sprintf("%d accepted recommendations; %d disputes require arbitration.", accepted, len(disputes))
-	// A run whose findings were quarantined before voting must not read as
-	// an unqualified clean result (live playtest L-02: a science run lost
-	// every finding to quarantine and still summarized as clean).
-	quarantined := 0
-	for _, finding := range findings {
-		if finding.Quarantined {
-			quarantined++
-		}
-	}
-	if quarantined > 0 {
-		summary += fmt.Sprintf(" %d finding(s) were quarantined before voting; inspect quarantine_reason per finding.", quarantined)
-	}
-	return summary
-}
-
-func panelIncomplete(statuses []domain.PanelStatus) bool {
-	for _, status := range statuses {
-		if status.Status != "ok" {
-			return true
-		}
-	}
-	return false
-}
-
-func degradedReason(statuses []domain.PanelStatus) string {
-	invocation, contract := false, false
-	for _, status := range statuses {
-		invocation = invocation || status.Status == "invocation_failed"
-		contract = contract || status.Status == "invalid_output"
-	}
-	if invocation && contract {
-		return "mixed"
-	}
-	if invocation {
-		return "adapter_invocation_failure"
-	}
-	if contract {
-		return "adapter_contract_failure"
-	}
-	return "quorum_unmet"
-}
-
-func trustedSecrets(cfg config.Config) map[string]string {
-	values := map[string]string{}
-	if key := cfg.OpenAICompatible.APIKeyEnv; key != "" {
-		values[key] = os.Getenv(key)
-	}
-	return values
 }
 
 func unique(values []string) []string {
