@@ -1,6 +1,6 @@
 module github.com/e3742526/tribunal
 
-go 1.23.0
+go 1.25.12
 
 require (
 	github.com/BurntSushi/toml v1.6.0

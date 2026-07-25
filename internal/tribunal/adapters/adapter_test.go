@@ -72,8 +72,28 @@ func TestBoundedBufferRecordsOverflow(t *testing.T) {
 func TestUnwrapClaudeStructuredOutput(t *testing.T) {
 	raw := []byte(`{"type":"result","structured_output":{"schema_version":1,"reviewer_id":"R-001","findings":[]}}`)
 	want := `{"schema_version":1,"reviewer_id":"R-001","findings":[]}`
-	if got := string(unwrapClaude(raw)); got != want {
+	got, err := unwrapClaude(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(got); got != want {
 		t.Fatalf("unwrapClaude() = %s, want %s", got, want)
+	}
+}
+
+func TestUnwrapClaudeSelfReportedErrorIsAdapterFailure(t *testing.T) {
+	raw := []byte(`{"type":"result","subtype":"error_max_structured_output_retries","is_error":true,"result":"","errors":["Failed to provide valid structured output"]}`)
+	got, err := unwrapClaude(raw)
+	if err == nil {
+		t.Fatal("expected Claude envelope error")
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("failed envelope was not preserved: %s", got)
+	}
+	for _, want := range []string{"claude reported error_max_structured_output_retries", "Failed to provide valid structured output"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
 	}
 }
 

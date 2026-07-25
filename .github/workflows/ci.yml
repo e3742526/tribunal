@@ -29,7 +29,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Keep this explicit: scanner upgrades are a reviewed CI dependency
+        # change, not an unbounded @latest fetch.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: Run repository gate
         run: scripts/check.sh

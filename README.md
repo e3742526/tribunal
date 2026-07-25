@@ -8,7 +8,7 @@ Current version: `v0.1.0`.
 
 ## Install
 
-Requirements are Go 1.23 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
+Requirements are Go 1.25.12 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
 
 From a checkout:
 
@@ -72,6 +72,12 @@ tribunal review proposal.md \
 ```
 
 The default panel uses those three adapter families with weight `1.0` and the `plain` persona. A panel must retain a majority quorum with at least two valid reviewers. Missing or malformed reviewers are reported as degraded; they are never silently replaced.
+
+If a provider returns a self-reported error envelope, Tribunal classifies that
+panel member as an adapter invocation failure rather than attempting to parse
+the error text as review JSON. The bounded raw payload and diagnostic are kept
+under that member's `calls/<reviewer>/<phase>/failed-raw-*.json` and
+`invocation-error-*.txt` artifacts for diagnosis; they never enter consensus.
 
 ## Arbitration
 

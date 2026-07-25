@@ -93,7 +93,11 @@ func (a *Subprocess) Invoke(ctx context.Context, role Role, panelist domain.Pane
 		}
 	}
 	if a.AdapterID == "claude" {
-		raw = unwrapClaude(raw)
+		var unwrapErr error
+		raw, unwrapErr = unwrapClaude(raw)
+		if unwrapErr != nil {
+			return Response{Raw: raw, Command: append([]string{binary}, argv...)}, unwrapErr
+		}
 	}
 	if stdout.Exceeded() || int64(len(raw)) > limit {
 		return Response{Raw: raw, Command: append([]string{binary}, argv...)}, fmt.Errorf("%s output exceeded %d bytes", a.AdapterID, limit)
@@ -101,25 +105,68 @@ func (a *Subprocess) Invoke(ctx context.Context, role Role, panelist domain.Pane
 	return Response{Raw: raw, Text: strings.TrimSpace(string(raw)), Command: append([]string{binary}, argv...)}, nil
 }
 
-func unwrapClaude(raw []byte) []byte {
-	var envelope struct {
-		StructuredOutput json.RawMessage `json:"structured_output"`
-		Result           json.RawMessage `json:"result"`
-	}
+type claudeEnvelope struct {
+	Subtype          string            `json:"subtype"`
+	IsError          bool              `json:"is_error"`
+	Result           json.RawMessage   `json:"result"`
+	Errors           []json.RawMessage `json:"errors"`
+	StructuredOutput json.RawMessage   `json:"structured_output"`
+}
+
+func unwrapClaude(raw []byte) ([]byte, error) {
+	var envelope claudeEnvelope
 	if json.Unmarshal(raw, &envelope) != nil {
-		return raw
+		return raw, nil
+	}
+	if envelope.IsError || strings.HasPrefix(strings.TrimSpace(envelope.Subtype), "error") {
+		return raw, claudeEnvelopeError(envelope)
 	}
 	if len(envelope.StructuredOutput) > 0 && string(envelope.StructuredOutput) != "null" {
-		return envelope.StructuredOutput
+		return envelope.StructuredOutput, nil
 	}
 	if len(envelope.Result) > 0 {
 		var text string
 		if json.Unmarshal(envelope.Result, &text) == nil {
-			return []byte(text)
+			return []byte(text), nil
 		}
-		return envelope.Result
+		return envelope.Result, nil
 	}
-	return raw
+	return raw, nil
+}
+
+func claudeEnvelopeError(envelope claudeEnvelope) error {
+	subtype := strings.TrimSpace(envelope.Subtype)
+	if subtype == "" {
+		subtype = "error"
+	}
+	detail := claudeEnvelopeText(envelope.Result)
+	if detail == "" {
+		for _, candidate := range envelope.Errors {
+			if detail = claudeEnvelopeText(candidate); detail != "" {
+				break
+			}
+		}
+	}
+	if detail == "" {
+		detail = "no result text"
+	}
+	const maxDetail = 400
+	if len(detail) > maxDetail {
+		detail = detail[:maxDetail] + "..."
+	}
+	return fmt.Errorf("claude reported %s: %s", subtype, detail)
+}
+
+func claudeEnvelopeText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(string(trimmed))
 }
 
 func (a *Subprocess) argv(role Role, panelist domain.Panelist, req Request, prompt string) ([]string, []byte, error) {
