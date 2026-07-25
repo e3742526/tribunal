@@ -405,7 +405,7 @@ func (s *Service) locateRun(ref RunRef) (storage.Workspace, string, string, erro
 			SchemaVersion int    `json:"schema_version"`
 			RunID         string `json:"run_id"`
 		}
-		if err := storage.ReadJSONStrict(filepath.Join(workspace.Root, "latest.json"), &latest); err != nil {
+		if err := storage.ReadJSON(filepath.Join(workspace.Root, "latest.json"), &latest); err != nil {
 			return storage.Workspace{}, "", "", fmt.Errorf("no latest Tribunal run: %w", err)
 		}
 		if latest.SchemaVersion != 1 || latest.RunID == "" {

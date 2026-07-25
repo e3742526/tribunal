@@ -135,6 +135,10 @@ func TestReviewPersistsBarrierAndCompletesWithoutGit(t *testing.T) {
 			t.Errorf("missing workspace artifact %s: %v", name, err)
 		}
 	}
+	latestSnapshot, err := service.Status(RunRef{Input: documentPath})
+	if err != nil || latestSnapshot.State.RunID != final.RunID {
+		t.Fatalf("status through current latest pointer = %#v, %v", latestSnapshot, err)
+	}
 	after, err := os.ReadFile(documentPath)
 	if err != nil || string(after) != content {
 		t.Fatalf("review changed source document: %q, %v", after, err)

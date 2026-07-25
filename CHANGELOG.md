@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — 2026-07-25 latest-pointer compatibility repair
+
+- `status`, `transcript`, and other commands that resolve the latest run now
+  accept the `status` and `updated_at` projection fields written by current
+  review publication while retaining schema-version and run-ID validation.
+- The real review workflow regression now resolves `Status` through the
+  published latest pointer, not only through an explicit run ID.
+
 ## Unreleased — 2026-07-22 live domain playtest repairs
 
 Findings L-01..L-05 from the live multi-provider domain-deliberation
