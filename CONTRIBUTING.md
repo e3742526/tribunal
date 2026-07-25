@@ -1,6 +1,6 @@
 # Contributing
 
-Tribunal requires Go 1.23 or newer. Inspect `AGENTS.md`, `docs/ARCHITECTURE.md`,
+Tribunal requires Go 1.25.12 or newer. Inspect `AGENTS.md`, `docs/ARCHITECTURE.md`,
 the relevant ADRs, nearby implementation, and tests before changing behavior.
 
 ```bash

@@ -29,9 +29,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Install govulncheck
-        # v1.1.4 is the newest release compatible with this repository's
-        # supported Go 1.23 toolchain. Bump Go first, then this pin.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        # Keep this explicit: scanner upgrades are a reviewed CI dependency
+        # change, not an unbounded @latest fetch.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: Run repository gate
         run: scripts/check.sh

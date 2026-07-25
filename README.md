@@ -8,7 +8,7 @@ Current version: `v0.1.0`.
 
 ## Install
 
-Requirements are Go 1.23 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
+Requirements are Go 1.25.12 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
 
 From a checkout:
 
