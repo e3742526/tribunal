@@ -12,7 +12,7 @@ network policy, edit permissions, and budgets are authority-bearing.
 
 ## Defaults
 
-- Panel: `claude/claude-opus-4-8`, `codex/gpt-5.6-sol`,
+- Panel: `claude/claude-opus-5`, `codex/gpt-5.6-sol`,
   `agy/Gemini 3.5 Flash (Medium)`.
 - Kind: `generic`; passes: 2; max findings/reviewer: 25.
 - Context: 131072 tokens; reserve: 16384; total token cap: 500000.
