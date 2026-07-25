@@ -16,7 +16,7 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/domain"
 )
 
-const DefaultPanel = "claude/claude-opus-4-8,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
+const DefaultPanel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
 
 type Limits struct {
 	Passes           int           `toml:"passes" json:"passes"`

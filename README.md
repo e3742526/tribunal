@@ -68,7 +68,7 @@ The exact grammar is `adapter/model[@persona]`, comma-separated. Model names may
 
 ```bash
 tribunal review proposal.md \
-  --panel 'claude/claude-opus-4-8,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)'
+  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)'
 ```
 
 The default panel uses those three adapter families with weight `1.0` and the `plain` persona. A panel must retain a majority quorum with at least two valid reviewers. Missing or malformed reviewers are reported as degraded; they are never silently replaced.
@@ -133,7 +133,7 @@ Trusted user configuration is `~/.config/tribunal/config.toml`. Workspace `.trib
 
 ```toml
 schema_version = 1
-panel = "claude/claude-opus-4-8,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
+panel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
 kind = "generic"
 
 [limits]
