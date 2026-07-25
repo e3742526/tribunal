@@ -86,9 +86,14 @@ func (s *Service) invokeWithProviderLock(ctx context.Context, runDir string, ada
 			req.MaxOutputTokens = s.Config.Limits.ReservedOutput
 		}
 	}
-	maxTokenBytes := int64(req.MaxOutputTokens) * 3
-	if req.MaxOutputBytes <= 0 || req.MaxOutputBytes > maxTokenBytes {
-		req.MaxOutputBytes = maxTokenBytes
+	// Output-token and transport-byte caps are independent controls. A JSON
+	// provider envelope can legitimately exceed three bytes per output token
+	// because of escaping, Unicode, metadata, and reasoning fields. Silently
+	// shrinking the explicit transport cap to tokens*3 makes the documented
+	// --max-output-bytes setting ineffective and can reject a response that
+	// still obeys the provider token cap.
+	if req.MaxOutputBytes <= 0 {
+		req.MaxOutputBytes = s.Config.Limits.MaxOutputBytes
 	}
 	invoke := func() (adapters.Response, error) {
 		budget := budgetFromContext(ctx)

@@ -42,6 +42,12 @@ Review a folder. Supported documents are walked lexically; hidden paths are skip
 tribunal review ./policy-packet --kind governance --split
 ```
 
+`--split` creates smaller immutable anchor chunks for citation and edit
+custody. Review and vote phases still deliver the complete packet in one model
+call, so splitting does not make an oversized packet fit a panel context
+window. Reduce the packet or select a larger-context panel when preflight
+reports context overflow.
+
 Use a different built-in rubric:
 
 ```bash

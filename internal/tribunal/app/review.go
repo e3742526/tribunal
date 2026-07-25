@@ -285,12 +285,12 @@ func preflightContext(packet *documents.Packet, panel domain.Panel, split bool) 
 		total += len(item.Content)
 	}
 	if total <= bytesBudget {
+		if split {
+			return documents.Split(packet, bytesBudget)
+		}
 		return nil
 	}
-	if !split {
-		return fmt.Errorf("packet estimate exceeds panel context; rerun with --split")
-	}
-	return documents.Split(packet, bytesBudget)
+	return fmt.Errorf("packet estimate exceeds panel context; --split changes packet anchoring but does not reduce the single-call prompt; reduce the packet or use a larger-context panel")
 }
 
 func preflightTokenBudget(packet documents.Packet, panel domain.Panel, passes, budget int) error {

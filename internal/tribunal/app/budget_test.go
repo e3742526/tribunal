@@ -48,3 +48,61 @@ func TestProviderUsageBudgetStopsBeforeNextCall(t *testing.T) {
 		t.Fatalf("usage ledger = %#v", ledger)
 	}
 }
+
+func TestProviderByteCapIsIndependentFromOutputTokenReservation(t *testing.T) {
+	var captured adapters.Request
+	fake := &adapters.FuncAdapter{AdapterID: "fake", InvokeFn: func(_ context.Context, _ adapters.Role, _ domain.Panelist, req adapters.Request) (adapters.Response, error) {
+		captured = req
+		return adapters.Response{Raw: []byte(`{}`), InputTok: 1, OutputTok: 1}, nil
+	}}
+	cfg := config.Default()
+	cfg.Limits.TokenBudget = 100
+	cfg.Limits.ReservedOutput = 5
+	cfg.Limits.MaxOutputBytes = 4096
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(cfg, store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	panelist := domain.Panelist{ID: "R-001", ReservedOutputTokens: 5}
+	req := adapters.Request{SystemPrompt: "sys", Prompt: "prompt", MaxOutputBytes: 2048}
+	if _, err := service.invokeWithProviderLock(context.Background(), t.TempDir(), fake, adapters.RoleReviewer, panelist, req); err != nil {
+		t.Fatal(err)
+	}
+	if captured.MaxOutputTokens != 5 {
+		t.Fatalf("output token cap = %d, want 5", captured.MaxOutputTokens)
+	}
+	if captured.MaxOutputBytes != 2048 {
+		t.Fatalf("output byte cap = %d, want explicit 2048", captured.MaxOutputBytes)
+	}
+}
+
+func TestProviderByteCapDefaultsFromConfig(t *testing.T) {
+	var captured adapters.Request
+	fake := &adapters.FuncAdapter{AdapterID: "fake", InvokeFn: func(_ context.Context, _ adapters.Role, _ domain.Panelist, req adapters.Request) (adapters.Response, error) {
+		captured = req
+		return adapters.Response{Raw: []byte(`{}`), InputTok: 1, OutputTok: 1}, nil
+	}}
+	cfg := config.Default()
+	cfg.Limits.TokenBudget = 100
+	cfg.Limits.ReservedOutput = 5
+	cfg.Limits.MaxOutputBytes = 4096
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(cfg, store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	panelist := domain.Panelist{ID: "R-001", ReservedOutputTokens: 5}
+	if _, err := service.invokeWithProviderLock(context.Background(), t.TempDir(), fake, adapters.RoleReviewer, panelist, adapters.Request{Prompt: "prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	if captured.MaxOutputBytes != 4096 {
+		t.Fatalf("output byte cap = %d, want configured 4096", captured.MaxOutputBytes)
+	}
+}

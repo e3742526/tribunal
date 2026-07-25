@@ -145,10 +145,7 @@ func TestResumeRequiresRunLock(t *testing.T) {
 	}
 }
 
-// Replay of a run whose packet was frozen with --split must re-enable
-// splitting; the persisted packet still carries full item content, so the
-// context preflight would otherwise always fail.
-func TestReplaySplitRunSurvivesContextPreflight(t *testing.T) {
+func TestSplitDoesNotBypassSingleCallContextPreflight(t *testing.T) {
 	documentDir := t.TempDir()
 	documentPath := filepath.Join(documentDir, "brief.md")
 	content := "# Brief\n\nThe launch date is unsupported.\n" + strings.Repeat("Filler sentence about governance posture and delivery risk.\n", 200)
@@ -169,28 +166,9 @@ func TestReplaySplitRunSurvivesContextPreflight(t *testing.T) {
 		panel.Reviewers[i].ReservedOutputTokens = 200
 	}
 	service := syntheticService(t, documentDir, packet, panel)
-	t.Setenv("PATH", "")
-	final, reviewErr := service.Review(context.Background(), ReviewOptions{Packet: &packet, PanelValue: &panel, Split: true})
+	_, reviewErr := service.Review(context.Background(), ReviewOptions{Packet: &packet, PanelValue: &panel, Split: true})
 	var exit *ExitError
-	if !errors.As(reviewErr, &exit) || exit.Code != ExitBlockingFindings {
-		t.Fatalf("split review error = %v", reviewErr)
-	}
-	workspace, err := service.Store.Workspace(packet.WorkspaceID, documentDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persisted, err := readPacket(filepath.Join(workspace.RunsDir, final.RunID, "packet.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(persisted.Chunks) == 0 {
-		t.Fatalf("test setup did not force splitting")
-	}
-	replayed, replayErr := service.Replay(context.Background(), RunRef{Input: documentPath, RunID: final.RunID})
-	if errors.As(replayErr, &exit) && exit.Code == ExitPreflight {
-		t.Fatalf("replay of split run failed preflight: %v", replayErr)
-	}
-	if !errors.As(replayErr, &exit) || exit.Code != ExitBlockingFindings || replayed.RunID == final.RunID {
-		t.Fatalf("replay = %#v, %v", replayed, replayErr)
+	if !errors.As(reviewErr, &exit) || exit.Code != ExitPreflight || !strings.Contains(reviewErr.Error(), "does not reduce the single-call prompt") {
+		t.Fatalf("split review error = %v, want honest context preflight failure", reviewErr)
 	}
 }

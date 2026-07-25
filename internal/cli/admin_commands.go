@@ -103,7 +103,7 @@ func newBenchCommand(f *flags) *cobra.Command {
 		final, benchErr := service.Review(ctx, app.ReviewOptions{Input: input, Kind: "generic", Panel: f.Panel, Split: split})
 		return renderFinalOutcome(cmd, f, final, benchErr)
 	}}
-	cmd.Flags().BoolVar(&split, "split", false, "split fixture packets to panel context budget")
+	cmd.Flags().BoolVar(&split, "split", false, "chunk fixture anchors without reducing single-call context")
 	return cmd
 }
 

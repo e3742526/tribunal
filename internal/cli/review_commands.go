@@ -42,7 +42,7 @@ func newReviewCommand(f *flags, recommend bool) *cobra.Command {
 			return renderFinalOutcome(cmd, f, final, reviewErr)
 		},
 	}
-	cmd.Flags().BoolVar(&split, "split", false, "split the frozen packet to the smallest panel context budget")
+	cmd.Flags().BoolVar(&split, "split", false, "chunk packet anchors without reducing single-call context")
 	cmd.Flags().BoolVar(&failOnSecret, "fail-on-secret", false, "fail instead of length-preserving secret/PII redaction")
 	cmd.Flags().BoolVar(&noWorkers, "no-workers", false, "disable deterministic spelling and reference workers")
 	if recommend {
