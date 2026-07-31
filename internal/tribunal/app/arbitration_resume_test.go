@@ -145,6 +145,52 @@ func TestResumeRequiresRunLock(t *testing.T) {
 	}
 }
 
+// Arbitration is exposed as a synchronous service method, so its lock wait
+// must still be bounded when another process owns the run. Otherwise the CLI
+// can hang indefinitely and cannot reach its documented preflight failure.
+func TestArbitrateRunLockWaitUsesConfiguredTimeout(t *testing.T) {
+	documentDir := t.TempDir()
+	documentPath := filepath.Join(documentDir, "brief.md")
+	if err := os.WriteFile(documentPath, []byte("# Brief\n\nThe launch date is unsupported.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rubric, _ := config.BuiltinRubric("generic")
+	packet, err := documents.Build(context.Background(), documentPath, documents.BuildOptions{Kind: "generic", Rubric: rubric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel, err := domain.ParsePanel("fake/one,fake/two,fake/three")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := syntheticService(t, documentDir, packet, panel)
+	t.Setenv("PATH", "")
+	final, reviewErr := service.Review(context.Background(), ReviewOptions{Packet: &packet, PanelValue: &panel})
+	var exit *ExitError
+	if !errors.As(reviewErr, &exit) || exit.Code != ExitBlockingFindings {
+		t.Fatalf("Review error = %v", reviewErr)
+	}
+	workspace, err := service.Store.Workspace(packet.WorkspaceID, documentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := storage.AcquireLock(context.Background(), filepath.Join(workspace.RunsDir, final.RunID, "run.lock"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	service.Config.Limits.RunTimeout = 100 * time.Millisecond
+
+	started := time.Now()
+	_, arbitrateErr := service.Arbitrate(ArbitrationOptions{RunRef: RunRef{Input: documentPath, RunID: final.RunID}, AcceptMajority: true})
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Arbitrate waited %v for run lock, want bounded wait", elapsed)
+	}
+	if !errors.As(arbitrateErr, &exit) || exit.Code != ExitPreflight || !strings.Contains(arbitrateErr.Error(), "run lock") {
+		t.Fatalf("Arbitrate error = %v, want run-lock preflight error", arbitrateErr)
+	}
+}
+
 func TestSplitDoesNotBypassSingleCallContextPreflight(t *testing.T) {
 	documentDir := t.TempDir()
 	documentPath := filepath.Join(documentDir, "brief.md")

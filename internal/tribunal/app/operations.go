@@ -278,7 +278,13 @@ func (s *Service) Arbitrate(opts ArbitrationOptions) (domain.Final, error) {
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
-	lock, err := storage.AcquireLock(context.Background(), filepath.Join(runDir, "run.lock"), nil)
+	// Arbitration is a mutating operation and must not wait forever behind a
+	// wedged peer. Match Review and Resume by bounding lock acquisition with
+	// the configured run timeout; the CLI has no context to cancel this
+	// synchronous service method itself.
+	lockCtx, lockCancel := withRunTimeout(context.Background(), s.Config.Limits.RunTimeout)
+	defer lockCancel()
+	lock, err := storage.AcquireLock(lockCtx, filepath.Join(runDir, "run.lock"), nil)
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "acquire run lock: %v", err)
 	}
