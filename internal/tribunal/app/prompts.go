@@ -60,8 +60,16 @@ func reviewPrompt(packet documents.Packet, reviewer domain.Panelist) string {
 	out.WriteString(packet.PacketHash)
 	out.WriteString("\n")
 	if len(packet.Chunks) > 0 {
+		// The anchor contract requires item_sha256 and the host quarantines
+		// findings whose hash does not match the packet item, so each chunk
+		// header must show its owning item's hash — the chunked prompt is the
+		// reviewer's only source for it.
+		itemHashes := make(map[string]string, len(packet.Items))
+		for _, item := range packet.Items {
+			itemHashes[item.ID] = item.PacketSHA256
+		}
 		for _, chunk := range packet.Chunks {
-			fmt.Fprintf(&out, "\n<<<%s item=%s bytes=%d:%d>>>\n%s\n<<<END %s>>>\n", chunk.ID, chunk.PacketItem, chunk.Start, chunk.End, chunk.Content, chunk.ID)
+			fmt.Fprintf(&out, "\n<<<%s item=%s sha256=%s bytes=%d:%d>>>\n%s\n<<<END %s>>>\n", chunk.ID, chunk.PacketItem, itemHashes[chunk.PacketItem], chunk.Start, chunk.End, chunk.Content, chunk.ID)
 		}
 	} else {
 		for _, item := range packet.Items {
