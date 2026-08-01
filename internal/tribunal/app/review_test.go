@@ -275,6 +275,47 @@ func TestInvokeReviewClassifiesContractRetryProviderFailure(t *testing.T) {
 	}
 }
 
+// The vote contract retry must leave the same audit trail as the review path:
+// retry-prompt.txt records the prompt that actually produced retry-raw.json.
+func TestInvokeVotesPersistsContractRetryPrompt(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	fake := &adapters.FuncAdapter{AdapterID: "flaky", InvokeFn: func(_ context.Context, _ adapters.Role, panelist domain.Panelist, req adapters.Request) (adapters.Response, error) {
+		if calls.Add(1) == 1 {
+			return adapters.Response{Raw: []byte("not-json")}, nil
+		}
+		if !strings.Contains(req.Prompt, "failed contract validation") {
+			t.Errorf("retry request lacks the contract retry notice: %s", req.Prompt)
+		}
+		payload := map[string]any{"schema_version": 1, "votes": []domain.Vote{{SchemaVersion: 1, ReviewerID: panelist.ID, FindingID: "B-0001", Choice: domain.VoteAccept, Severity: domain.SeverityMajor, Reason: "supported"}}}
+		return jsonResponse(t, payload), nil
+	}}
+	service, err := New(config.Default(), store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	voter := domain.Panelist{ID: "R-001", Adapter: "flaky", Model: "test", ReservedOutputTokens: 128}
+	runDir := t.TempDir()
+	result := service.invokeVotes(context.Background(), runDir, documents.Packet{PacketHash: "hash"}, verificationArtifact{SchemaVersion: 1}, voter, []domain.Finding{{ID: "F-1"}})
+	if result.err != nil {
+		t.Fatalf("invokeVotes error = %v", result.err)
+	}
+	if calls.Load() != 2 || len(result.votes) != 1 || result.votes[0].FindingID != "F-1" {
+		t.Fatalf("calls = %d, votes = %#v, want un-blinded retry result", calls.Load(), result.votes)
+	}
+	dir := filepath.Join(runDir, "calls", voter.ID, "vote")
+	prompt, err := os.ReadFile(filepath.Join(dir, "retry-prompt.txt"))
+	if err != nil || !strings.Contains(string(prompt), "failed contract validation") {
+		t.Fatalf("retry prompt artifact = %q, %v", prompt, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "retry-raw.json")); err != nil {
+		t.Errorf("missing retry-raw.json: %v", err)
+	}
+}
+
 func TestRetrievedEvidenceRemainsSemanticallyUnverified(t *testing.T) {
 	store, err := storage.New(t.TempDir())
 	if err != nil {

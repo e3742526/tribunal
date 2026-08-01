@@ -34,6 +34,19 @@ func TestReviewAndVotePromptsEmbedOutputContract(t *testing.T) {
 	}
 }
 
+// A chunked prompt is the reviewer's only source of each item's packet hash,
+// and ResolveAnchor quarantines any finding whose item_sha256 does not match —
+// so a chunk header without the owning item's hash makes every finding in a
+// --split run unanchorable.
+func TestChunkedReviewPromptShowsItemHashes(t *testing.T) {
+	packet := promptFixturePacket()
+	packet.Chunks = []documents.Chunk{{SchemaVersion: 1, ID: "chunk:00000001", PacketItem: "artifact:a.md", Start: 0, End: 7, Content: "content"}}
+	prompt := reviewPrompt(packet, domain.Panelist{ID: "R-001", Persona: "plain"})
+	if !strings.Contains(prompt, "<<<chunk:00000001 item=artifact:a.md sha256=sha bytes=0:7>>>") {
+		t.Fatalf("chunk header missing owning item hash:\n%s", prompt)
+	}
+}
+
 // The retry after a contract failure must name the validation error and point
 // back at the embedded contract, not just ask for "valid JSON" again.
 func TestContractRetryNoticeNamesErrorAndContract(t *testing.T) {

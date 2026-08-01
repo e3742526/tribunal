@@ -633,6 +633,12 @@ func (s *Service) invokeVotes(ctx context.Context, runDir string, packet documen
 	votes, repaired, err := adapters.DecodeVotes(response.Raw, voter.ID)
 	if err != nil {
 		req.Prompt += contractRetryNotice("vote", err)
+		// Persist the retry prompt like the review path does, so retry-raw.json
+		// is never attributed to a prompt that was not the one delivered.
+		if writeErr := storage.WriteFile(filepath.Join(dir, "retry-prompt.txt"), []byte(req.Prompt)); writeErr != nil {
+			result.err = writeErr
+			return result
+		}
 		response, invokeErr := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleVoter, voter, req)
 		if invokeErr == nil {
 			if writeErr := storage.WriteFile(filepath.Join(dir, "retry-raw.json"), response.Raw); writeErr != nil {
