@@ -17,6 +17,23 @@ Review never writes into the input folder. `--fail-on-secret` rejects instead
 of redacting. `--split` is required when the packet exceeds the smallest panel
 context budget.
 
+## Choosing a panel
+
+`--panel` names reviewers outright. `--panel-policy` asks the host to compose
+them from the `[[models]]` catalog under a named policy's seat, quorum, and
+independence requirements; the two flags are mutually exclusive. `tribunal
+panel list` shows the available policies and `tribunal panel show` resolves
+the panel a review would use right now — no packet is frozen and no model is
+called, so it is safe to run before committing to a review.
+
+Every resolved panel reports its seat-by-seat rationale, the distinct families
+it reached, and any shortfall: a dropped optional seat, a truncated search, or
+a catalog derived from the panel string with uniform priors. A policy that
+cannot be satisfied fails before the packet is frozen rather than seating a
+smaller or more correlated panel. Policy-composed runs record the selection in
+`meta.json` and `report.md`, so the composition stays auditable after the
+catalog changes.
+
 ## Interrupted and degraded runs
 
 Use `status` and `transcript` with `--run <ULID>` or omit it for the latest run.

@@ -47,10 +47,30 @@ hash-checked operation.
 Panel entries use `adapter/model[@persona]`. The adapter ends at the first `/`;
 the optional persona is a trailing slug matching `[a-z0-9-]{1,64}`; the model
 between them is preserved verbatim. Panels enter as strings (flag, environment,
-or config); every reviewer currently carries weight 1.0. Consensus arithmetic
+or config), or are composed by the host from a declarative panel policy;
+every reviewer currently carries weight 1.0. Consensus arithmetic
 clamps any configured weight to 0.5–2.0 and quantizes to hundredths so tie
 detection is exact. Default panel: Claude Opus 4.8, Codex GPT-5.6 Sol, and Agy
 Gemini 3.5 Flash Medium.
+
+A panel policy declares seats, not models: each role names a bounded persona,
+optional required capability tags, and a ranked preference list, and the policy
+declares `minimum_panel`, `independent_families`, and the diversity,
+reliability, and cost weights. The host resolves the policy against an
+operator-declared model catalog by maximizing Σ(seat score) plus
+`diversity_weight` × distinct families, subject to every non-optional role
+being filled, at least `minimum_panel` seats, at least `independent_families`
+distinct families, and no model seated twice. Selection is a pure host
+function: no model ranks, chooses, or composes a panel. An unsatisfiable
+policy fails before the packet is frozen; a dropped optional seat, a truncated
+search, or a family shortfall is recorded, never silently applied. Precedence
+runs most-specific first: a recorded panel on resume or replay, an explicit
+panel string, a policy, then the configured panel string. `--panel` and
+`--panel-policy` are mutually exclusive, as are `TRIBUNAL_PANEL` and
+`TRIBUNAL_PANEL_POLICY`. When no catalog is configured, candidates are derived
+from the configured panel with uniform priors and the derivation is disclosed;
+Tribunal never ships quality, reliability, or cost figures of its own for a
+vendor model.
 
 Reviewers receive a fenced role prompt, rubric, persona, and packet only. Worker
 evidence gathered before review is part of the packet. Post-review verification
@@ -146,10 +166,15 @@ variables selected by trusted configuration.
 
 Commands: `review`, `recommend`, `arbitrate`, `edit`, `revert`, `resume`,
 `replay`, `explain`, `findings list|defer`, `decisions export`, `status`,
-`transcript`, `persona list|new|lint`, `bench`, `doctor`, `adopt`, `tui`,
+`transcript`, `persona list|new|lint`, `panel list|show`, `bench`, `doctor`,
+`adopt`, `tui`,
 `version`, and `verify-install`. Every command supports `--json`.
 
 ## Deferred and rejected
+
+Panel selection composes reviewers only. It is not a general model router, a
+cross-tool job dispatcher, or an orchestrator that lets one model direct the
+others; those remain outside Tribunal.
 
 No Git compatibility, Tagteam state migration, code kind, autonomous authoring,
 automatic edit merge, open-by-default web access, URL persona imports, MCP/control

@@ -2,6 +2,7 @@
 
 | Area | Evidence | What it proves | Gap |
 |---|---|---|---|
+| Panel selection | `go test ./internal/tribunal/domain -run SelectPanel`, `./internal/tribunal/config -run 'Catalog\|Policy\|Persona'`, `./internal/tribunal/app -run 'Policy\|PanelPreview'`, `./internal/cli -run Panel` | family-independence constraint over raw quality, determinism under catalog reordering, infeasible-policy refusal, optional-seat and derived-catalog disclosure, precedence of explicit panel and recorded replay panel over policy, persona hydration, configured context budget applied after selection, selection persisted to `meta.json`/`report.md`, mutually exclusive flags, `panel show` writing no run or workspace state | scoring weights are operator priors, so no test asserts that a chosen panel reviews better |
 | Domain | `go test ./internal/tribunal/domain` | panel grammar, quorum/tie/strict category, all-category evidence cap, clustering, exact decision-memory match, persisted-object validation | larger property corpus remains useful |
 | Documents | `go test ./internal/tribunal/documents` | lexical packet order, redaction, anchors, UTF-8 chunks, DOCX extraction, persisted packet hash/path/version tampering refusal | PDF malformed corpus is environment-dependent |
 | Adapters/workers | `go test ./internal/tribunal/adapters` plus Gate 7 smoke | read-only argv, non-Git Codex calls, Agy durations, strict provider schemas, Claude envelope, recovery, output caps, allowlists, provenance, spelling/reference checks | vendor response quality and rate limits remain external |

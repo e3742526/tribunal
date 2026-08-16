@@ -37,6 +37,31 @@ type Persona struct {
 }
 
 var starterPersonas = map[string]Persona{
+	// The foundation lens exists because a capable reviewer silently repairs
+	// a gappy argument as it reads: it reconstructs the missing premise, finds
+	// the reconstruction sound, and reports nothing. Three such reviewers can
+	// agree because all three performed the same repair, which reads as
+	// consensus but is a shared blind spot. This lens is instructed not to
+	// repair, so an unstated premise surfaces as a finding the other seats
+	// then have to defend or concede.
+	"foundation": {
+		SchemaVersion: 1,
+		Name:          "foundation",
+		Summary:       "Report every step that cannot be established from the document as written, without supplying the missing reasoning yourself.",
+		Focus:         []string{"undefined-terms", "unstated-premises", "unsupported-inferences", "missing-boundary-conditions"},
+		Questions: []string{
+			"Which terms carry weight here without a definition the document itself supplies?",
+			"Which step depends on knowledge the document never establishes?",
+			"Does this conclusion follow from the text as written, or only once a reader adds an assumption?",
+			"Which quantities, thresholds, or conditions are referenced but never bounded?",
+		},
+		StyleNotes: []string{
+			"prefer the elementary objection over the sophisticated alternative",
+			"do not repair, complete, or solve the author's argument",
+			"state what cannot be established rather than what the author probably meant",
+			"treat inability to follow a step as a reportable defect in the document",
+		},
+	},
 	"methodologist": {SchemaVersion: 1, Name: "methodologist", Summary: "Examine methods, measurements, assumptions, and reproducibility.", Focus: []string{"methods", "statistics", "reproducibility"}},
 	"skeptic":       {SchemaVersion: 1, Name: "skeptic", Summary: "Stress-test consequential claims and missing alternatives.", Focus: []string{"evidence", "counterexamples", "uncertainty"}},
 	"governor":      {SchemaVersion: 1, Name: "governor", Summary: "Examine authority, accountability, exceptions, and due process.", Focus: []string{"authority", "accountability", "auditability"}},

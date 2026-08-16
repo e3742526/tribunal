@@ -29,6 +29,19 @@ func writeReports(runDir string, final domain.Final, panel domain.Panel) error {
 	if len(panel.Reviewers) > 0 {
 		fmt.Fprintf(&markdown, "\n%s\n", domain.DiversityNote(panel))
 	}
+	// A policy-composed panel is only auditable if the report says which
+	// policy composed it and how each seat was filled; the catalog that
+	// produced the panel can change before anyone reads this.
+	if meta, err := readMeta(filepath.Join(runDir, "meta.json")); err == nil && meta.PanelSelection != nil {
+		selection := meta.PanelSelection
+		fmt.Fprintf(&markdown, "\nComposed by panel policy `%s` across %d independent families.\n\n", selection.Policy, len(selection.Families))
+		for _, seat := range selection.Seats {
+			fmt.Fprintf(&markdown, "- %s — %s\n", seat.ReviewerID, seat.Rationale)
+		}
+		for _, note := range selection.Notes {
+			fmt.Fprintf(&markdown, "- Note: %s\n", note)
+		}
+	}
 	markdown.WriteString("\n## Findings and decisions\n")
 	decisionByID := map[string]domain.Decision{}
 	for _, decision := range final.Decisions {
