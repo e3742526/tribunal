@@ -25,6 +25,7 @@ type flags struct {
 	JSON           bool
 	StateRoot      string
 	Panel          string
+	PanelPolicy    string
 	Kind           string
 	TrustWorkspace bool
 	MaxOutputBytes int64
@@ -53,6 +54,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&f.JSON, "json", false, "emit a stable machine-readable JSON result")
 	root.PersistentFlags().StringVar(&f.StateRoot, "state-root", "", "external state root (default ~/.local/state/tribunal)")
 	root.PersistentFlags().StringVar(&f.Panel, "panel", "", "reviewers as adapter/model[@persona], comma-separated")
+	root.PersistentFlags().StringVar(&f.PanelPolicy, "panel-policy", "", "compose the panel from a named policy and the configured model catalog")
 	root.PersistentFlags().StringVar(&f.Kind, "kind", "", "document kind: generic, manuscript, strategy, or governance")
 	root.PersistentFlags().BoolVar(&f.TrustWorkspace, "trust-workspace-config", false, "trust .tribunal.toml in the document workspace")
 	root.PersistentFlags().Int64Var(&f.MaxOutputBytes, "max-output-bytes", 0, "maximum bytes accepted from one model call")
@@ -63,7 +65,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newResumeCommand(f), newReplayCommand(f), newExplainCommand(f))
 	root.AddCommand(newFindingsCommand(f), newDecisionsCommand(f))
 	root.AddCommand(newStatusCommand(f), newTranscriptCommand(f), newTUICommand(f))
-	root.AddCommand(newPersonaCommand(f), newBenchCommand(f), newDoctorCommand(f), newAdoptCommand(f))
+	root.AddCommand(newPersonaCommand(f), newPanelCommand(f), newBenchCommand(f), newDoctorCommand(f), newAdoptCommand(f))
 	root.AddCommand(newVersionCommand(f), newVerifyInstallCommand(f))
 	decorateJSONFailures(root, f)
 	return root
@@ -89,6 +91,12 @@ func decorateJSONFailures(cmd *cobra.Command, f *flags) {
 }
 
 func serviceFor(input string, f *flags) (*app.Service, error) {
+	// --panel names reviewers outright and --panel-policy asks for them to be
+	// composed. Silently letting one win would make the resolved panel depend
+	// on precedence nobody wrote down, so both together is an argument error.
+	if f.Panel != "" && f.PanelPolicy != "" {
+		return nil, &app.ExitError{Code: app.ExitInvalidArguments, Err: errors.New("--panel and --panel-policy are mutually exclusive")}
+	}
 	workspace := input
 	if workspace == "" {
 		workspace = "."
@@ -96,7 +104,7 @@ func serviceFor(input string, f *flags) (*app.Service, error) {
 	if info, err := os.Stat(workspace); err == nil && !info.IsDir() {
 		workspace = filepath.Dir(workspace)
 	}
-	cfg, err := config.Load(config.LoadOptions{Workspace: workspace, TrustWorkspaceConfig: f.TrustWorkspace, ExplicitStateRoot: f.StateRoot, ExplicitPanel: f.Panel, ExplicitKind: f.Kind, ExplicitOutputBytes: f.MaxOutputBytes, ExplicitRunTimeout: f.RunTimeout, ExplicitTokenBudget: f.TokenBudget})
+	cfg, err := config.Load(config.LoadOptions{Workspace: workspace, TrustWorkspaceConfig: f.TrustWorkspace, ExplicitStateRoot: f.StateRoot, ExplicitPanel: f.Panel, ExplicitPanelPolicy: f.PanelPolicy, ExplicitKind: f.Kind, ExplicitOutputBytes: f.MaxOutputBytes, ExplicitRunTimeout: f.RunTimeout, ExplicitTokenBudget: f.TokenBudget})
 	if err != nil {
 		return nil, &app.ExitError{Code: app.ExitInvalidArguments, Err: err}
 	}

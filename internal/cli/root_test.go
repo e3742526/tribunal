@@ -92,7 +92,7 @@ func TestReviewCommandCompletesWithoutGitAndWritesOnlyExternalState(t *testing.T
 
 func TestRootContainsOnlyTribunalCommands(t *testing.T) {
 	root := NewRootCommand()
-	allowed := "adopt arbitrate bench decisions doctor edit explain findings persona recommend replay resume revert review status transcript tui verify-install version"
+	allowed := "adopt arbitrate bench decisions doctor edit explain findings panel persona recommend replay resume revert review status transcript tui verify-install version"
 	var names []string
 	for _, command := range root.Commands() {
 		names = append(names, command.Name())

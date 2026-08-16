@@ -35,7 +35,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	}
 	runCtx, cancel := withRunTimeout(ctx, s.Config.Limits.RunTimeout)
 	defer cancel()
-	panel, err := s.resolvePanel(opts)
+	panel, selection, err := s.resolvePanelWithSelection(opts)
 	if err != nil {
 		return domain.Final{}, exitError(ExitInvalidArguments, "%v", err)
 	}
@@ -62,7 +62,7 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 		return domain.Final{}, exitError(ExitPreflight, "revalidate run directory: %v", err)
 	}
 	started := s.now()
-	if err := s.persistStart(runDir, runID, packet, panel, opts, started); err != nil {
+	if err := s.persistStart(runDir, runID, packet, panel, selection, opts, started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
 	budget, err := loadUsageBudget(runDir, s.Config.Limits.TokenBudget)
@@ -214,45 +214,6 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	return final, nil
 }
 
-func (s *Service) resolvePanel(opts ReviewOptions) (domain.Panel, error) {
-	if opts.PanelValue != nil {
-		panel := *opts.PanelValue
-		if err := domain.NormalizePanel(&panel); err != nil {
-			return domain.Panel{}, err
-		}
-		return s.hydratePanel(panel)
-	}
-	raw := opts.Panel
-	if raw == "" {
-		raw = s.Config.Panel
-	}
-	panel, err := domain.ParsePanel(raw)
-	if err != nil {
-		return domain.Panel{}, err
-	}
-	for i := range panel.Reviewers {
-		panel.Reviewers[i].MaxContextTokens = s.Config.Limits.MaxContextTokens
-		panel.Reviewers[i].ReservedOutputTokens = s.Config.Limits.ReservedOutput
-	}
-	if err := domain.NormalizePanel(&panel); err != nil {
-		return domain.Panel{}, err
-	}
-	return s.hydratePanel(panel)
-}
-
-func (s *Service) hydratePanel(panel domain.Panel) (domain.Panel, error) {
-	for i := range panel.Reviewers {
-		if panel.Reviewers[i].Persona != "" && panel.Reviewers[i].Persona != "plain" {
-			persona, err := config.ResolvePersona(panel.Reviewers[i].Persona, s.Config.WorkspaceRoot, s.Config.TrustWorkspace)
-			if err != nil {
-				return domain.Panel{}, err
-			}
-			panel.Reviewers[i].PersonaLens = config.PersonaText(persona)
-		}
-	}
-	return panel, nil
-}
-
 func (s *Service) resolvePacket(ctx context.Context, opts ReviewOptions) (documents.Packet, error) {
 	if opts.Packet != nil {
 		if err := documents.ValidatePacket(*opts.Packet); err != nil {
@@ -329,11 +290,11 @@ func (s *Service) resolveRun(opts ReviewOptions, packet documents.Packet) (stora
 	return workspace, runID, runDir, err
 }
 
-func (s *Service) persistStart(runDir, runID string, packet documents.Packet, panel domain.Panel, opts ReviewOptions, started time.Time) error {
+func (s *Service) persistStart(runDir, runID string, packet documents.Packet, panel domain.Panel, selection *domain.PanelSelection, opts ReviewOptions, started time.Time) error {
 	if err := storage.WriteJSON(filepath.Join(runDir, "packet.json"), packet); err != nil {
 		return fmt.Errorf("persist packet: %w", err)
 	}
-	meta := Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, DiversityNote: domain.DiversityNote(panel), TrustedSources: s.Config.TrustedSources, IgnoredSources: s.Config.IgnoredSources, ReplayOf: opts.ReplayOf, NoWorkers: opts.NoWorkers, StartedAt: started}
+	meta := Meta{SchemaVersion: 1, RunID: runID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, DiversityNote: domain.DiversityNote(panel), PanelSelection: selection, TrustedSources: s.Config.TrustedSources, IgnoredSources: s.Config.IgnoredSources, ReplayOf: opts.ReplayOf, NoWorkers: opts.NoWorkers, StartedAt: started}
 	if err := storage.WriteJSON(filepath.Join(runDir, "meta.json"), meta); err != nil {
 		return fmt.Errorf("persist meta: %w", err)
 	}

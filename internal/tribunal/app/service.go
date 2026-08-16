@@ -68,6 +68,7 @@ type ReviewOptions struct {
 	Input        string
 	Kind         string
 	Panel        string
+	PanelPolicy  string
 	PanelValue   *domain.Panel
 	Split        bool
 	FailOnSecret bool
@@ -81,18 +82,23 @@ type ReviewOptions struct {
 }
 
 type Meta struct {
-	SchemaVersion  int          `json:"schema_version"`
-	RunID          string       `json:"run_id"`
-	WorkspaceID    string       `json:"workspace_id"`
-	InputRoot      string       `json:"input_root"`
-	PacketHash     string       `json:"packet_hash"`
-	Panel          domain.Panel `json:"panel"`
-	DiversityNote  string       `json:"diversity_note"`
-	TrustedSources []string     `json:"trusted_config_sources"`
-	IgnoredSources []string     `json:"ignored_config_sources"`
-	ReplayOf       string       `json:"replay_of,omitempty"`
-	NoWorkers      bool         `json:"no_workers"`
-	StartedAt      time.Time    `json:"started_at"`
+	SchemaVersion int          `json:"schema_version"`
+	RunID         string       `json:"run_id"`
+	WorkspaceID   string       `json:"workspace_id"`
+	InputRoot     string       `json:"input_root"`
+	PacketHash    string       `json:"packet_hash"`
+	Panel         domain.Panel `json:"panel"`
+	DiversityNote string       `json:"diversity_note"`
+	// PanelSelection is present only when the panel came from a declarative
+	// policy. It records the policy, the seat-by-seat rationale, and any
+	// shortfall, so a run's composition stays auditable after the catalog
+	// that produced it changes.
+	PanelSelection *domain.PanelSelection `json:"panel_selection,omitempty"`
+	TrustedSources []string               `json:"trusted_config_sources"`
+	IgnoredSources []string               `json:"ignored_config_sources"`
+	ReplayOf       string                 `json:"replay_of,omitempty"`
+	NoWorkers      bool                   `json:"no_workers"`
+	StartedAt      time.Time              `json:"started_at"`
 }
 
 func New(cfg config.Config, store *storage.Store, registry *adapters.Registry) (*Service, error) {
@@ -109,6 +115,30 @@ func DefaultRegistry(cfg config.Config) *adapters.Registry {
 		&adapters.Subprocess{AdapterID: "agy", Binary: "agy"},
 		&adapters.OpenAICompatible{BaseURL: cfg.OpenAICompatible.BaseURL, APIKeyEnv: cfg.OpenAICompatible.APIKeyEnv, Headers: cfg.OpenAICompatible.Headers},
 	)
+}
+
+// PanelPreview resolves the panel that a review would use right now without
+// freezing a packet, invoking an adapter, or writing run state. It is the
+// dry-run behind `tribunal panel show`.
+type PanelPreview struct {
+	SchemaVersion int                    `json:"schema_version"`
+	Source        string                 `json:"source"`
+	Policy        string                 `json:"policy,omitempty"`
+	Panel         domain.Panel           `json:"panel"`
+	DiversityNote string                 `json:"diversity_note"`
+	Selection     *domain.PanelSelection `json:"selection,omitempty"`
+}
+
+func (s *Service) PanelPreview(opts ReviewOptions) (PanelPreview, error) {
+	panel, selection, err := s.resolvePanelWithSelection(opts)
+	if err != nil {
+		return PanelPreview{}, &ExitError{Code: ExitInvalidArguments, Err: err}
+	}
+	preview := PanelPreview{SchemaVersion: 1, Source: "panel string", Panel: panel, DiversityNote: domain.DiversityNote(panel), Selection: selection}
+	if selection != nil {
+		preview.Source, preview.Policy = "panel policy", selection.Policy
+	}
+	return preview, nil
 }
 
 func documentRoot(input string) (string, error) {

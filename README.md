@@ -8,7 +8,7 @@ Current version: `v0.1.0`.
 
 ## Install
 
-Requirements are Go 1.25.12 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
+Requirements are Go 1.25.13 or newer and at least two configured review adapters. PDF review additionally requires Poppler's `pdftotext`.
 
 From a checkout:
 
@@ -85,6 +85,40 @@ the error text as review JSON. The bounded raw payload and diagnostic are kept
 under that member's `calls/<reviewer>/<phase>/failed-raw-*.json` and
 `invocation-error-*.txt` artifacts for diagnosis; they never enter consensus.
 
+## Panel policies
+
+A panel can also be composed by the host from a declarative policy instead of
+a verbatim string. A policy declares seats — a bounded persona, required and
+preferred capability tags — plus `minimum_panel`, `independent_families`, and
+diversity, reliability, and cost weights. The host resolves it against the
+`[[models]]` catalog in trusted configuration, maximizing Σ(seat score) plus
+`diversity_weight` × distinct families under those constraints.
+
+```bash
+tribunal panel list
+tribunal panel show ./proposal.md --panel-policy balanced
+tribunal review ./proposal.md --panel-policy high-stakes
+```
+
+Selection is a pure host function. No model ranks its peers or composes a
+panel, and `quality`, `reliability`, and `cost` are operator-declared priors
+that Tribunal never supplies for a vendor model — without a catalog,
+candidates are derived from the configured panel with uniform priors and the
+derivation is disclosed on every resolved panel.
+
+Model-family diversity is the point rather than a tiebreaker: three reviewers
+from one family are three correlated samples, so a policy that asks for three
+independent families fails loudly instead of quietly seating the same family
+twice. `--panel` and `--panel-policy` are mutually exclusive; a resume or
+replay always reuses its recorded panel, so a catalog edit cannot repanel a
+frozen packet.
+
+The built-in `foundation` persona exists for the same reason. A capable
+reviewer silently repairs a gappy argument as it reads and reports nothing;
+three that do so agree, which reads as consensus but is a shared blind spot.
+The foundation lens is instructed not to reconstruct, so an unstated premise
+surfaces as a finding the other seats must then defend or concede.
+
 ## Arbitration
 
 On a terminal, `tribunal arbitrate` prompts for each pending dispute. In automation, supply a schema-versioned file:
@@ -140,6 +174,7 @@ Trusted user configuration is `~/.config/tribunal/config.toml`. Workspace `.trib
 ```toml
 schema_version = 1
 panel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
+# panel_policy = "balanced"   # compose the panel from [[models]] instead
 kind = "generic"
 
 [limits]
@@ -163,7 +198,7 @@ api_key_env = ""
 allowed_domains = ["api.crossref.org", "pubmed.ncbi.nlm.nih.gov", "export.arxiv.org"]
 ```
 
-Recognized environment variables use only the `TRIBUNAL_` prefix: `TRIBUNAL_STATE_ROOT`, `TRIBUNAL_PANEL`, `TRIBUNAL_PASSES`, `TRIBUNAL_MAX_OUTPUT_BYTES`, `TRIBUNAL_MAX_WALL_TIME`, and `TRIBUNAL_TOKEN_BUDGET`.
+Recognized environment variables use only the `TRIBUNAL_` prefix: `TRIBUNAL_STATE_ROOT`, `TRIBUNAL_PANEL`, `TRIBUNAL_PANEL_POLICY`, `TRIBUNAL_PASSES`, `TRIBUNAL_MAX_OUTPUT_BYTES`, `TRIBUNAL_MAX_WALL_TIME`, and `TRIBUNAL_TOKEN_BUDGET`. `TRIBUNAL_PANEL` and `TRIBUNAL_PANEL_POLICY` are mutually exclusive.
 
 Precedence is flags, shell environment, explicitly trusted workspace config, user config, then built-in defaults.
 
@@ -207,6 +242,7 @@ arbitrate, edit, revert, resume, replay, explain
 findings list, findings defer, decisions export
 status, transcript, tui
 persona list, persona new, persona lint
+panel list, panel show
 bench, doctor, adopt
 version, verify-install
 ```

@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — panel policies and the foundation lens
+
+- Panels can be composed by the host from a declarative policy instead of a
+  verbatim string. A policy declares seats (persona, required and preferred
+  capability tags), `minimum_panel`, `independent_families`, and diversity,
+  reliability, and cost weights; `domain.SelectPanel` resolves it against the
+  `[[models]]` catalog by maximizing Σ(seat score) plus `diversity_weight` ×
+  distinct families under those hard constraints. Selection is a pure host
+  function — no model ranks peers or composes a panel.
+- Built-in policies `balanced`, `high-stakes`, and `frugal`; a trusted-config
+  `[[policies]]` entry shadows a built-in of the same name.
+- New `foundation` persona: a lens instructed to report what it cannot
+  establish from the document rather than reconstruct the missing reasoning,
+  so an unstated premise surfaces instead of being silently repaired by every
+  reviewer at once.
+- New `tribunal panel list` and `tribunal panel show`; `show` resolves the
+  panel a review would use without freezing a packet or calling a model.
+- New `--panel-policy` flag, `panel_policy` config key, and
+  `TRIBUNAL_PANEL_POLICY` variable. `--panel`/`--panel-policy` and
+  `TRIBUNAL_PANEL`/`TRIBUNAL_PANEL_POLICY` are mutually exclusive; an explicit
+  panel string clears a configured policy, and resume/replay always reuse the
+  recorded panel.
+- Policy-composed runs record the policy, seat rationale, families, and any
+  shortfall in `meta.json` and `report.md`. An unsatisfiable policy fails
+  before the packet is frozen; an unfilled optional seat, a truncated search,
+  and a catalog derived from the panel string are all reported, never silent.
+
 ## Unreleased — 2026-07-25 latest-pointer compatibility repair
 
 - `status`, `transcript`, and other commands that resolve the latest run now

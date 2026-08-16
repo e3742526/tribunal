@@ -25,6 +25,24 @@ HTTP redirects, and register it in `app.DefaultRegistry`. Add request/argv
 goldens for reviewer, voter, and editor roles. Provider output must pass a real
 JSON Schema and semantic identity validation.
 
+## Adding a panel policy or catalog field
+
+Panel composition is `domain.SelectPanel`, a pure function over a policy and an
+operator-declared catalog. Keep it that way: a model must never rank peers,
+choose a seat, or compose a panel, because the independence barrier would then
+depend on trusting one panelist to pick the others. Built-in policies declare
+seat shape only and name no model; `quality`, `reliability`, and `cost` stay
+operator-declared priors, so do not ship vendor figures as defaults.
+
+New policy or catalog fields need validation in `domain.ValidatePolicy` or
+`domain.ValidateCandidate`, a rejection test, and a decision about precedence
+against `--panel`, `TRIBUNAL_PANEL`, and a recorded resume/replay panel — the
+recorded panel always wins so a catalog edit cannot repanel a frozen packet.
+Apply configured context budgets after selection, never from catalog values
+alone. Any shortfall — an unfilled optional seat, a bounded search, a derived
+catalog, a family count below the policy — must reach `PanelSelection.Notes`
+rather than being silently absorbed.
+
 ## Persistence changes
 
 Journal a transition before replacing `state.json`. Use atomic writes with

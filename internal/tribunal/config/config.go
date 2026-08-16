@@ -49,17 +49,24 @@ type WorkerConfig struct {
 }
 
 type Config struct {
-	SchemaVersion    int              `toml:"schema_version" json:"schema_version"`
-	StateRoot        string           `toml:"state_root" json:"state_root"`
-	Panel            string           `toml:"panel" json:"panel"`
-	Kind             string           `toml:"kind" json:"kind"`
-	Limits           Limits           `toml:"limits" json:"limits"`
-	OpenAICompatible OpenAICompatible `toml:"openai_compatible" json:"openai_compatible"`
-	Workers          WorkerConfig     `toml:"workers" json:"workers"`
-	TrustedSources   []string         `toml:"-" json:"trusted_sources"`
-	IgnoredSources   []string         `toml:"-" json:"ignored_sources"`
-	WorkspaceRoot    string           `toml:"-" json:"workspace_root,omitempty"`
-	TrustWorkspace   bool             `toml:"-" json:"trust_workspace_config"`
+	SchemaVersion int    `toml:"schema_version" json:"schema_version"`
+	StateRoot     string `toml:"state_root" json:"state_root"`
+	Panel         string `toml:"panel" json:"panel"`
+	// PanelPolicy names a declarative panel policy that composes the panel
+	// from Models instead of the verbatim Panel string. When set it wins over
+	// Panel; an explicit --panel flag clears it so the most specific
+	// instruction still decides.
+	PanelPolicy      string                  `toml:"panel_policy" json:"panel_policy,omitempty"`
+	Models           []domain.ModelCandidate `toml:"models" json:"models,omitempty"`
+	Policies         []domain.PanelPolicy    `toml:"policies" json:"policies,omitempty"`
+	Kind             string                  `toml:"kind" json:"kind"`
+	Limits           Limits                  `toml:"limits" json:"limits"`
+	OpenAICompatible OpenAICompatible        `toml:"openai_compatible" json:"openai_compatible"`
+	Workers          WorkerConfig            `toml:"workers" json:"workers"`
+	TrustedSources   []string                `toml:"-" json:"trusted_sources"`
+	IgnoredSources   []string                `toml:"-" json:"ignored_sources"`
+	WorkspaceRoot    string                  `toml:"-" json:"workspace_root,omitempty"`
+	TrustWorkspace   bool                    `toml:"-" json:"trust_workspace_config"`
 }
 
 type LoadOptions struct {
@@ -67,6 +74,7 @@ type LoadOptions struct {
 	TrustWorkspaceConfig bool
 	ExplicitStateRoot    string
 	ExplicitPanel        string
+	ExplicitPanelPolicy  string
 	ExplicitKind         string
 	ExplicitPasses       int
 	ExplicitOutputBytes  int64
@@ -158,7 +166,7 @@ func mergeFile(cfg *Config, path string) error {
 }
 
 func mergeEnv(cfg *Config) error {
-	known := map[string]bool{"TRIBUNAL_STATE_ROOT": true, "TRIBUNAL_PANEL": true, "TRIBUNAL_PASSES": true, "TRIBUNAL_MAX_OUTPUT_BYTES": true, "TRIBUNAL_MAX_WALL_TIME": true, "TRIBUNAL_TOKEN_BUDGET": true}
+	known := map[string]bool{"TRIBUNAL_STATE_ROOT": true, "TRIBUNAL_PANEL": true, "TRIBUNAL_PANEL_POLICY": true, "TRIBUNAL_PASSES": true, "TRIBUNAL_MAX_OUTPUT_BYTES": true, "TRIBUNAL_MAX_WALL_TIME": true, "TRIBUNAL_TOKEN_BUDGET": true}
 	for _, item := range os.Environ() {
 		key, _, ok := strings.Cut(item, "=")
 		if ok && strings.HasPrefix(key, "TRIBUNAL_") && !known[key] {
@@ -168,8 +176,21 @@ func mergeEnv(cfg *Config) error {
 	if value := os.Getenv("TRIBUNAL_STATE_ROOT"); value != "" {
 		cfg.StateRoot = value
 	}
-	if value := os.Getenv("TRIBUNAL_PANEL"); value != "" {
-		cfg.Panel = value
+	// A shell panel string outranks a configured policy for the same reason
+	// the flag does: it names reviewers outright, so leaving a policy to
+	// recompose the panel would discard the more specific instruction. Both
+	// set at the same precedence level is ambiguous, so it fails rather than
+	// resolving by evaluation order.
+	panelEnv, policyEnv := os.Getenv("TRIBUNAL_PANEL"), os.Getenv("TRIBUNAL_PANEL_POLICY")
+	if panelEnv != "" && policyEnv != "" {
+		return fmt.Errorf("TRIBUNAL_PANEL and TRIBUNAL_PANEL_POLICY are mutually exclusive")
+	}
+	if panelEnv != "" {
+		cfg.Panel = panelEnv
+		cfg.PanelPolicy = ""
+	}
+	if policyEnv != "" {
+		cfg.PanelPolicy = policyEnv
 	}
 	if value := os.Getenv("TRIBUNAL_PASSES"); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -202,8 +223,15 @@ func applyFlags(cfg *Config, opts LoadOptions) {
 	if opts.ExplicitStateRoot != "" {
 		cfg.StateRoot = opts.ExplicitStateRoot
 	}
+	// An explicit panel string is the most specific instruction available, so
+	// it clears a configured policy rather than being silently outranked by
+	// it. The CLI rejects both flags together, so only one can arrive here.
 	if opts.ExplicitPanel != "" {
 		cfg.Panel = opts.ExplicitPanel
+		cfg.PanelPolicy = ""
+	}
+	if opts.ExplicitPanelPolicy != "" {
+		cfg.PanelPolicy = opts.ExplicitPanelPolicy
 	}
 	if opts.ExplicitKind != "" {
 		cfg.Kind = opts.ExplicitKind
@@ -283,6 +311,9 @@ func normalize(cfg *Config) error {
 			}
 		}
 	}
+	if err := normalizePanelSelection(cfg); err != nil {
+		return err
+	}
 	panel, err := domain.ParsePanel(cfg.Panel)
 	if err != nil {
 		return err
@@ -292,6 +323,40 @@ func normalize(cfg *Config) error {
 		panel.Reviewers[i].ReservedOutputTokens = cfg.Limits.ReservedOutput
 	}
 	return domain.ValidatePanel(panel)
+}
+
+// normalizePanelSelection validates the catalog and policy surface at load
+// time so a malformed entry fails before any packet is frozen. Feasibility —
+// whether a policy can actually be satisfied by this catalog — is resolved
+// later by domain.SelectPanel, which reports the shortfall in its own terms.
+func normalizePanelSelection(cfg *Config) error {
+	seen := map[string]struct{}{}
+	for _, candidate := range cfg.Models {
+		if err := domain.ValidateCandidate(candidate); err != nil {
+			return err
+		}
+		if _, exists := seen[candidate.ID]; exists {
+			return fmt.Errorf("duplicate model catalog id %q", candidate.ID)
+		}
+		seen[candidate.ID] = struct{}{}
+	}
+	names := map[string]struct{}{}
+	for _, policy := range cfg.Policies {
+		if err := domain.ValidatePolicy(policy); err != nil {
+			return err
+		}
+		if _, exists := names[policy.Name]; exists {
+			return fmt.Errorf("duplicate panel policy %q", policy.Name)
+		}
+		names[policy.Name] = struct{}{}
+	}
+	if cfg.PanelPolicy == "" {
+		return nil
+	}
+	if _, err := ResolvePanelPolicy(*cfg, cfg.PanelPolicy); err != nil {
+		return err
+	}
+	return nil
 }
 
 func userConfigPath() (string, error) {
