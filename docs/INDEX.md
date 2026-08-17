@@ -12,5 +12,7 @@
 - [Release security](RELEASE_SECURITY.md): archive and provenance verification.
 - [ADRs](adr/): clean break, state, decision core, adapters, editing, workers,
   and extraction.
+- [Proposals](proposals/): not-yet-implemented plans, e.g. the multi-agent
+  research-team fork proposal.
 - [Build record](build/): gate state, requirements, risks, defects, audits, and
   evidence.
