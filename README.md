@@ -26,7 +26,9 @@ Provider CLIs are detected from `PATH`:
 - `codex` for Codex models;
 - `claude` for Claude models;
 - `agy` for Gemini models;
-- `openai-compatible` for an HTTP endpoint configured by the user.
+- `openai-compatible` for an HTTP endpoint configured by the user (any
+  OpenAI-`/chat/completions`-shaped API, including Mistral's own API and
+  local gateways such as Ollama).
 
 ## Quickstart
 
@@ -196,6 +198,24 @@ api_key_env = ""
 
 [workers]
 allowed_domains = ["api.crossref.org", "pubmed.ncbi.nlm.nih.gov", "export.arxiv.org"]
+```
+
+`[openai_compatible]` holds one configured endpoint at a time (a
+document-review packet is one bounded call per panelist per phase, not an
+interactive session, so this generic HTTP adapter — not the Agent Client
+Protocol — is the fit here). To panel against Mistral's own API instead of
+a local gateway:
+
+```toml
+[openai_compatible]
+base_url = "https://api.mistral.ai/v1"
+model = "mistral-large-latest"
+api_key_env = "MISTRAL_API_KEY"
+```
+
+```bash
+tribunal review proposal.md \
+  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,openai-compatible/mistral-large-latest'
 ```
 
 Recognized environment variables use only the `TRIBUNAL_` prefix: `TRIBUNAL_STATE_ROOT`, `TRIBUNAL_PANEL`, `TRIBUNAL_PANEL_POLICY`, `TRIBUNAL_PASSES`, `TRIBUNAL_MAX_OUTPUT_BYTES`, `TRIBUNAL_MAX_WALL_TIME`, and `TRIBUNAL_TOKEN_BUDGET`. `TRIBUNAL_PANEL` and `TRIBUNAL_PANEL_POLICY` are mutually exclusive.
