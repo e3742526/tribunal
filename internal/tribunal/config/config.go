@@ -42,6 +42,15 @@ type OpenAICompatible struct {
 	OutputTokens int               `toml:"reserved_output_tokens" json:"reserved_output_tokens"`
 }
 
+// MistralAcp configures the mistral-acp adapter, which drives Mistral's
+// `vibe-acp` binary as an Agent Client Protocol (ACP) client. Auth is the
+// CLI's own session (`vibe --setup`), not a key held in this config —
+// unlike OpenAICompatible, there is no APIKeyEnv here.
+type MistralAcp struct {
+	Binary      string `toml:"binary" json:"binary"`
+	SessionMode string `toml:"session_mode" json:"session_mode"`
+}
+
 type WorkerConfig struct {
 	AllowedDomains   []string `toml:"allowed_domains" json:"allowed_domains"`
 	WebSearchURL     string   `toml:"websearch_url" json:"websearch_url"`
@@ -62,6 +71,7 @@ type Config struct {
 	Kind             string                  `toml:"kind" json:"kind"`
 	Limits           Limits                  `toml:"limits" json:"limits"`
 	OpenAICompatible OpenAICompatible        `toml:"openai_compatible" json:"openai_compatible"`
+	MistralAcp       MistralAcp              `toml:"mistral_acp" json:"mistral_acp"`
 	Workers          WorkerConfig            `toml:"workers" json:"workers"`
 	TrustedSources   []string                `toml:"-" json:"trusted_sources"`
 	IgnoredSources   []string                `toml:"-" json:"ignored_sources"`
@@ -100,6 +110,7 @@ func Default() Config {
 			ReservedOutput:   16384,
 		},
 		OpenAICompatible: OpenAICompatible{BaseURL: "http://127.0.0.1:11434/v1", Model: "gemma4:latest", Headers: map[string]string{}, MaxContext: 131072, OutputTokens: 16384},
+		MistralAcp:       MistralAcp{Binary: "vibe-acp", SessionMode: "plan"},
 	}
 }
 

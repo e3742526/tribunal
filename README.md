@@ -28,7 +28,8 @@ Provider CLIs are detected from `PATH`:
 - `agy` for Gemini models;
 - `openai-compatible` for an HTTP endpoint configured by the user (any
   OpenAI-`/chat/completions`-shaped API, including Mistral's own API and
-  local gateways such as Ollama).
+  local gateways such as Ollama);
+- `mistral-acp` for Mistral's `vibe-acp` binary via the Agent Client Protocol.
 
 ## Quickstart
 
@@ -200,11 +201,8 @@ api_key_env = ""
 allowed_domains = ["api.crossref.org", "pubmed.ncbi.nlm.nih.gov", "export.arxiv.org"]
 ```
 
-`[openai_compatible]` holds one configured endpoint at a time (a
-document-review packet is one bounded call per panelist per phase, not an
-interactive session, so this generic HTTP adapter — not the Agent Client
-Protocol — is the fit here). To panel against Mistral's own API instead of
-a local gateway:
+`[openai_compatible]` holds one configured endpoint at a time. To panel
+against Mistral's own chat-completions API instead of a local gateway:
 
 ```toml
 [openai_compatible]
@@ -217,6 +215,38 @@ api_key_env = "MISTRAL_API_KEY"
 tribunal review proposal.md \
   --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,openai-compatible/mistral-large-latest'
 ```
+
+`mistral-acp` panels against Mistral's `vibe-acp` binary — the ACP-over-stdio
+entrypoint shipped by the `mistral-vibe` package — via the [Agent Client
+Protocol](https://agentclientprotocol.com) instead of the raw API. Every
+Tribunal role is already a bounded, single-turn, read-only invocation (one
+prompt in, one text response out — see "Panel grammar" above), which is
+exactly what one ACP turn is (`initialize` → `session/new` → `session/prompt`,
+then tear down); there is no persistent multi-turn session to reconcile with
+Tribunal's own per-phase call model. Auth is the CLI's own session
+(`vibe --setup`), not an API key:
+
+```bash
+uv tool install mistral-vibe
+vibe --setup
+```
+
+```toml
+[mistral_acp]
+# binary = "vibe-acp"    # default; override to pin an absolute path
+# session_mode = "plan"  # default; Vibe's most restrictive, read-only mode
+```
+
+```bash
+tribunal review proposal.md \
+  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,mistral-acp/mistral-large-latest'
+```
+
+This adapter mirrors the fleet's other ACP integrations — cephalopod-ai/tagteam's
+`internal/tagteam/adapters_mistral_acp.go`, itself modeled on gosling's Rust
+`vibe_acp` provider and cuttlefish's TypeScript `VibeAcpEngine` — rather than
+inventing new wire behavior, so a `vibe-acp` protocol fix made in one repo is
+easy to carry over to the others.
 
 Recognized environment variables use only the `TRIBUNAL_` prefix: `TRIBUNAL_STATE_ROOT`, `TRIBUNAL_PANEL`, `TRIBUNAL_PANEL_POLICY`, `TRIBUNAL_PASSES`, `TRIBUNAL_MAX_OUTPUT_BYTES`, `TRIBUNAL_MAX_WALL_TIME`, and `TRIBUNAL_TOKEN_BUDGET`. `TRIBUNAL_PANEL` and `TRIBUNAL_PANEL_POLICY` are mutually exclusive.
 

@@ -2,6 +2,12 @@
 
 ## Unreleased — panel policies and the foundation lens
 
+- New `mistral-acp` adapter: panels against Mistral's `vibe-acp` binary via
+  the Agent Client Protocol, alongside the existing `openai-compatible` route
+  to Mistral's raw chat-completions API. Auth is the CLI's own session
+  (`vibe --setup`), not an API key. New `[mistral_acp]` config block
+  (`binary`, `session_mode`). Mirrors cephalopod-ai/tagteam's ACP client,
+  itself modeled on gosling's and cuttlefish's `vibe-acp` integrations.
 - Panels can be composed by the host from a declarative policy instead of a
   verbatim string. A policy declares seats (persona, required and preferred
   capability tags), `minimum_panel`, `independent_families`, and diversity,
