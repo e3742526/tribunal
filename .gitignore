@@ -6,3 +6,4 @@ dist/
 coverage.out
 .tribunal.toml
 docs/polish/
+.dory/
