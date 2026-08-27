@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,6 +98,164 @@ func TestEditAppliesAcceptedScopeAndRevertProtectsUserChanges(t *testing.T) {
 	restored, _ := os.ReadFile(documentPath)
 	if string(restored) != original {
 		t.Fatalf("revert restored %q, want %q", restored, original)
+	}
+}
+
+func TestEditRetriesInvalidModelContract(t *testing.T) {
+	documentPath := filepath.Join(t.TempDir(), "brief.md")
+	content := "# Brief\n\nThe date is unsupported.\n"
+	if err := os.WriteFile(documentPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rubric, _ := config.BuiltinRubric("generic")
+	packet, err := documents.Build(context.Background(), documentPath, documents.BuildOptions{Kind: "generic", Rubric: rubric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(content, "unsupported")
+	finding := domain.Finding{SchemaVersion: 2, ID: "F-1", Reviewer: "R-001", Origin: "panel", Severity: domain.SeverityMajor, Category: domain.CategoryCorrectness, Anchor: domain.Anchor{Kind: "quote", PacketItem: packet.Items[0].ID, Quote: "unsupported", ItemSHA256: packet.Items[0].PacketSHA256, CharOffset: start, EndOffset: start + len("unsupported")}, Issue: "The date lacks support.", Recommendation: "Qualify the statement.", EvidenceStatus: domain.EvidenceAnchored, Confidence: "high"}
+	final := domain.Final{SchemaVersion: 1, RunID: "run-1", PacketHash: packet.PacketHash, Findings: []domain.Finding{finding}, Decisions: []domain.Decision{{SchemaVersion: 1, FindingID: finding.ID, Outcome: "accepted"}}}
+	panel, err := domain.ParsePanel("fake/editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	if err := storage.WriteJSON(filepath.Join(runDir, "meta.json"), Meta{SchemaVersion: 1, RunID: final.RunID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	proposal := domain.EditProposal{SchemaVersion: 1, RunID: final.RunID, PacketHash: packet.PacketHash, Hunks: []domain.EditHunk{{PacketItem: packet.Items[0].ID, FindingIDs: []string{finding.ID}, Scope: domain.EditLocal, SourceSHA256: packet.Items[0].SourceSHA256, Start: start, End: start + len("unsupported"), Replacement: "unverified"}}}
+	valid, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	fake := &adapters.FuncAdapter{AdapterID: "fake", InvokeFn: func(_ context.Context, role adapters.Role, _ domain.Panelist, req adapters.Request) (adapters.Response, error) {
+		if role != adapters.RoleEditor {
+			t.Fatalf("role = %s, want editor", role)
+		}
+		if calls.Add(1) == 1 {
+			return adapters.Response{Raw: []byte(`{"edits": [\q]}`)}, nil
+		}
+		if !strings.Contains(req.Prompt, "prior edit proposal output failed contract validation") {
+			t.Fatalf("retry prompt omitted contract failure notice: %s", req.Prompt)
+		}
+		return adapters.Response{Raw: valid}, nil
+	}}
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(config.Default(), store, adapters.NewRegistry(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.loadOrCreateProposal(context.Background(), runDir, final.RunID, packet, final, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID != proposal.RunID || calls.Load() != 2 {
+		t.Fatalf("proposal = %#v, calls = %d", got, calls.Load())
+	}
+	for _, name := range []string{"raw.json", "retry-prompt.txt", "retry-raw.json"} {
+		if _, err := os.Stat(filepath.Join(runDir, "calls", "R-001", "edit", name)); err != nil {
+			t.Errorf("missing %s: %v", name, err)
+		}
+	}
+}
+
+func TestEditFallsBackToNextCapablePanelist(t *testing.T) {
+	documentPath := filepath.Join(t.TempDir(), "brief.md")
+	content := "# Brief\n\nThe date is unsupported.\n"
+	if err := os.WriteFile(documentPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rubric, _ := config.BuiltinRubric("generic")
+	packet, err := documents.Build(context.Background(), documentPath, documents.BuildOptions{Kind: "generic", Rubric: rubric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(content, "unsupported")
+	finding := domain.Finding{SchemaVersion: 2, ID: "F-1", Reviewer: "R-001", Origin: "panel", Severity: domain.SeverityMajor, Category: domain.CategoryCorrectness, Anchor: domain.Anchor{Kind: "quote", PacketItem: packet.Items[0].ID, Quote: "unsupported", ItemSHA256: packet.Items[0].PacketSHA256, CharOffset: start, EndOffset: start + len("unsupported")}, Issue: "The date lacks support.", Recommendation: "Qualify the statement.", EvidenceStatus: domain.EvidenceAnchored, Confidence: "high"}
+	final := domain.Final{SchemaVersion: 1, RunID: "run-1", PacketHash: packet.PacketHash, Findings: []domain.Finding{finding}, Decisions: []domain.Decision{{SchemaVersion: 1, FindingID: finding.ID, Outcome: "accepted"}}}
+	panel, err := domain.ParsePanel("bad/editor,good/editor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	if err := storage.WriteJSON(filepath.Join(runDir, "meta.json"), Meta{SchemaVersion: 1, RunID: final.RunID, WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	proposal := domain.EditProposal{SchemaVersion: 1, RunID: final.RunID, PacketHash: packet.PacketHash, Hunks: []domain.EditHunk{{PacketItem: packet.Items[0].ID, FindingIDs: []string{finding.ID}, Scope: domain.EditLocal, SourceSHA256: packet.Items[0].SourceSHA256, Start: start, End: start + len("unsupported"), Replacement: "unverified"}}}
+	valid, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var badCalls, goodCalls atomic.Int64
+	bad := &adapters.FuncAdapter{AdapterID: "bad", InvokeFn: func(context.Context, adapters.Role, domain.Panelist, adapters.Request) (adapters.Response, error) {
+		badCalls.Add(1)
+		return adapters.Response{Raw: []byte(`{"wrong":"shape"}`)}, nil
+	}}
+	good := &adapters.FuncAdapter{AdapterID: "good", InvokeFn: func(context.Context, adapters.Role, domain.Panelist, adapters.Request) (adapters.Response, error) {
+		goodCalls.Add(1)
+		return adapters.Response{Raw: valid}, nil
+	}}
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(config.Default(), store, adapters.NewRegistry(bad, good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.loadOrCreateProposal(context.Background(), runDir, final.RunID, packet, final, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID != proposal.RunID || badCalls.Load() != 2 || goodCalls.Load() != 1 {
+		t.Fatalf("proposal = %#v, bad calls = %d, good calls = %d", got, badCalls.Load(), goodCalls.Load())
+	}
+	for _, path := range []string{
+		filepath.Join(runDir, "calls", "R-001", "edit", "retry-raw.json"),
+		filepath.Join(runDir, "calls", "R-002", "edit", "raw.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("missing failover artifact %s: %v", path, err)
+		}
+	}
+}
+
+func TestEditAllEditorsFailWithGenerationError(t *testing.T) {
+	documentPath := filepath.Join(t.TempDir(), "brief.md")
+	if err := os.WriteFile(documentPath, []byte("# Brief\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rubric, _ := config.BuiltinRubric("generic")
+	packet, err := documents.Build(context.Background(), documentPath, documents.BuildOptions{Kind: "generic", Rubric: rubric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel, err := domain.ParsePanel("bad/one,bad/two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	if err := storage.WriteJSON(filepath.Join(runDir, "meta.json"), Meta{SchemaVersion: 1, RunID: "run-1", WorkspaceID: packet.WorkspaceID, InputRoot: packet.InputRoot, PacketHash: packet.PacketHash, Panel: panel, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	bad := &adapters.FuncAdapter{AdapterID: "bad", InvokeFn: func(context.Context, adapters.Role, domain.Panelist, adapters.Request) (adapters.Response, error) {
+		return adapters.Response{Raw: []byte(`{"wrong":"shape"}`)}, nil
+	}}
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(config.Default(), store, adapters.NewRegistry(bad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.loadOrCreateProposal(context.Background(), runDir, "run-1", packet, domain.Final{}, "")
+	if !errors.Is(err, errEditorGeneration) || !strings.Contains(err.Error(), "R-001") || !strings.Contains(err.Error(), "R-002") {
+		t.Fatalf("error = %v, want aggregate editor generation failure", err)
 	}
 }
 

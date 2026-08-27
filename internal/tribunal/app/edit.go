@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,8 @@ type plannedEdit struct {
 	after []byte
 }
 
+var errEditorGeneration = errors.New("editor proposal generation failed")
+
 func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error) {
 	workspace, runDir, runID, err := s.locateRun(opts.RunRef)
 	if err != nil {
@@ -87,7 +90,11 @@ func (s *Service) Edit(ctx context.Context, opts EditOptions) (EditResult, error
 	}
 	proposal, err := s.loadOrCreateProposal(ctx, runDir, runID, packet, final, opts.ProposalPath)
 	if err != nil {
-		return EditResult{}, exitError(ExitPreflight, "%v", err)
+		code := ExitPreflight
+		if errors.Is(err, errEditorGeneration) {
+			code = ExitInternal
+		}
+		return EditResult{}, exitError(code, "%v", err)
 	}
 	if err := storage.WriteJSON(filepath.Join(runDir, "edit-proposal.json"), proposal); err != nil {
 		return EditResult{}, exitError(ExitPreflight, "persist edit proposal: %v", err)
@@ -254,16 +261,31 @@ func (s *Service) loadOrCreateProposal(ctx context.Context, runDir, runID string
 	if err != nil || len(meta.Panel.Reviewers) == 0 {
 		return domain.EditProposal{}, fmt.Errorf("run has no editor-capable panel")
 	}
-	var editor domain.Panelist
+	var editors []domain.Panelist
 	for _, candidate := range meta.Panel.Reviewers {
 		if candidate.Adapter != "claude" {
-			editor = candidate
-			break
+			editors = append(editors, candidate)
 		}
 	}
-	if editor.ID == "" {
+	if len(editors) == 0 {
 		return domain.EditProposal{}, fmt.Errorf("run panel has no proposal-capable editor")
 	}
+	if err := storage.WriteFile(filepath.Join(runDir, "edit.schema.json"), []byte(adapters.ProviderEditSchema+"\n")); err != nil {
+		return domain.EditProposal{}, err
+	}
+	prompt := editPrompt(packet, final, runID)
+	var failures []error
+	for _, editor := range editors {
+		proposal, err := s.createProposalWithEditor(ctx, runDir, editor, prompt, runID, packet.PacketHash)
+		if err == nil {
+			return proposal, nil
+		}
+		failures = append(failures, fmt.Errorf("editor %s (%s/%s): %w", editor.ID, editor.Adapter, editor.Model, err))
+	}
+	return domain.EditProposal{}, fmt.Errorf("%w: all proposal-capable editors failed: %w", errEditorGeneration, errors.Join(failures...))
+}
+
+func (s *Service) createProposalWithEditor(ctx context.Context, runDir string, editor domain.Panelist, prompt, runID, packetHash string) (domain.EditProposal, error) {
 	adapter, err := s.Registry.Get(editor.Adapter)
 	if err != nil {
 		return domain.EditProposal{}, err
@@ -272,10 +294,6 @@ func (s *Service) loadOrCreateProposal(ctx context.Context, runDir, runID string
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return domain.EditProposal{}, err
 	}
-	if err := storage.WriteFile(filepath.Join(runDir, "edit.schema.json"), []byte(adapters.ProviderEditSchema+"\n")); err != nil {
-		return domain.EditProposal{}, err
-	}
-	prompt := editPrompt(packet, final, runID)
 	if err := storage.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(prompt)); err != nil {
 		return domain.EditProposal{}, err
 	}
@@ -287,8 +305,27 @@ func (s *Service) loadOrCreateProposal(ctx context.Context, runDir, runID string
 	if err := storage.WriteFile(filepath.Join(dir, "raw.json"), response.Raw); err != nil {
 		return domain.EditProposal{}, err
 	}
-	proposal, _, err := adapters.DecodeEdit(response.Raw, runID, packet.PacketHash)
-	return proposal, err
+	proposal, _, decodeErr := adapters.DecodeEdit(response.Raw, runID, packetHash)
+	if decodeErr == nil {
+		return proposal, nil
+	}
+	retryReq := req
+	retryReq.Prompt += contractRetryNotice("edit proposal", decodeErr)
+	if err := storage.WriteFile(filepath.Join(dir, "retry-prompt.txt"), []byte(retryReq.Prompt)); err != nil {
+		return domain.EditProposal{}, err
+	}
+	retryResponse, invokeErr := s.invokeWithProviderLock(ctx, runDir, adapter, adapters.RoleEditor, editor, retryReq)
+	if invokeErr != nil {
+		if persistErr := persistFailedInvocation(dir, "contract-retry", retryResponse, invokeErr); persistErr != nil {
+			return domain.EditProposal{}, persistErr
+		}
+		return domain.EditProposal{}, invokeErr
+	}
+	if err := storage.WriteFile(filepath.Join(dir, "retry-raw.json"), retryResponse.Raw); err != nil {
+		return domain.EditProposal{}, err
+	}
+	proposal, _, decodeErr = adapters.DecodeEdit(retryResponse.Raw, runID, packetHash)
+	return proposal, decodeErr
 }
 
 func editPrompt(packet documents.Packet, final domain.Final, runID string) string {
