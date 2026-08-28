@@ -113,7 +113,7 @@ func DefaultRegistry(cfg config.Config) *adapters.Registry {
 		&adapters.Subprocess{AdapterID: "codex", Binary: "codex"},
 		&adapters.Subprocess{AdapterID: "claude", Binary: "claude", Serial: true},
 		&adapters.Subprocess{AdapterID: "agy", Binary: "agy"},
-		&adapters.OpenAICompatible{BaseURL: cfg.OpenAICompatible.BaseURL, APIKeyEnv: cfg.OpenAICompatible.APIKeyEnv, Headers: cfg.OpenAICompatible.Headers},
+		&adapters.OpenAICompatible{BaseURL: cfg.OpenAICompatible.BaseURL, Model: cfg.OpenAICompatible.Model, APIKeyEnv: cfg.OpenAICompatible.APIKeyEnv, Headers: cfg.OpenAICompatible.Headers},
 		&adapters.MistralAcp{Binary: cfg.MistralAcp.Binary, SessionMode: cfg.MistralAcp.SessionMode},
 	)
 }

@@ -42,6 +42,34 @@ func TestDeterministicWorkersProduceBoundedFindings(t *testing.T) {
 	}
 }
 
+func TestReferenceCheckIgnoresBracketedCitationRanges(t *testing.T) {
+	variants := []string{
+		"Numbered references [1]-[40] are listed separately.",
+		"Numbered references [1] – [40] are listed separately.",
+		"Numbered references [1]—[40] are listed separately.",
+	}
+	for _, content := range variants {
+		t.Run(content, func(t *testing.T) {
+			packet := documents.Packet{Items: []documents.Item{{ID: "artifact:x.md", PacketSHA256: "hash", Content: content}}}
+			if findings := ReferenceCheck(packet); len(findings) != 0 {
+				t.Fatalf("ReferenceCheck() returned range endpoint findings: %#v", findings)
+			}
+		})
+	}
+}
+
+func TestReferenceCheckStillReportsIndividualMissingCitationsNearRanges(t *testing.T) {
+	packet := documents.Packet{Items: []documents.Item{{
+		ID:           "artifact:x.md",
+		PacketSHA256: "hash",
+		Content:      "The register spans [1]–[40], but this claim cites [41].",
+	}}}
+	findings := ReferenceCheck(packet)
+	if len(findings) != 1 || findings[0].Anchor.Quote != "[41]" {
+		t.Fatalf("ReferenceCheck() findings = %#v, want one finding for [41]", findings)
+	}
+}
+
 func TestWorkerRedirectCannotEscapeAllowlistWithCustomClient(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("escaped")) }))
 	defer target.Close()

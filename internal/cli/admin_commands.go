@@ -118,7 +118,14 @@ func newDoctorCommand(f *flags) *cobra.Command {
 		report := service.Doctor(ctx)
 		var lines []string
 		for _, adapter := range report.Adapters {
-			lines = append(lines, fmt.Sprintf("%-18s found=%t runnable=%t %s", adapter.Adapter, adapter.Found, adapter.Runnable, strings.TrimSpace(adapter.Version)))
+			detail := strings.TrimSpace(adapter.Version)
+			if !adapter.Runnable && strings.TrimSpace(adapter.Hint) != "" {
+				if detail != "" {
+					detail += "; "
+				}
+				detail += "hint: " + strings.TrimSpace(adapter.Hint)
+			}
+			lines = append(lines, fmt.Sprintf("%-18s found=%t runnable=%t %s", adapter.Adapter, adapter.Found, adapter.Runnable, detail))
 		}
 		lines = append(lines, fmt.Sprintf("%-18s found=%t runnable=%t %s", "pdftotext", report.PDFToText.Found, report.PDFToText.Runnable, report.PDFToText.Hint))
 		return printValue(cmd, f, report, strings.Join(lines, "\n"))

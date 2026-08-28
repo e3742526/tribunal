@@ -232,6 +232,7 @@ func Spellcheck(packet documents.Packet) []domain.Finding {
 
 var numericCitation = regexp.MustCompile(`\[([0-9]{1,4})\]`)
 var numericReference = regexp.MustCompile(`(?m)^\s*\[([0-9]{1,4})\]\s+`)
+var numericCitationRange = regexp.MustCompile(`\[[0-9]{1,4}\]\s*[-–—]\s*\[[0-9]{1,4}\]`)
 
 func ReferenceCheck(packet documents.Packet) []domain.Finding {
 	var findings []domain.Finding
@@ -240,13 +241,14 @@ func ReferenceCheck(packet documents.Packet) []domain.Finding {
 		for _, match := range numericReference.FindAllStringSubmatch(item.Content, -1) {
 			definitions[match[1]] = true
 		}
+		ranges := numericCitationRange.FindAllStringIndex(item.Content, -1)
 		seen := map[string]bool{}
 		for _, loc := range numericCitation.FindAllStringSubmatchIndex(item.Content, -1) {
 			if len(findings) >= maxWorkerFindings {
 				return findings
 			}
 			key := item.Content[loc[2]:loc[3]]
-			if definitions[key] || seen[key] {
+			if definitions[key] || seen[key] || citationInsideRange(loc[0], loc[1], ranges) {
 				continue
 			}
 			seen[key] = true
@@ -256,4 +258,13 @@ func ReferenceCheck(packet documents.Packet) []domain.Finding {
 	}
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].ID < findings[j].ID })
 	return findings
+}
+
+func citationInsideRange(start, end int, ranges [][]int) bool {
+	for _, span := range ranges {
+		if start >= span[0] && end <= span[1] {
+			return true
+		}
+	}
+	return false
 }

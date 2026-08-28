@@ -77,8 +77,10 @@ edit, resolve it manually; Tribunal will not overwrite it.
 
 ## Operational commands
 
-`doctor` detects provider CLIs and `pdftotext`. `bench` runs a planted
-statistics/citation/instruction-injection fixture unless a fixture document is
-supplied. `adopt` initializes external identity metadata without a workspace
-write. `verify-install` validates build metadata and the adjacent SHA-256
-manifest for release binaries.
+`doctor` detects provider CLIs and `pdftotext`. For an OpenAI-compatible
+provider, it also checks the configured model when the provider exposes a
+valid `/models` catalog; providers without that optional catalog remain
+compatible. `bench` runs a planted statistics/citation/instruction-injection
+fixture unless a fixture document is supplied. `adopt` initializes external
+identity metadata without a workspace write. `verify-install` validates build
+metadata and the adjacent SHA-256 manifest for release binaries.

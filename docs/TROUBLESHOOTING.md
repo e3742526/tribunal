@@ -4,8 +4,10 @@
 
 Run `tribunal transcript <input> --json`. Inspect each review `status.json` and
 raw output under the external run directory. `doctor` distinguishes missing
-provider CLIs from malformed output. Tribunal requires at least two valid
-reviewers and a majority of the configured panel.
+provider CLIs from malformed output. When an OpenAI-compatible server exposes
+a valid model catalog, `doctor` also reports a configured model that the server
+does not advertise. Tribunal requires at least two valid reviewers and a
+majority of the configured panel.
 
 ## Packet exceeds context
 
