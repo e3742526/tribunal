@@ -65,7 +65,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newResumeCommand(f), newReplayCommand(f), newExplainCommand(f))
 	root.AddCommand(newFindingsCommand(f), newDecisionsCommand(f))
 	root.AddCommand(newStatusCommand(f), newTranscriptCommand(f), newTUICommand(f))
-	root.AddCommand(newPersonaCommand(f), newPanelCommand(f), newBenchCommand(f), newDoctorCommand(f), newAdoptCommand(f))
+	root.AddCommand(newPersonaCommand(f), newPanelCommand(f), newBenchCommand(f), newDoctorCommand(f), newModelsCommand(f), newAdoptCommand(f))
 	root.AddCommand(newVersionCommand(f), newVerifyInstallCommand(f))
 	decorateJSONFailures(root, f)
 	return root

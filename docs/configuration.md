@@ -13,7 +13,7 @@ network policy, edit permissions, and budgets are authority-bearing.
 ## Defaults
 
 - Panel: `claude/claude-opus-5`, `codex/gpt-5.6-sol`,
-  `agy/Gemini 3.5 Flash (Medium)`.
+  `agy/gemini-3.8-flash-medium` (the model ID `agy models` prints, not a display name).
 - Panel policy: unset; the panel string is used verbatim.
 - Kind: `generic`; passes: 2; max findings/reviewer: 25.
 - Context: 131072 tokens; reserve: 16384; total token cap: 500000.

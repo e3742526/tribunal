@@ -373,6 +373,25 @@ func (s *Service) Doctor(ctx context.Context) DoctorReport {
 	return report
 }
 
+// ModelCatalog reports the model IDs every configured adapter exposes.
+// Providers with a live model-list surface are queried concurrently; the rest
+// fall back to the vendored fleet roster or to what the operator configured,
+// with discovery failures preserved as visible warnings rather than dropped.
+//
+// Discovery is read-only: it lists or opens a session, and never prompts a
+// model or freezes a packet.
+func (s *Service) ModelCatalog(ctx context.Context) ModelCatalogReport {
+	defaults := map[string]string{"openai-compatible": s.Config.OpenAICompatible.Model}
+	entries := s.Registry.DiscoverModels(ctx, s.Store.Root, defaults)
+	return ModelCatalogReport{SchemaVersion: 1, Adapters: entries}
+}
+
+// ModelCatalogReport is the `tribunal models` envelope.
+type ModelCatalogReport struct {
+	SchemaVersion int                          `json:"schema_version"`
+	Adapters      []adapters.ModelCatalogEntry `json:"adapters"`
+}
+
 func (s *Service) Adopt(input string) (storage.Workspace, error) {
 	workspace, err := s.locateWorkspace(input)
 	if err != nil {

@@ -132,6 +132,53 @@ func newDoctorCommand(f *flags) *cobra.Command {
 	}}
 }
 
+func newModelsCommand(f *flags) *cobra.Command {
+	discoveryTimeout := 20 * time.Second
+	cmd := &cobra.Command{Use: "models", Short: "List configured and provider-discovered model IDs", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		service, err := serviceFor(".", f)
+		if err != nil {
+			return err
+		}
+		ctx, stop := commandContext(cmd)
+		defer stop()
+		if discoveryTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, discoveryTimeout)
+			defer cancel()
+		}
+		report := service.ModelCatalog(ctx)
+		return printValue(cmd, f, report, renderModelCatalog(report))
+	}}
+	cmd.Flags().DurationVar(&discoveryTimeout, "discovery-timeout", discoveryTimeout, "maximum time for concurrent live provider discovery (0 disables the limit)")
+	return cmd
+}
+
+// renderModelCatalog prints one block per adapter: its discovery source, the
+// models it exposes with the current default marked, and any discovery
+// warning. A warning is never swallowed — an unreachable provider must not
+// read as a provider with no models.
+func renderModelCatalog(report app.ModelCatalogReport) string {
+	var lines []string
+	for _, entry := range report.Adapters {
+		header := fmt.Sprintf("%-18s source=%s", entry.Adapter, entry.Source)
+		if entry.Default != "" {
+			header += " default=" + entry.Default
+		}
+		lines = append(lines, header)
+		for _, model := range entry.Models {
+			marker := "  - "
+			if model == entry.Default {
+				marker = "  * "
+			}
+			lines = append(lines, marker+model)
+		}
+		if warning := strings.TrimSpace(entry.Error); warning != "" {
+			lines = append(lines, "  warning: "+warning)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func newAdoptCommand(f *flags) *cobra.Command {
 	return &cobra.Command{Use: "adopt <folder>", Short: "Create external workspace identity and alias metadata for a folder", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		service, err := serviceFor(args[0], f)
