@@ -80,7 +80,11 @@ edit, resolve it manually; Tribunal will not overwrite it.
 `doctor` detects provider CLIs and `pdftotext`. For an OpenAI-compatible
 provider, it also checks the configured model when the provider exposes a
 valid `/models` catalog; providers without that optional catalog remain
-compatible. `bench` runs a planted statistics/citation/instruction-injection
+compatible. `models` lists the model IDs each configured adapter exposes,
+querying providers with a native model-list surface and otherwise falling
+back to the shared fleet roster or your configuration; a discovery failure
+is shown as a warning beside the fallback, never as an empty provider.
+`bench` runs a planted statistics/citation/instruction-injection
 fixture unless a fixture document is supplied. `adopt` initializes external
 identity metadata without a workspace write. `verify-install` validates build
 metadata and the adjacent SHA-256 manifest for release binaries.

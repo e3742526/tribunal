@@ -16,7 +16,13 @@ import (
 	"github.com/e3742526/tribunal/internal/tribunal/domain"
 )
 
-const DefaultPanel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
+// DefaultPanel is the shipped three-family review panel: a read-only Claude
+// supervisor seat, an OpenAI seat, and a Google seat, so agreement is not
+// correlated within one family. Every model named here comes from the
+// vendored fleet roster (internal/sharedcatalog) and is checked against it by
+// TestDefaultPanelIsRosterBacked. Agy takes a model ID as printed by
+// `agy models`, not a display name.
+const DefaultPanel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/gemini-3.8-flash-medium"
 
 type Limits struct {
 	Passes           int           `toml:"passes" json:"passes"`

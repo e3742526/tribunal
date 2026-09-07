@@ -146,35 +146,91 @@ func (a *MistralAcp) Invoke(ctx context.Context, role Role, panelist domain.Pane
 	return Response{Raw: raw, Text: strings.TrimSpace(string(raw)), Command: command}, nil
 }
 
+// acpNewSessionResult includes the session configuration advertised by
+// current Vibe ACP builds. Model selection is a regular session config
+// option, not the dedicated session/set_model method earlier builds carried.
+type acpNewSessionResult struct {
+	SessionID     string                   `json:"sessionId"`
+	ConfigOptions []acpSessionConfigOption `json:"configOptions"`
+}
+
+type acpSessionConfigOption struct {
+	ID           string                   `json:"id"`
+	CurrentValue string                   `json:"currentValue"`
+	Options      []acpSessionConfigChoice `json:"options"`
+}
+
+type acpSessionConfigChoice struct {
+	Value string `json:"value"`
+	Name  string `json:"name"`
+}
+
+// acpModelConfig reads the session's current model and the models it
+// advertises. Both are empty when the agent exposes no model option, which
+// callers must treat as "cannot select", never as "any model is fine".
+func acpModelConfig(options []acpSessionConfigOption) (string, []string) {
+	for _, option := range options {
+		if option.ID != "model" {
+			continue
+		}
+		models := make([]string, 0, len(option.Options))
+		for _, choice := range option.Options {
+			if value := strings.TrimSpace(choice.Value); value != "" {
+				models = append(models, value)
+			}
+		}
+		return strings.TrimSpace(option.CurrentValue), models
+	}
+	return "", nil
+}
+
+func acpModelAdvertised(models []string, wanted string) bool {
+	for _, model := range models {
+		if model == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// newACPSession performs the initialize -> session/new handshake and returns
+// the session together with the configuration it advertises.
+func (a *MistralAcp) newACPSession(ctx context.Context, rpc *acpRPC, cwd string) (acpNewSessionResult, error) {
+	if _, err := rpc.call(ctx, "initialize", map[string]any{
+		"protocolVersion":    1,
+		"clientCapabilities": map[string]any{},
+	}); err != nil {
+		return acpNewSessionResult{}, fmt.Errorf("initialize failed: %w", err)
+	}
+	raw, err := rpc.call(ctx, "session/new", map[string]any{
+		"cwd":        cwd,
+		"mcpServers": []any{},
+	})
+	if err != nil {
+		return acpNewSessionResult{}, fmt.Errorf("session/new failed: %w", err)
+	}
+	var session acpNewSessionResult
+	if err := json.Unmarshal(raw, &session); err != nil || strings.TrimSpace(session.SessionID) == "" {
+		return acpNewSessionResult{}, fmt.Errorf("session/new returned no sessionId")
+	}
+	return session, nil
+}
+
 // runTurn drives the initialize -> session/new -> session/set_mode ->
-// (best-effort session/set_model) -> session/prompt handshake.
+// session/set_config_option(model) -> session/prompt handshake.
 //
 // A failure to enter the configured read-only session mode is fatal, not
 // a tolerated error: this adapter auto-approves whatever the agent asks
 // for in session/request_permission (see selectACPPermissionOutcome), so
 // silently continuing in an unknown mode after Vibe rejects "plan" would
-// defeat that read-only boundary. session/set_model stays best-effort:
-// losing model selection is a quality issue, not a safety one.
+// defeat that read-only boundary. The panelist's model is part of the same
+// contract — a panel records which model reviewed a document — so a model
+// that the session does not advertise, or that it refuses to select, fails
+// the call rather than silently deliberating on an unknown model.
 func (a *MistralAcp) runTurn(ctx context.Context, rpc *acpRPC, cwd, model, prompt string, transcript *acpBoundedTranscript) error {
-	if _, err := rpc.call(ctx, "initialize", map[string]any{
-		"protocolVersion":    1,
-		"clientCapabilities": map[string]any{},
-	}); err != nil {
-		return fmt.Errorf("%s initialize failed: %w", a.ID(), err)
-	}
-
-	newSessionRaw, err := rpc.call(ctx, "session/new", map[string]any{
-		"cwd":        cwd,
-		"mcpServers": []any{},
-	})
+	newSession, err := a.newACPSession(ctx, rpc, cwd)
 	if err != nil {
-		return fmt.Errorf("%s session/new failed: %w", a.ID(), err)
-	}
-	var newSession struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(newSessionRaw, &newSession); err != nil || strings.TrimSpace(newSession.SessionID) == "" {
-		return fmt.Errorf("%s session/new returned no sessionId", a.ID())
+		return fmt.Errorf("%s %w", a.ID(), err)
 	}
 	sessionID := newSession.SessionID
 
@@ -182,8 +238,25 @@ func (a *MistralAcp) runTurn(ctx context.Context, rpc *acpRPC, cwd, model, promp
 		return fmt.Errorf("%s could not enter read-only session mode %q, refusing to prompt in an unknown mode: %w", a.ID(), a.sessionMode(), err)
 	}
 
-	if model != "" {
-		_, _ = rpc.call(ctx, "session/set_model", map[string]any{"sessionId": sessionID, "modelId": model})
+	currentModel, availableModels := acpModelConfig(newSession.ConfigOptions)
+	if model != "" && len(availableModels) == 0 {
+		// A session that advertises no model option gives no way to confirm
+		// which model answered: set_config_option on an unknown option may be
+		// accepted or ignored, and either way the panel would record a model
+		// the run has no evidence of using. Refuse rather than prompt.
+		return fmt.Errorf("%s session advertises no model options, so model %q cannot be confirmed; refusing to prompt on an unconfirmed model", a.ID(), model)
+	}
+	if model != "" && !acpModelAdvertised(availableModels, model) {
+		return fmt.Errorf("%s model %q is not advertised by the current session (offered: %s)", a.ID(), model, strings.Join(availableModels, ", "))
+	}
+	if model != "" && model != currentModel {
+		if _, err := rpc.call(ctx, "session/set_config_option", map[string]any{
+			"sessionId": sessionID,
+			"configId":  "model",
+			"value":     model,
+		}); err != nil {
+			return fmt.Errorf("%s could not select model %q: %w", a.ID(), model, err)
+		}
 	}
 
 	promptRaw, err := rpc.call(ctx, "session/prompt", map[string]any{

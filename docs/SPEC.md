@@ -50,8 +50,9 @@ between them is preserved verbatim. Panels enter as strings (flag, environment,
 or config), or are composed by the host from a declarative panel policy;
 every reviewer currently carries weight 1.0. Consensus arithmetic
 clamps any configured weight to 0.5–2.0 and quantizes to hundredths so tie
-detection is exact. Default panel: Claude Opus 4.8, Codex GPT-5.6 Sol, and Agy
-Gemini 3.5 Flash Medium.
+detection is exact. Default panel: Claude Opus 5, Codex GPT-5.6 Sol, and Agy
+Gemini 3.8 Flash Medium. Every default names a model ID carried by the shared
+fleet roster vendored at `internal/sharedcatalog`.
 
 A panel policy declares seats, not models: each role names a bounded persona,
 optional required capability tags, and a ranked preference list, and the policy

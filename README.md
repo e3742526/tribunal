@@ -26,10 +26,20 @@ Provider CLIs are detected from `PATH`:
 - `codex` for Codex models;
 - `claude` for Claude models;
 - `agy` for Gemini models;
+- `grok` for xAI Grok models;
 - `openai-compatible` for an HTTP endpoint configured by the user (any
   OpenAI-`/chat/completions`-shaped API, including Mistral's own API and
   local gateways such as Ollama);
 - `mistral-acp` for Mistral's `vibe-acp` binary via the Agent Client Protocol.
+
+`tribunal models` lists what each configured adapter exposes. Providers with a
+native model-list surface (`agy models`, `grok models`, and Mistral's ACP
+session configuration) are queried concurrently and labelled `source=cli` or
+`source=acp`; the rest fall back to the shared fleet roster (`source=maintained`)
+or to what you configured (`source=config`). A discovery failure is printed as
+a warning next to the fallback, so an unreachable provider never renders as a
+provider with no models. A listed model is a maintained label, not proof that
+the logged-in account can reach it.
 
 ## Quickstart
 
@@ -77,8 +87,10 @@ The exact grammar is `adapter/model[@persona]`, comma-separated. Model names may
 
 ```bash
 tribunal review proposal.md \
-  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)'
+  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,agy/gemini-3.8-flash-medium'
 ```
+
+Name the model ID the provider itself reports — `agy models` prints `gemini-3.8-flash-medium`, not its display name — and use `tribunal models` when in doubt.
 
 The default panel uses those three adapter families with weight `1.0` and the `plain` persona. A panel must retain a majority quorum with at least two valid reviewers. Missing or malformed reviewers are reported as degraded; they are never silently replaced.
 
@@ -176,7 +188,7 @@ Trusted user configuration is `~/.config/tribunal/config.toml`. Workspace `.trib
 
 ```toml
 schema_version = 1
-panel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/Gemini 3.5 Flash (Medium)"
+panel = "claude/claude-opus-5,codex/gpt-5.6-sol,agy/gemini-3.8-flash-medium"
 # panel_policy = "balanced"   # compose the panel from [[models]] instead
 kind = "generic"
 
@@ -248,6 +260,35 @@ This adapter mirrors the fleet's other ACP integrations — cephalopod-ai/tagtea
 inventing new wire behavior, so a `vibe-acp` protocol fix made in one repo is
 easy to carry over to the others.
 
+Current Vibe builds advertise model choices as a session configuration option
+on `session/new`, so selection goes through `session/set_config_option` with
+`configId: "model"`; the obsolete `session/set_model` method is no longer used.
+A model the session does not advertise, or one it refuses to select, fails the
+call — a panel records which model reviewed a document, so deliberating on a
+silently substituted model would corrupt that record.
+
+### Grok
+
+`grok` seats a Grok CLI reviewer. Every Tribunal role is read-only from the
+model's side, so the invocation always requests Grok's read-only permission
+mode and read-only toolset, and Tribunal's planning, subagent, and memory
+features stay off because Tribunal owns the deliberation contract:
+
+```bash
+tribunal review proposal.md \
+  --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,grok/grok-4.6'
+```
+
+The packet is streamed through `--prompt-file /dev/stdin`, so it is never
+visible in the process argument list. There is no Windows fallback: Tribunal's
+subprocess adapters run on macOS and Linux only, and releases ship for those
+two platforms.
+
+The argv mirrors the read-only shape tagteam verified against Grok CLI 1.0.13
+(`internal/tagteam/adapters_part02.go`). It is statically consistent with that
+verified surface; the Tribunal seat itself has not been runtime-verified
+against a live Grok CLI, so treat it as unproven until you have run it.
+
 Recognized environment variables use only the `TRIBUNAL_` prefix: `TRIBUNAL_STATE_ROOT`, `TRIBUNAL_PANEL`, `TRIBUNAL_PANEL_POLICY`, `TRIBUNAL_PASSES`, `TRIBUNAL_MAX_OUTPUT_BYTES`, `TRIBUNAL_MAX_WALL_TIME`, and `TRIBUNAL_TOKEN_BUDGET`. `TRIBUNAL_PANEL` and `TRIBUNAL_PANEL_POLICY` are mutually exclusive.
 
 Precedence is flags, shell environment, explicitly trusted workspace config, user config, then built-in defaults.
@@ -293,7 +334,7 @@ findings list, findings defer, decisions export
 status, transcript, tui
 persona list, persona new, persona lint
 panel list, panel show
-bench, doctor, adopt
+bench, doctor, models, adopt
 version, verify-install
 ```
 

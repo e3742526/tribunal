@@ -172,19 +172,43 @@ func runMistralAcpFakeAgent(mode string) {
 		case "initialize":
 			write(map[string]any{"id": req.ID, "result": map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{}, "authMethods": []any{}}})
 		case "session/new":
-			write(map[string]any{"id": req.ID, "result": map[string]any{"sessionId": "fake-session-1"}})
+			write(map[string]any{"id": req.ID, "result": map[string]any{
+				"sessionId":     "fake-session-1",
+				"configOptions": fakeAgentConfigOptions(mode),
+			}})
 		case "session/set_mode":
 			if mode == "set_mode_error" {
 				write(map[string]any{"id": req.ID, "error": map[string]any{"code": -32001, "message": "set_mode not supported"}})
 				continue
 			}
 			write(map[string]any{"id": req.ID, "result": map[string]any{}})
-		case "session/set_model":
+		case "session/set_config_option":
+			if mode == "set_config_error" {
+				write(map[string]any{"id": req.ID, "error": map[string]any{"code": -32002, "message": "model is not available on this account"}})
+				continue
+			}
 			write(map[string]any{"id": req.ID, "result": map[string]any{}})
 		case "session/prompt":
 			fakeAgentRespondToPrompt(mode, req.ID, write)
 		}
 	}
+}
+
+// fakeAgentConfigOptions mirrors the session configuration current Vibe ACP
+// builds advertise on session/new: model selection is a config option, not a
+// dedicated method. "no_model_option" reproduces a build that advertises none.
+func fakeAgentConfigOptions(mode string) []map[string]any {
+	if mode == "no_model_option" {
+		return []map[string]any{}
+	}
+	return []map[string]any{{
+		"id":           "model",
+		"currentValue": "devstral-small",
+		"options": []map[string]any{
+			{"value": "devstral-small", "name": "Devstral Small"},
+			{"value": "mistral-large-latest", "name": "Mistral Large"},
+		},
+	}}
 }
 
 func fakeAgentRespondToPrompt(mode string, promptID *int64, write func(map[string]any)) {
@@ -314,5 +338,112 @@ func TestMistralAcpInvokeSurfacesRefusal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refusal") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMistralAcpRejectsModelTheSessionDoesNotAdvertise(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "review")
+	_, err := adapter.Invoke(context.Background(), RoleReviewer, domain.Panelist{Model: "mistral-medium-unavailable"}, Request{
+		RunDir:         runDir,
+		Prompt:         "review this packet",
+		TimeoutSeconds: 10,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("expected an error for a model the session does not advertise")
+	}
+	if !strings.Contains(err.Error(), "not advertised") {
+		t.Fatalf("error = %v, want an unadvertised-model rejection", err)
+	}
+}
+
+func TestMistralAcpFailsWhenModelSelectionIsRejected(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "set_config_error")
+	_, err := adapter.Invoke(context.Background(), RoleReviewer, domain.Panelist{Model: "mistral-large-latest"}, Request{
+		RunDir:         runDir,
+		Prompt:         "review this packet",
+		TimeoutSeconds: 10,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("expected an error when the agent refuses the requested model")
+	}
+	if !strings.Contains(err.Error(), "could not select model") {
+		t.Fatalf("error = %v, want a visible model-selection failure rather than a silent fallback", err)
+	}
+}
+
+// The current session value needs no set_config_option call, so a build that
+// advertises the requested model as current must still complete.
+func TestMistralAcpSkipsSelectionWhenModelIsAlreadyCurrent(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "set_config_error")
+	response, err := adapter.Invoke(context.Background(), RoleReviewer, domain.Panelist{Model: "devstral-small"}, Request{
+		RunDir:         runDir,
+		Prompt:         "review this packet",
+		TimeoutSeconds: 10,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if !strings.Contains(response.Text, "fake review summary") {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestMistralAcpDiscoverModelsReadsSessionConfig(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "review")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	discovery, err := adapter.DiscoverModels(ctx, runDir)
+	if err != nil {
+		t.Fatalf("DiscoverModels() error = %v", err)
+	}
+	if discovery.Source != "acp" || discovery.Default != "devstral-small" {
+		t.Fatalf("discovery = %#v", discovery)
+	}
+	if len(discovery.Models) != 2 || discovery.Models[0] != "devstral-small" {
+		t.Fatalf("discovered models = %#v", discovery.Models)
+	}
+}
+
+func TestMistralAcpDiscoverModelsReportsMissingModelOption(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "no_model_option")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := adapter.DiscoverModels(ctx, runDir); err == nil {
+		t.Fatal("expected an error when the session advertises no model options")
+	}
+}
+
+// A session that advertises no model option gives no way to confirm which
+// model answered, so a requested model must fail rather than prompt: an
+// unknown config option may be accepted or ignored, and either way the panel
+// would record a model the run has no evidence of using.
+func TestMistralAcpRefusesWhenSessionAdvertisesNoModelOptions(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "no_model_option")
+	_, err := adapter.Invoke(context.Background(), RoleReviewer, domain.Panelist{Model: "mistral-large-latest"}, Request{
+		RunDir:         runDir,
+		Prompt:         "review this packet",
+		TimeoutSeconds: 10,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("expected an error when the session advertises no model options")
+	}
+	if !strings.Contains(err.Error(), "cannot be confirmed") {
+		t.Fatalf("error = %v, want a refusal to prompt on an unconfirmed model", err)
 	}
 }

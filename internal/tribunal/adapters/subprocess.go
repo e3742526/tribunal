@@ -66,7 +66,7 @@ func (a *Subprocess) Invoke(ctx context.Context, role Role, panelist domain.Pane
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, binary, argv...)
 	cmd.Dir = req.RunDir
-	cmd.Env = restrictedEnv()
+	cmd.Env = append(restrictedEnv(), a.extraEnv()...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	configureProcess(cmd)
 	limit := req.MaxOutputBytes
@@ -92,12 +92,15 @@ func (a *Subprocess) Invoke(ctx context.Context, role Role, panelist domain.Pane
 			return Response{Raw: raw, Command: append([]string{binary}, argv...)}, fmt.Errorf("%s output file: %w", a.AdapterID, err)
 		}
 	}
-	if a.AdapterID == "claude" {
+	switch a.AdapterID {
+	case "claude":
 		var unwrapErr error
 		raw, unwrapErr = unwrapClaude(raw)
 		if unwrapErr != nil {
 			return Response{Raw: raw, Command: append([]string{binary}, argv...)}, unwrapErr
 		}
+	case "grok":
+		raw = unwrapGrok(raw)
 	}
 	if stdout.Exceeded() || int64(len(raw)) > limit {
 		return Response{Raw: raw, Command: append([]string{binary}, argv...)}, fmt.Errorf("%s output exceeded %d bytes", a.AdapterID, limit)
@@ -211,9 +214,78 @@ func (a *Subprocess) argv(role Role, panelist domain.Panelist, req Request, prom
 		args := []string{"--print=" + prompt, "--model", panelist.Model, "--print-timeout", timeout.String(), "--sandbox", "--mode", "plan"}
 		args = append(args, a.ExtraArgs...)
 		return args, nil, nil
+	case "grok":
+		return a.grokArgv(panelist, req, prompt)
 	default:
 		return nil, nil, fmt.Errorf("unsupported subprocess adapter %q", a.AdapterID)
 	}
+}
+
+// grokArgv builds Grok's headless single-turn invocation. The argv mirrors
+// the read-only shape tagteam verified against Grok CLI 1.0.13
+// (internal/tagteam/adapters_part02.go): the prompt travels through
+// /dev/stdin so a packet is never visible in the process argument list, and
+// planning, subagents, and memory stay off because Tribunal owns the
+// deliberation contract.
+//
+// There is no Windows fallback here, unlike tagteam's adapter. Tribunal's
+// subprocess adapters run only on macOS and Linux — runProcess fails closed
+// everywhere else (process_unsupported.go) and releases ship for those two
+// platforms only — so a positional-prompt branch for Windows would be
+// unreachable code claiming support the binary does not have.
+//
+// Every Tribunal role is read-only from the model's side, so Grok always gets
+// the read-only permission mode and read-only toolset — never the coder
+// toolset tagteam grants its editing roles.
+func (a *Subprocess) grokArgv(panelist domain.Panelist, req Request, prompt string) ([]string, []byte, error) {
+	argv := []string{"--prompt-file", "/dev/stdin"}
+	stdin := []byte(prompt + "\n")
+	argv = append(argv, "--cwd", req.RunDir, "--model", panelist.Model)
+	argv = append(argv,
+		"--output-format", "json",
+		"--no-plan", "--no-subagents", "--no-memory",
+		"--permission-mode", "dontAsk",
+		"--tools", "read_file,list_dir",
+	)
+	if req.Schema != "" {
+		argv = append(argv, "--json-schema", req.Schema)
+	}
+	argv = append(argv, a.ExtraArgs...)
+	return argv, stdin, nil
+}
+
+// extraEnv adds the adapter-specific variables that must accompany a vendor
+// CLI. Grok otherwise imports every Claude- and Cursor-compatible MCP server
+// from the operator's ambient configuration, which can consume an entire
+// invocation before the review prompt is read.
+func (a *Subprocess) extraEnv() []string {
+	if a.AdapterID != "grok" {
+		return nil
+	}
+	return []string{
+		"GROK_CLAUDE_MCPS_ENABLED=false",
+		"GROK_CURSOR_MCPS_ENABLED=false",
+	}
+}
+
+// unwrapGrok reads the payload out of Grok's headless JSON envelope. A body
+// that is not that envelope is returned untouched so contract recovery still
+// sees whatever the CLI actually printed.
+func unwrapGrok(raw []byte) []byte {
+	var envelope struct {
+		Text             string          `json:"text"`
+		StructuredOutput json.RawMessage `json:"structuredOutput"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return raw
+	}
+	if structured := bytes.TrimSpace(envelope.StructuredOutput); len(structured) > 0 && !bytes.Equal(structured, []byte("null")) {
+		return structured
+	}
+	if envelope.Text != "" {
+		return []byte(envelope.Text)
+	}
+	return raw
 }
 
 // restrictedEnv allowlists the child environment. Request.EnvSecrets is

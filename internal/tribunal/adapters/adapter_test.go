@@ -10,7 +10,7 @@ import (
 
 func TestSubprocessReviewerArgvIsReadOnly(t *testing.T) {
 	panelist := domain.Panelist{Model: "model"}
-	for _, id := range []string{"codex", "claude", "agy"} {
+	for _, id := range []string{"codex", "claude", "agy", "grok"} {
 		for _, role := range []Role{RoleReviewer, RoleVoter, RoleEditor} {
 			if id == "claude" && role == RoleEditor {
 				continue

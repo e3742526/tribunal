@@ -2,6 +2,36 @@
 
 ## Unreleased — panel policies and the foundation lens
 
+- Shared fleet roster: `internal/sharedcatalog` vendors the canonical
+  adapter/model catalog (and its standard-library-only reader) byte-identically
+  from e3742526/control-hooks `shared/model-catalog`, so Tribunal, tagteam, and
+  control-hooks cannot disagree about which providers and models exist. A test
+  fails the build when a vendored copy drifts from the recorded digest.
+- New `tribunal models` command: lists what each configured adapter exposes,
+  querying providers with a native model-list surface (`agy models`,
+  `grok models`, Mistral's ACP session configuration) concurrently under a
+  `--discovery-timeout`, and otherwise falling back to the shared roster or the
+  operator's configuration. Discovery failures are printed as warnings beside
+  the fallback rather than dropped; a provider with no model-list command at
+  all is not reported as a failure.
+- New `grok` adapter seat: read-only Grok CLI reviewer. The packet is streamed
+  through `--prompt-file /dev/stdin` so it never appears in the process
+  argument list. No Windows fallback, because Tribunal's subprocess adapters
+  run on macOS and Linux only. Statically consistent with the argv
+  cephalopod-ai/tagteam verified against Grok CLI 1.0.13; not itself
+  runtime-verified against a live CLI.
+- `mistral-acp` now selects models the way current Vibe builds expect:
+  `session/set_config_option` with `configId: "model"`, read from the config
+  options advertised on `session/new`. The obsolete `session/set_model` call is
+  gone, and a model the session does not advertise — or refuses to select —
+  fails the invocation instead of silently deliberating on another model. A
+  session advertising no model option at all fails the same way: an unknown
+  config option may be accepted or ignored, so there would be no evidence the
+  recorded model is the one that answered.
+- Default panel refreshed to `claude/claude-opus-5,codex/gpt-5.6-sol,agy/gemini-3.8-flash-medium`.
+  The Agy seat previously named a display name (`Gemini 3.5 Flash (Medium)`)
+  rather than the model ID `agy models` prints.
+
 - New `mistral-acp` adapter: panels against Mistral's `vibe-acp` binary via
   the Agent Client Protocol, alongside the existing `openai-compatible` route
   to Mistral's raw chat-completions API. Auth is the CLI's own session

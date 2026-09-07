@@ -49,7 +49,8 @@ sequenceDiagram
 | `app` | Use-case orchestration and barriers | raw CLI parsing, vendor argv | domain + ports | Service methods |
 | `documents` | canonical packets/extraction/anchors/redaction | voting, model invocation | domain | Builder, Resolver |
 | `storage` | external durable state, locks, snapshots, ledgers | review policy, UI | domain | Store |
-| `adapters` | model/worker process and HTTP translation | consensus, persistence policy | domain + document packet values | Registry, Adapter |
+| `adapters` | model/worker process and HTTP translation, plus provider model discovery | consensus, persistence policy | domain + document packet values, shared fleet roster | Registry, Adapter, ModelDiscoverer |
+| `sharedcatalog` | the fleet's canonical adapter/model roster, vendored byte-identically from e3742526/control-hooks `shared/model-catalog` | anything Tribunal-specific | nothing (standard library only) | Load, MaintainedModelsFor, MaintainedTargets |
 | `config` | trusted layered configuration | execution | domain | Load, BuiltinRubric, ResolvePersona, ResolvePanelPolicy, PanelCatalog |
 | `cli` | parse/delegate/render | domain rules, persistence | app/config | NewRootCommand |
 | `tui` | read-only snapshot rendering | launch/edit logic | app snapshot port | RenderSnapshot |
