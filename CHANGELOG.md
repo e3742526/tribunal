@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `mistral-acp` model discovery now reaps the agent before reading its stderr.
+  The previous change made that read race-free with a mutex-guarded buffer, but
+  safe is not the same as correct: nothing orders the child's stderr write
+  against the `session/new` reply already consumed, so reading while
+  `os/exec`'s copy goroutine was still draining the pipe could drop the agent's
+  own explanation — the very text the "advertised no model options" error
+  exists to surface. Found by self-review after the same defect was fixed in
+  cephalopod-ai/tagteam.
+
 ## Unreleased — panel policies and the foundation lens
 
 - Shared fleet roster: `internal/sharedcatalog` vendors the canonical

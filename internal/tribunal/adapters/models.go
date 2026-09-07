@@ -251,9 +251,9 @@ func (a *MistralAcp) DiscoverModels(ctx context.Context, workdir string) (ModelD
 	cmd.Dir = workdir
 	cmd.Env = restrictedEnv()
 	configureProcess(cmd)
-	// The diagnostic is read while the child is still running (the process is
-	// only reaped in the deferred cleanup below), so os/exec's copy goroutine
-	// and this function touch the buffer concurrently.
+	// os/exec's copy goroutine and this function both touch the buffer, so it
+	// must be safe for a concurrent read even though the read below is
+	// ordered after the child is reaped.
 	stderr := &lockedBuffer{}
 	cmd.Stderr = stderr
 
@@ -272,12 +272,16 @@ func (a *MistralAcp) DiscoverModels(ctx context.Context, workdir string) (ModelD
 	rpc := newACPRPC(stdin)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- rpc.serve(stdout) }()
-	defer func() {
-		stopProc()
-		_ = stdin.Close()
-		<-serveDone
-		_ = cmd.Wait()
-	}()
+	var reapOnce sync.Once
+	reap := func() {
+		reapOnce.Do(func() {
+			stopProc()
+			_ = stdin.Close()
+			<-serveDone
+			_ = cmd.Wait()
+		})
+	}
+	defer reap()
 
 	session, err := a.newACPSession(procCtx, rpc, workdir)
 	if err != nil {
@@ -285,6 +289,12 @@ func (a *MistralAcp) DiscoverModels(ctx context.Context, workdir string) (ModelD
 	}
 	defaultModel, models := acpModelConfig(session.ConfigOptions)
 	if len(models) == 0 {
+		// Reap the agent before reading its diagnostic: nothing orders the
+		// child's stderr write against the session/new reply just consumed,
+		// so reading while os/exec's copy goroutine is still draining the
+		// pipe can drop the very explanation this error exists to surface.
+		// cmd.Wait blocks until that copy has finished.
+		reap()
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return ModelDiscovery{}, fmt.Errorf("%s session advertised no model options: %s", a.ID(), detail)
 		}
