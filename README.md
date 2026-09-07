@@ -279,10 +279,10 @@ tribunal review proposal.md \
   --panel 'claude/claude-opus-5,codex/gpt-5.6-sol,grok/grok-4.6'
 ```
 
-On macOS and Linux the packet is streamed through `--prompt-file /dev/stdin`
-so it is never visible in the process argument list. Windows has no
-`/dev/stdin` and keeps a bounded positional path that fails closed above the
-platform argument cap, exactly as the `agy` seat does.
+The packet is streamed through `--prompt-file /dev/stdin`, so it is never
+visible in the process argument list. There is no Windows fallback: Tribunal's
+subprocess adapters run on macOS and Linux only, and releases ship for those
+two platforms.
 
 The argv mirrors the read-only shape tagteam verified against Grok CLI 1.0.13
 (`internal/tagteam/adapters_part02.go`). It is statically consistent with that

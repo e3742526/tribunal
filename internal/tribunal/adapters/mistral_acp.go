@@ -239,7 +239,14 @@ func (a *MistralAcp) runTurn(ctx context.Context, rpc *acpRPC, cwd, model, promp
 	}
 
 	currentModel, availableModels := acpModelConfig(newSession.ConfigOptions)
-	if model != "" && len(availableModels) > 0 && !acpModelAdvertised(availableModels, model) {
+	if model != "" && len(availableModels) == 0 {
+		// A session that advertises no model option gives no way to confirm
+		// which model answered: set_config_option on an unknown option may be
+		// accepted or ignored, and either way the panel would record a model
+		// the run has no evidence of using. Refuse rather than prompt.
+		return fmt.Errorf("%s session advertises no model options, so model %q cannot be confirmed; refusing to prompt on an unconfirmed model", a.ID(), model)
+	}
+	if model != "" && !acpModelAdvertised(availableModels, model) {
 		return fmt.Errorf("%s model %q is not advertised by the current session (offered: %s)", a.ID(), model, strings.Join(availableModels, ", "))
 	}
 	if model != "" && model != currentModel {

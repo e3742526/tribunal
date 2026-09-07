@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -13,9 +12,6 @@ import (
 // same defect tagteam fixed: a packet passed positionally is visible to every
 // user on the host through `ps`.
 func TestGrokArgvKeepsThePromptOutOfTheArgumentList(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has no /dev/stdin and keeps the bounded positional path")
-	}
 	a := &Subprocess{AdapterID: "grok", Binary: "grok"}
 	const secret = "CONFIDENTIAL-PACKET-BODY"
 	argv, stdin, err := a.argv(RoleReviewer, domain.Panelist{Model: "grok-4.6"}, Request{RunDir: "/run", Schema: ProviderReviewSchema, TimeoutSeconds: 30}, secret)
@@ -39,6 +35,11 @@ func TestGrokArgvKeepsThePromptOutOfTheArgumentList(t *testing.T) {
 	}
 	if strings.Contains(joined, "--always-approve") || strings.Contains(joined, "write_file") {
 		t.Errorf("grok argv grants mutation in a read-only Tribunal role: %s", joined)
+	}
+	// Tribunal's subprocess adapters run only on macOS and Linux, so there is
+	// no positional-prompt fallback to fall into.
+	if strings.Contains(joined, "--single") {
+		t.Errorf("grok argv still carries the positional-prompt path: %s", joined)
 	}
 }
 

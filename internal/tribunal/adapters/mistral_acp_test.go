@@ -425,3 +425,25 @@ func TestMistralAcpDiscoverModelsReportsMissingModelOption(t *testing.T) {
 		t.Fatal("expected an error when the session advertises no model options")
 	}
 }
+
+// A session that advertises no model option gives no way to confirm which
+// model answered, so a requested model must fail rather than prompt: an
+// unknown config option may be accepted or ignored, and either way the panel
+// would record a model the run has no evidence of using.
+func TestMistralAcpRefusesWhenSessionAdvertisesNoModelOptions(t *testing.T) {
+	adapter := fakeMistralAcpAdapter(t)
+	runDir := t.TempDir()
+	writeFakeMode(t, runDir, "no_model_option")
+	_, err := adapter.Invoke(context.Background(), RoleReviewer, domain.Panelist{Model: "mistral-large-latest"}, Request{
+		RunDir:         runDir,
+		Prompt:         "review this packet",
+		TimeoutSeconds: 10,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("expected an error when the session advertises no model options")
+	}
+	if !strings.Contains(err.Error(), "cannot be confirmed") {
+		t.Fatalf("error = %v, want a refusal to prompt on an unconfirmed model", err)
+	}
+}

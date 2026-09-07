@@ -14,17 +14,20 @@
   operator's configuration. Discovery failures are printed as warnings beside
   the fallback rather than dropped; a provider with no model-list command at
   all is not reported as a failure.
-- New `grok` adapter seat: read-only Grok CLI reviewer. On macOS and Linux the
-  packet is streamed through `--prompt-file /dev/stdin` so it never appears in
-  the process argument list; Windows keeps a bounded positional path that fails
-  closed above the platform argument cap. Statically consistent with the argv
+- New `grok` adapter seat: read-only Grok CLI reviewer. The packet is streamed
+  through `--prompt-file /dev/stdin` so it never appears in the process
+  argument list. No Windows fallback, because Tribunal's subprocess adapters
+  run on macOS and Linux only. Statically consistent with the argv
   cephalopod-ai/tagteam verified against Grok CLI 1.0.13; not itself
   runtime-verified against a live CLI.
 - `mistral-acp` now selects models the way current Vibe builds expect:
   `session/set_config_option` with `configId: "model"`, read from the config
   options advertised on `session/new`. The obsolete `session/set_model` call is
   gone, and a model the session does not advertise — or refuses to select —
-  fails the invocation instead of silently deliberating on another model.
+  fails the invocation instead of silently deliberating on another model. A
+  session advertising no model option at all fails the same way: an unknown
+  config option may be accepted or ignored, so there would be no evidence the
+  recorded model is the one that answered.
 - Default panel refreshed to `claude/claude-opus-5,codex/gpt-5.6-sol,agy/gemini-3.8-flash-medium`.
   The Agy seat previously named a display name (`Gemini 3.5 Flash (Medium)`)
   rather than the model ID `agy models` prints.

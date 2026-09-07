@@ -226,24 +226,20 @@ func (a *Subprocess) argv(role Role, panelist domain.Panelist, req Request, prom
 // (internal/tagteam/adapters_part02.go): the prompt travels through
 // /dev/stdin so a packet is never visible in the process argument list, and
 // planning, subagents, and memory stay off because Tribunal owns the
-// deliberation contract. Windows has no /dev/stdin and keeps the bounded
-// positional path until Grok offers a portable stdin sentinel.
+// deliberation contract.
+//
+// There is no Windows fallback here, unlike tagteam's adapter. Tribunal's
+// subprocess adapters run only on macOS and Linux — runProcess fails closed
+// everywhere else (process_unsupported.go) and releases ship for those two
+// platforms only — so a positional-prompt branch for Windows would be
+// unreachable code claiming support the binary does not have.
 //
 // Every Tribunal role is read-only from the model's side, so Grok always gets
 // the read-only permission mode and read-only toolset — never the coder
 // toolset tagteam grants its editing roles.
 func (a *Subprocess) grokArgv(panelist domain.Panelist, req Request, prompt string) ([]string, []byte, error) {
-	var argv []string
-	var stdin []byte
-	if runtime.GOOS == "windows" {
-		if len(prompt) > agyMaxPromptBytes {
-			return nil, nil, fmt.Errorf("grok on Windows receives the prompt as one process argument and this packet needs %d bytes (platform cap %d); review a smaller document set or select a different adapter for this panel", len(prompt), agyMaxPromptBytes)
-		}
-		argv = append(argv, "--single", prompt)
-	} else {
-		argv = append(argv, "--prompt-file", "/dev/stdin")
-		stdin = []byte(prompt + "\n")
-	}
+	argv := []string{"--prompt-file", "/dev/stdin"}
+	stdin := []byte(prompt + "\n")
 	argv = append(argv, "--cwd", req.RunDir, "--model", panelist.Model)
 	argv = append(argv,
 		"--output-format", "json",
