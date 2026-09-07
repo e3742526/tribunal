@@ -216,6 +216,26 @@ func modelListError(adapter string, output []byte, err error) error {
 	return fmt.Errorf("%s model discovery failed: %w: %s", adapter, err, detail)
 }
 
+// lockedBuffer is a bytes.Buffer safe for one writer goroutine and a
+// concurrent reader. boundedBuffer is not: it is only ever read after the
+// process it captured has been waited on.
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 // DiscoverModels reads the model choices Vibe advertises on a fresh ACP
 // session. It reuses the same handshake an invocation performs and prompts
 // for nothing, so discovery stays a read-only probe.
@@ -231,8 +251,11 @@ func (a *MistralAcp) DiscoverModels(ctx context.Context, workdir string) (ModelD
 	cmd.Dir = workdir
 	cmd.Env = restrictedEnv()
 	configureProcess(cmd)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	// The diagnostic is read while the child is still running (the process is
+	// only reaped in the deferred cleanup below), so os/exec's copy goroutine
+	// and this function touch the buffer concurrently.
+	stderr := &lockedBuffer{}
+	cmd.Stderr = stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
