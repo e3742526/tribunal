@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -199,6 +200,10 @@ func runMistralAcpFakeAgent(mode string) {
 // dedicated method. "no_model_option" reproduces a build that advertises none.
 func fakeAgentConfigOptions(mode string) []map[string]any {
 	if mode == "no_model_option" {
+		// A real agent explains itself on stderr here; the adapter must
+		// surface that text rather than drop it by reading the buffer before
+		// the process is reaped.
+		fmt.Fprintln(os.Stderr, "vibe-acp: this build advertises no model options")
 		return []map[string]any{}
 	}
 	return []map[string]any{{
@@ -421,8 +426,14 @@ func TestMistralAcpDiscoverModelsReportsMissingModelOption(t *testing.T) {
 	writeFakeMode(t, runDir, "no_model_option")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := adapter.DiscoverModels(ctx, runDir); err == nil {
+	_, err := adapter.DiscoverModels(ctx, runDir)
+	if err == nil {
 		t.Fatal("expected an error when the session advertises no model options")
+	}
+	// The agent's own diagnostic must survive into the operator-facing error;
+	// it is only complete once the agent has been reaped.
+	if !strings.Contains(err.Error(), "this build advertises no model options") {
+		t.Fatalf("error dropped the agent diagnostic: %v", err)
 	}
 }
 
