@@ -1,144 +1,96 @@
 # AGENTS
 
-## Private agent-skills catalog
-
-For a task that may match a reusable workflow—such as audit, repair, planning,
-governance, research, writing, infrastructure, acquisition, or graphics—search
-the private agent-skills catalog before improvising. For repository work,
-include this repository root. If the catalog is unavailable, report that fact
-and continue within the task's normal constraints.
-
-This file is the canonical repo-wide instruction contract for coding agents.
-
-## Canonical Filename
+## Normative Core
 
 `AGENTS.md` (uppercase, plural) is the single canonical repo-wide agent
-contract. If tool-specific adapter files exist, this file wins on conflict.
+contract for **tribunal**. Tool-specific adapter files (`CLAUDE.md`,
+`CODEX.md`, `GEMINI.md`, `.claude/AGENTS.md`, `.codex/AGENTS.md`) may add
+preferences but must not redefine or weaken this file; on conflict, this file
+wins. Rationale and non-binding working practices live in
+`docs/agent/working-practices.md`.
 
-### Adapter Files And Precedence
+### Binding rules
 
-Tool-specific files such as `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `.claude/AGENTS.md`,
-`.codex/AGENTS.md`, or similar may add tool-specific preferences, but they must
-not redefine or weaken anything in `AGENTS.md`.
+- Inspect before modifying. Do not invent APIs, files, config keys, commands,
+  or paths without verifying they fit the repo.
+- Preserve existing naming, formatting, architecture, and test conventions
+  unless the task explicitly changes them.
+- One coherent task per run. Make the smallest coherent change, stay in scope,
+  and disclose adjacent edits.
+- No fake success: never present a stub, placeholder, or canned response as
+  working, and do not suppress errors to make tests or logs look clean.
+- Validate before completion. State exactly what passed, failed, or was not
+  run; say `partially validated` when that is the truth.
+- Do not delete or overwrite user work; never revert existing changes without
+  explicit instruction.
+- Uncommitted files are repository state, not a failure, unless the task
+  requires a clean tree.
+- Pushback on unclear architecture or unvalidated completion is advisory
+  unless the task explicitly asks for a hard stop. A documented exception in
+  `.architecture/exceptions.json` is reported as covered, not rediscovered.
 
-Recommended read order for non-trivial changes:
+### Read order for non-trivial changes
 
 1. `AGENTS.md`
-2. The active tool's adapter file, if present and relevant
+2. the active tool's adapter file, if present
 3. `README.md`
-4. Task-relevant docs, tests, and nearby implementation files
+4. `docs/INDEX.md`
+5. task-relevant docs, tests, and nearby implementation files
 
-## Core Rules
+## Private agent-skills catalog
 
-1. Inspect existing code, tests, docs, and conventions before writing new code.
-2. Do not invent APIs, files, config keys, commands, or paths without verifying they fit the repo.
-3. Preserve existing naming, formatting, architecture, and test patterns unless the task explicitly changes them.
-4. Execute one coherent task per run. Do not bundle unrelated fixes or opportunistic cleanup.
-5. Prefer the smallest coherent change that satisfies the task and preserves existing behavior.
-6. Surface conflicting patterns instead of averaging them together. Choose the least risky local convention and note the conflict.
-7. Never silently fail. Report partial success, blocked work, degraded behavior, skipped checks, and visible errors.
-8. Do not hide or suppress errors to make tests, logs, or UX look clean.
-9. Do not delete or overwrite user work or existing code without explicit instruction.
-10. Run the relevant checks before declaring completion, and state exactly what passed, failed, or was not run.
-
-## Working Posture
-
-Default posture:
-
-- Prefer inspection before modification.
-- Prefer minimal diffs over rewrites.
-- Prefer extending existing patterns over inventing parallel ones.
-- Prefer real wiring over mock structure.
-- Prefer validation evidence over claims.
-
-Push back when:
-
-- implementation is requested before the relevant architecture or workflow is understood;
-- UI or CLI behavior is added before the backend or execution path is clear;
-- contracts, persistence, or external integration behavior is unclear;
-- work is declared complete without end-to-end validation for the changed path.
-
-Pushback should be advisory unless the task explicitly asks for a hard stop.
-
-## Sequence Guidance
-
-Before large or non-obvious changes:
-
-1. Identify the entry points, contracts, and main execution path.
-2. Inspect relevant files and nearby tests.
-3. State assumptions, dependencies, and likely failure modes.
-4. Implement only after the dependency chain is clear enough to act safely.
-5. Validate the result against the changed path, not just static structure.
-
-## Anti-Fake Implementation Policy
-
-Treat the following as incomplete unless explicitly requested:
-
-- buttons or commands with no real handler path;
-- API routes or commands that return canned success without performing the action;
-- services that are only wrappers around TODOs;
-- mock or placeholder data presented as real output;
-- “security” that only hides fields in UI without backend enforcement;
-- “workflow support” that does not execute end-to-end;
-- tests that only assert trivial truth or import success.
-
-If any of these exist in touched scope, call them out explicitly.
-
-## Testing Guidance
-
-Add tests when the change introduces:
-
-- reusable logic;
-- non-trivial branching behavior;
-- cross-module interactions;
-- data transformations;
-- bug fixes that should not regress.
-
-Tests are optional when:
-
-- the code is exploratory or throwaway;
-- the behavior is trivial and fully validated through direct execution;
-- the change is purely presentational scaffolding without logic.
-
-Test expectations:
-
-- Validate behavior, not just existence.
-- Prefer focused tests over broad, fragile ones.
-- A test should fail if the core behavior breaks.
-
-## Completion Language
-
-Do not say:
-
-- `done` if validation is partial;
-- `fully working` if only static checks were run;
-- `wired` if only references were added;
-- `secure` without boundary review;
-- `production-ready` without operational evidence.
-
-Prefer:
-
-- `implemented`
-- `partially validated`
-- `statically consistent`
-- `runtime-verified for the tested path`
-- `residual risks remain`
-
-## Scope And Safety
-
-- Stay within the requested task boundary.
-- If adjacent changes are necessary, disclose them explicitly.
-- Stop at destructive actions, unresolved ambiguity, or conflicting repo state and report the next safe step.
+For a task that may match a reusable workflow — audit, repair, planning,
+governance, research, writing, infrastructure, acquisition, or graphics —
+search the private agent-skills catalog before improvising, including this
+repository root for repository work. If the catalog is unavailable, report that
+fact and continue within the task's normal constraints.
 
 ## Tribunal Architecture
 
 Dependencies point inward: `main` → `internal/cli` → `internal/tribunal/app`.
 The application layer coordinates pure `domain` rules, `documents`, `storage`,
 `config`, and `adapters`; `internal/tui` renders only `storage.Snapshot`.
-Reviewed documents are untrusted input. Review code must not execute Git or
-write into the document workspace. Model editors propose hunks; the host alone
-validates and applies them.
 
-Run `scripts/check.sh` before completion. No non-test Go file may exceed 800
-lines. Changes to schemas, prompts, adapters, persistence, or edit validation
-require focused behavior tests.
+Trust boundaries:
+
+- Reviewed documents are untrusted input.
+- Review code must not execute Git or write into the document workspace.
+- Model editors propose hunks; the host alone validates and applies them.
+
+The dependency graph is declared in `.architecture/intent.json` and enforced
+by `scripts/check-architecture.sh` (registry completeness, allowed production
+dependencies, exception expiry, baseline accounting and health score) against
+`.architecture/invariants.json`, `.architecture/exceptions.json`, and
+`.architecture/baseline.json`.
+
+## Validation gate
+
+Run `scripts/check.sh` before completion. It runs, in order: `gofmt -l`,
+`scripts/check-go-file-lines.sh`, `scripts/check-architecture.sh`,
+`go test ./...`, `go vet ./...`, `go build ./...`, `go mod verify`,
+`go mod tidy -diff`, and `govulncheck ./...` (required in CI, reported as
+skipped when absent locally).
+
+No non-test Go file may exceed **800 lines**.
+
+## Test ledger
+
+`docs/TEST_LEDGER.md` records, per area, the runtime evidence and the explicit
+remaining gap. Changes to schemas, prompts, adapters, persistence, or edit
+validation require focused behavior tests, and any change that alters what is
+proven — or which gap remains open — must update the matching ledger row in the
+same change set.
+
+## Compact checklist
+
+1. Read `AGENTS.md`, then the adapter file, `README.md`, and `docs/INDEX.md`.
+2. Search the private agent-skills catalog if the task matches a known
+   workflow.
+3. Read the existing code and nearby tests before editing anything.
+4. Do one coherent task; keep the diff the smallest that works.
+5. Keep dependencies pointing inward and never let review code run Git or
+   write into the document workspace.
+6. Add focused behavior tests for schemas, prompts, adapters, persistence, or
+   edit validation.
+7. Update the matching row in `docs/TEST_LEDGER.md`.
+8. Run `scripts/check.sh` and report what passed, failed, or was skipped.
