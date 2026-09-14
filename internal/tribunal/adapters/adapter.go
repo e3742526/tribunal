@@ -31,6 +31,9 @@ type Request struct {
 	MaxOutputTokens int
 	TimeoutSeconds  int
 	EnvSecrets      map[string]string
+	// OperationKey is a stable, non-secret label used by the host's durable
+	// replay journal. Adapters must not interpret it.
+	OperationKey string
 }
 
 type Response struct {

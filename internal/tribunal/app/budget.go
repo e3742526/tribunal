@@ -96,6 +96,22 @@ func (s *Service) invokeWithProviderLock(ctx context.Context, runDir string, ada
 		req.MaxOutputBytes = s.Config.Limits.MaxOutputBytes
 	}
 	invoke := func() (adapters.Response, error) {
+		operationType := req.OperationKey
+		if operationType == "" {
+			operationType = "provider." + string(role) + "." + panelist.ID
+		}
+		req.OperationKey = operationType
+		hash, err := semanticRequestHash(adapter, role, panelist, req)
+		if err != nil {
+			return adapters.Response{}, fmt.Errorf("hash provider request: %w", err)
+		}
+		call := func() (adapters.Response, error) { return adapter.Invoke(ctx, role, panelist, req) }
+		journal := replayJournalFromContext(ctx)
+		if journal != nil && journal.strict {
+			// Reusing a committed result consumes no new provider work and must
+			// not create or charge a cumulative token reservation.
+			return journal.invoke(s.now(), operationType, hash, call)
+		}
 		budget := budgetFromContext(ctx)
 		if budget == nil {
 			var err error
@@ -108,7 +124,13 @@ func (s *Service) invokeWithProviderLock(ctx context.Context, runDir string, ada
 		if err != nil {
 			return adapters.Response{}, err
 		}
-		response, invokeErr := adapter.Invoke(ctx, role, panelist, req)
+		var response adapters.Response
+		var invokeErr error
+		if journal != nil {
+			response, invokeErr = journal.invoke(s.now(), operationType, hash, call)
+		} else {
+			response, invokeErr = call()
+		}
 		if budgetErr := budget.complete(reservation, response, invokeErr); budgetErr != nil {
 			return response, budgetErr
 		}

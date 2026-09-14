@@ -91,6 +91,20 @@ func (s *Service) resumeCheckpoint(ctx context.Context, workspace storage.Worksp
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
 	runCtx = withUsageBudget(runCtx, budget)
+	var frozen ExecutionSnapshot
+	if err := storage.ReadJSONStrict(filepath.Join(runDir, "execution-snapshot.json"), &frozen); err == nil {
+		current, buildErr := buildExecutionSnapshot(runID, packet, meta.Panel, ReviewOptions{Split: len(packet.Chunks) > 0, NoWorkers: meta.NoWorkers}, s)
+		if buildErr != nil || current.Digest != frozen.Digest {
+			return domain.Final{}, exitError(ExitPreflight, "resume configuration diverges from immutable execution snapshot")
+		}
+		journal, journalErr := newReplayJournal(runDir, runID, frozen.WorkflowRevision, "")
+		if journalErr != nil {
+			return domain.Final{}, exitError(ExitPreflight, "resume operation journal: %v", journalErr)
+		}
+		runCtx = withReplayJournal(runCtx, journal)
+	} else if !os.IsNotExist(err) {
+		return domain.Final{}, exitError(ExitPreflight, "resume execution snapshot: %v", err)
+	}
 	results, err := s.resumeReviews(runCtx, runDir, packet, meta.Panel)
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "resume reviews: %v", err)

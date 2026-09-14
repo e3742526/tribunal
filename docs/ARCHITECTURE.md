@@ -41,6 +41,12 @@ sequenceDiagram
   A-->>U: recommendations or arbitration
 ```
 
+Before `PACKET_BUILT`, the application persists the immutable versioned
+execution snapshot. Every provider boundary is journaled `prepared` then
+`in_flight` before invocation and `committed` or `in_doubt` afterward. Replay
+consumes this stream in exact sequence/type/request-hash/revision order; see
+[ADR-0008](adr/ADR-0008-deterministic-replay.md).
+
 ## Module contracts
 
 | Module | Responsibility | Must not own | Allowed dependencies | Public surface |

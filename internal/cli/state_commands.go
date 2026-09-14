@@ -110,7 +110,7 @@ func newReplayCommand(f *flags) *cobra.Command {
 	var runID string
 	cmd := &cobra.Command{
 		Use:   "replay [file-or-folder]",
-		Short: "Run the recorded panel over the exact frozen packet as a new run",
+		Short: "Deterministically replay committed operations from a frozen run",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input := firstArg(args, ".")

@@ -148,6 +148,14 @@
       ]
     },
     {
+	  "id": "spec.replay.exact-fail-closed",
+	  "severity": "high",
+	  "owner": "application",
+	  "node_ids": ["application", "storage"],
+	  "sources": ["docs/SPEC.md", "docs/adr/ADR-0008-deterministic-replay.md"],
+	  "evidence": ["go test ./internal/tribunal/app -run 'TestCanonicalRequest|TestImmutableExecution|TestExactReplay|TestReplayDivergence'"]
+	},
+	{
       "id": "release.smoke-before-publish",
       "severity": "medium",
       "owner": "release",

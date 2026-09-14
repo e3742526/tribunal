@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/e3742526/tribunal/internal/tribunal/adapters"
@@ -65,11 +64,20 @@ func (s *Service) Review(ctx context.Context, opts ReviewOptions) (domain.Final,
 	if err := s.persistStart(runDir, runID, packet, panel, selection, opts, started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
+	snapshot, err := buildExecutionSnapshot(runID, packet, panel, opts, s)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "build execution snapshot: %v", err)
+	}
+	journal, err := newReplayJournal(runDir, runID, snapshot.WorkflowRevision, opts.ReplaySourceDir)
+	if err != nil {
+		return domain.Final{}, exitError(ExitPreflight, "%v", err)
+	}
 	budget, err := loadUsageBudget(runDir, s.Config.Limits.TokenBudget)
 	if err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
 	runCtx = withUsageBudget(runCtx, budget)
+	runCtx = withReplayJournal(runCtx, journal)
 	if err := writeActive(workspace, runID, packet, "running", started); err != nil {
 		return domain.Final{}, exitError(ExitPreflight, "%v", err)
 	}
@@ -315,6 +323,13 @@ func (s *Service) persistStart(runDir, runID string, packet documents.Packet, pa
 	if err := storage.WriteFile(filepath.Join(runDir, "vote.schema.json"), []byte(adapters.ProviderVoteSchema+"\n")); err != nil {
 		return err
 	}
+	snapshot, err := buildExecutionSnapshot(runID, packet, panel, opts, s)
+	if err != nil {
+		return fmt.Errorf("build execution snapshot: %w", err)
+	}
+	if err := persistImmutableSnapshot(filepath.Join(runDir, "execution-snapshot.json"), snapshot); err != nil {
+		return err
+	}
 	return s.transition(runDir, runID, packet, domain.PhasePacketBuilt, "running", nil)
 }
 
@@ -325,15 +340,9 @@ func (s *Service) transition(runDir, runID string, packet documents.Packet, phas
 
 func (s *Service) reviewPass(ctx context.Context, runDir string, packet documents.Packet, panel domain.Panel) []panelResult {
 	results := make([]panelResult, len(panel.Reviewers))
-	var wait sync.WaitGroup
 	for index, panelist := range panel.Reviewers {
-		wait.Add(1)
-		go func(index int, panelist domain.Panelist) {
-			defer wait.Done()
-			results[index] = s.invokeReview(ctx, runDir, packet, panelist)
-		}(index, panelist)
+		results[index] = s.invokeReview(ctx, runDir, packet, panelist)
 	}
-	wait.Wait() // strict pass-1 barrier
 	for i := range results {
 		path := filepath.Join(runDir, "calls", results[i].panelist.ID, "review", "status.json")
 		if err := storage.WriteJSON(path, map[string]any{"schema_version": 1, "status": results[i].status}); err != nil {
@@ -514,15 +523,9 @@ func clusterFindings(clusters []domain.Cluster) []domain.Finding {
 
 func (s *Service) votePass(ctx context.Context, runDir string, packet documents.Packet, verification verificationArtifact, voters []domain.Panelist, findings []domain.Finding) []panelResult {
 	results := make([]panelResult, len(voters))
-	var wait sync.WaitGroup
 	for index, voter := range voters {
-		wait.Add(1)
-		go func(index int, voter domain.Panelist) {
-			defer wait.Done()
-			results[index] = s.invokeVotes(ctx, runDir, packet, verification, voter, findings)
-		}(index, voter)
+		results[index] = s.invokeVotes(ctx, runDir, packet, verification, voter, findings)
 	}
-	wait.Wait()
 	for i := range results {
 		status := "ok"
 		reason := ""

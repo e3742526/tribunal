@@ -312,11 +312,14 @@ func ReadDecisions(workspace Workspace) ([]DecisionRecord, error) {
 }
 
 type Snapshot struct {
-	SchemaVersion int             `json:"schema_version"`
-	State         domain.RunState `json:"state"`
-	Final         *domain.Final   `json:"final,omitempty"`
-	Waiting       bool            `json:"waiting"`
-	WaitPID       int             `json:"wait_pid,omitempty"`
+	SchemaVersion           int             `json:"schema_version"`
+	State                   domain.RunState `json:"state"`
+	Final                   *domain.Final   `json:"final,omitempty"`
+	Waiting                 bool            `json:"waiting"`
+	WaitPID                 int             `json:"wait_pid,omitempty"`
+	ReplayContract          string          `json:"replay_contract"`
+	ExternalEffectSemantics string          `json:"external_effect_semantics"`
+	InDoubtOperations       int             `json:"in_doubt_operations"`
 }
 
 func BuildSnapshot(runDir string) (Snapshot, error) {
@@ -327,7 +330,26 @@ func BuildSnapshot(runDir string) (Snapshot, error) {
 	if err := domain.ValidateRunState(state); err != nil {
 		return Snapshot{}, err
 	}
-	snapshot := Snapshot{SchemaVersion: domain.SchemaVersion, State: state}
+	snapshot := Snapshot{SchemaVersion: domain.SchemaVersion, State: state, ReplayContract: "legacy_non_replayable", ExternalEffectSemantics: "at_least_once_when_commit_is_uncertain"}
+	if _, err := os.Stat(filepath.Join(runDir, "execution-snapshot.json")); err == nil {
+		snapshot.ReplayContract = "deterministic_v1"
+	}
+	var operations struct {
+		SchemaVersion int    `json:"schema_version"`
+		RunID         string `json:"run_id"`
+		Operations    []struct {
+			State string `json:"state"`
+		} `json:"operations"`
+	}
+	if err := ReadJSON(filepath.Join(runDir, "operations.json"), &operations); err == nil {
+		for _, operation := range operations.Operations {
+			if operation.State == "in_doubt" {
+				snapshot.InDoubtOperations++
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return Snapshot{}, err
+	}
 	waiting, pid, err := LockStatus(filepath.Join(runDir, "run.lock"))
 	if err != nil {
 		return Snapshot{}, err

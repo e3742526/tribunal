@@ -235,7 +235,7 @@ func (s *Service) Replay(ctx context.Context, ref RunRef) (domain.Final, error) 
 	}
 	// A packet frozen with --split still carries full item content, so the
 	// context preflight would re-trip without re-enabling splitting here.
-	return s.Review(ctx, ReviewOptions{Packet: &packet, PanelValue: &meta.Panel, Workspace: &workspace, ReplayOf: runID, Split: len(packet.Chunks) > 0})
+	return s.Review(ctx, ReviewOptions{Packet: &packet, PanelValue: &meta.Panel, Workspace: &workspace, ReplayOf: runID, ReplaySourceDir: runDir, Split: len(packet.Chunks) > 0, NoWorkers: meta.NoWorkers})
 }
 
 func (s *Service) Findings(ref RunRef) (storage.FindingsLedger, error) {
