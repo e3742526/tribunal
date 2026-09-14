@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-07-21",
-  "basis": "defect campaign validation after the 2026-07-21 bootstrap audit",
+  "recorded_at": "2026-09-14",
+  "basis": "deterministic replay contract validation",
   "health_score": 100,
   "trend": "bootstrap",
   "passing_invariants": [
@@ -14,6 +14,7 @@
     "spec.review.resume-idempotent",
     "spec.publication.terminal-before-ledger",
     "spec.edit.transactional",
+    "spec.replay.exact-fail-closed",
     "release.smoke-before-publish"
   ],
   "violations": []

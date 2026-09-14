@@ -78,7 +78,9 @@ type ReviewOptions struct {
 	Workspace    *storage.Workspace
 	Packet       *documents.Packet
 	ReplayOf     string
-	NoWorkers    bool
+	// ReplaySourceDir is host-populated and never accepted from the CLI.
+	ReplaySourceDir string
+	NoWorkers       bool
 }
 
 type Meta struct {

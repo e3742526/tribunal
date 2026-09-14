@@ -38,8 +38,20 @@ catalog changes.
 
 Use `status` and `transcript` with `--run <ULID>` or omit it for the latest run.
 A run aborted by cancellation or its wall-time cap preserves all available
-results and terminal state. `resume` reuses its frozen packet and recorded
-panel. `replay` creates a new run from that exact packet.
+results and terminal state. `resume` reuses its immutable execution snapshot;
+changed workflow arguments, limits, panel, or provider configuration are
+rejected. `replay` creates a new run and consumes the source operation stream
+in exact sequence. A committed exact match returns recorded bytes without a
+second provider call. Missing, changed, reordered, or corrupt history stops as
+divergence and never falls back to a fresh call.
+
+`status --json` reports `deterministic_v1` or `legacy_non_replayable`, the
+number of `in_doubt` operations, and external-effect semantics. Legacy runs may
+finish under their checkpoint behavior but cannot claim deterministic replay.
+An `in_doubt` provider call may have succeeded remotely before Tribunal could
+record its result. Reconcile it with the provider or start a new run; Tribunal
+will not manufacture a result. Resume is at-least-once at this boundary, not
+exactly-once. Native provider reconciliation is not yet available.
 
 Degraded output means fewer than a majority, or fewer than two, reviewers
 produced valid first-pass results. Independent findings remain visible but are

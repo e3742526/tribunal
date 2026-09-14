@@ -12,6 +12,11 @@ func RenderSnapshot(snapshot storage.Snapshot) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "TRIBUNAL  %s\n", snapshot.State.RunID)
 	fmt.Fprintf(&out, "Phase:  %s\nStatus: %s\n", snapshot.State.Phase, snapshot.State.Status)
+	fmt.Fprintf(&out, "Replay: %s\nExternal effects: %s", snapshot.ReplayContract, snapshot.ExternalEffectSemantics)
+	if snapshot.InDoubtOperations > 0 {
+		fmt.Fprintf(&out, " (%d in doubt)", snapshot.InDoubtOperations)
+	}
+	out.WriteByte('\n')
 	if snapshot.Waiting {
 		fmt.Fprintf(&out, "Waiting for lock held by PID %d\n", snapshot.WaitPID)
 	}

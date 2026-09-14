@@ -132,9 +132,19 @@ VOTING -> CONSENSUS | ARBITRATION_PENDING | DEGRADED -> RECOMMENDED ->
 
 Every transition appends and fsyncs `events.jsonl` before atomically replacing
 `state.json`. Terminal success requires durable terminal state and `final.json`.
-Resume reacquires locks, validates schema/path/hash checkpoints, and continues
-the first incomplete idempotent step. Run/provider locks use kernel `flock` on
-macOS/Linux and fail closed.
+New runs persist an immutable `execution-snapshot.json` before entering
+`PACKET_BUILT`; it is the authority for workflow revision, packet, normalized
+panel, arguments, limits, and provider configuration. Resume reacquires locks,
+rejects snapshot mutation, validates schema/path/hash checkpoints, and
+continues the first incomplete idempotent step. Every provider request is
+durably sequenced `prepared`/`in_flight` before invocation and hashes its full
+semantic request envelope. Replay accepts only an exact sequence, versioned
+type, request hash, and workflow revision match, and only reuses a hash-verified
+committed result. Every mismatch is fail-closed divergence. An unrecorded
+external commit is `in_doubt`: provider effects remain at-least-once, never
+claimed exactly-once. Legacy runs without snapshots are explicitly
+non-replayable. Run/provider locks use kernel `flock` on macOS/Linux and fail
+closed. See ADR-0008.
 
 Defaults: 2 passes (max 3), 25 findings/reviewer, 1 MiB/call, 15 minutes/call,
 60 minutes/run, 500k tokens/run, 10 verification checks, and 10 arbitration
@@ -180,4 +190,3 @@ others; those remain outside Tribunal.
 No Git compatibility, Tagteam state migration, code kind, autonomous authoring,
 automatic edit merge, open-by-default web access, URL persona imports, MCP/control
 transport, Windows release, or arbiter model that overrules the user.
-
